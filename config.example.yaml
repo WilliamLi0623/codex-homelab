@@ -9,7 +9,8 @@ proxmox:
   api_url: https://PROXMOX_HOST:8006/api2/json
   runtime_identity: codex-homelab-runtime
   dynamic_vmid_range: 3000-3999
-  storage: STORAGE_ID
+  system_storage: local
+  data_storage: pool
   bridge: vmbr0
 resources:
   small: { cpu: 2, memory: 4Gi, disk: 20Gi }
