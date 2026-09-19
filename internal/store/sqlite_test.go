@@ -28,6 +28,22 @@ func TestOpenMigratesV3ControllerSchema(t *testing.T) {
 	}
 }
 
+func TestOpenRecordsEveryAppliedMigration(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "controller.sqlite"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	var applied int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&applied); err != nil {
+		t.Fatalf("count migrations: %v", err)
+	}
+	if applied != len(schemaMigrations) {
+		t.Fatalf("applied migrations = %d, want %d", applied, len(schemaMigrations))
+	}
+}
+
 func TestCreateTaskReturnsExistingTaskForSameIdempotencyKey(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "controller.sqlite"))
 	if err != nil {

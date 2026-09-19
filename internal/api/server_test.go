@@ -22,6 +22,25 @@ func TestHealthReportsControllerReady(t *testing.T) {
 	}
 }
 
+func TestStatusReportsControllerAndTaskCounts(t *testing.T) {
+	server := newTestServer(t)
+	createTestTask(t, server)
+
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/status", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var body statusResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	if body.Controller != "ok" || body.Tasks != 1 {
+		t.Fatalf("status response = %+v, want controller ok and one task", body)
+	}
+}
+
 func TestCreateTaskIsIdempotentOverHTTP(t *testing.T) {
 	server := newTestServer(t)
 	payload := []byte(`{"repository":"owner/repository","base_ref":"main","objective":"Fix the failing tests","idempotency_key":"request-1"}`)
@@ -101,6 +120,18 @@ func TestSendMessagePersistsObservableTaskEvent(t *testing.T) {
 	if message.Code != http.StatusCreated {
 		t.Fatalf("message status = %d, body = %s", message.Code, message.Body.String())
 	}
+	messages := httptest.NewRecorder()
+	server.ServeHTTP(messages, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+taskID+"/messages", nil))
+	if messages.Code != http.StatusOK {
+		t.Fatalf("messages status = %d, body = %s", messages.Code, messages.Body.String())
+	}
+	var messageBody listMessagesResponse
+	if err := json.Unmarshal(messages.Body.Bytes(), &messageBody); err != nil {
+		t.Fatalf("decode messages response: %v", err)
+	}
+	if len(messageBody.Messages) != 1 || messageBody.Messages[0].Body != "Do not modify the database layer." {
+		t.Fatalf("messages = %+v, want persisted user message", messageBody)
+	}
 
 	events := httptest.NewRecorder()
 	server.ServeHTTP(events, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+taskID+"/events", nil))
@@ -160,6 +191,15 @@ func TestRetryCreatesNewAttemptForCancelledTask(t *testing.T) {
 	}
 	if body.Attempt.Number != 1 || body.Attempt.State != "CREATED" {
 		t.Fatalf("retry attempt = %+v, want first CREATED attempt", body.Attempt)
+	}
+}
+
+func TestReconcileAttemptRejectsUnknownOutcome(t *testing.T) {
+	server := newTestServer(t)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/tasks/task-1/attempts/attempt-1/reconcile", bytes.NewBufferString(`{"outcome":"UNKNOWN"}`)))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }
 

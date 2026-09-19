@@ -138,6 +138,20 @@ func (s *Store) RetryTask(ctx context.Context, id string) (domain.Task, domain.A
 	if err != nil {
 		return domain.Task{}, domain.Attempt{}, err
 	}
+	var latestState string
+	err = tx.QueryRowContext(ctx, "SELECT state FROM task_attempts WHERE task_id = ? ORDER BY attempt_number DESC LIMIT 1", task.ID).Scan(&latestState)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return domain.Task{}, domain.Attempt{}, fmt.Errorf("find latest attempt state: %w", err)
+	}
+	if err == nil {
+		state := domain.AttemptState(latestState)
+		if state == domain.AttemptUnknown {
+			return domain.Task{}, domain.Attempt{}, ErrAttemptRequiresReconciliation
+		}
+		if !isRetryableAttemptState(state) {
+			return domain.Task{}, domain.Attempt{}, ErrAttemptStillActive
+		}
+	}
 	if err := task.Retry(); err != nil {
 		return domain.Task{}, domain.Attempt{}, err
 	}
@@ -157,10 +171,21 @@ func (s *Store) RetryTask(ctx context.Context, id string) (domain.Task, domain.A
 	if _, err := tx.ExecContext(ctx, "INSERT INTO task_events(id, task_id, attempt_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)", newStoreID("event"), task.ID, attempt.ID, "task.retry_requested", "{}", now); err != nil {
 		return domain.Task{}, domain.Attempt{}, fmt.Errorf("record task retry: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO task_events(id, task_id, attempt_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)", newStoreID("event"), task.ID, attempt.ID, "attempt.created", "{}", now); err != nil {
+		return domain.Task{}, domain.Attempt{}, fmt.Errorf("record attempt creation: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return domain.Task{}, domain.Attempt{}, fmt.Errorf("commit task retry: %w", err)
 	}
 	return task, attempt, nil
+}
+
+func isRetryableAttemptState(state domain.AttemptState) bool {
+	return state == domain.AttemptProviderFailed ||
+		state == domain.AttemptExecutionFailed ||
+		state == domain.AttemptValidationFailed ||
+		state == domain.AttemptCompleted ||
+		state == domain.AttemptCancelled
 }
 
 func getTask(ctx context.Context, queryer interface {

@@ -43,6 +43,11 @@ type listTasksResponse struct {
 	Tasks []taskResponse `json:"tasks"`
 }
 
+type statusResponse struct {
+	Controller string `json:"controller"`
+	Tasks      int    `json:"tasks"`
+}
+
 type messageRequest struct {
 	Body string `json:"body"`
 }
@@ -57,6 +62,17 @@ type listEventsResponse struct {
 	Events []eventResponse `json:"events"`
 }
 
+type messageResponse struct {
+	ID        string `json:"id"`
+	Role      string `json:"role"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"created_at"`
+}
+
+type listMessagesResponse struct {
+	Messages []messageResponse `json:"messages"`
+}
+
 type attemptResponse struct {
 	ID           string `json:"id"`
 	Number       int    `json:"number"`
@@ -69,17 +85,49 @@ type retryTaskResponse struct {
 	Attempt attemptResponse `json:"attempt"`
 }
 
+type reconcileAttemptRequest struct {
+	Outcome string `json:"outcome"`
+}
+
 func NewServer(database *store.Store) *Server {
 	server := &Server{store: database, mux: http.NewServeMux()}
 	server.mux.HandleFunc("GET /v1/health", server.health)
+	server.mux.HandleFunc("GET /v1/status", server.status)
 	server.mux.HandleFunc("POST /v1/tasks", server.createTask)
 	server.mux.HandleFunc("GET /v1/tasks", server.listTasks)
 	server.mux.HandleFunc("GET /v1/tasks/{id}", server.getTask)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/messages", server.appendMessage)
+	server.mux.HandleFunc("GET /v1/tasks/{id}/messages", server.listMessages)
 	server.mux.HandleFunc("GET /v1/tasks/{id}/events", server.listEvents)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/cancel", server.cancelTask)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/retry", server.retryTask)
+	server.mux.HandleFunc("POST /v1/tasks/{id}/attempts/{attemptID}/reconcile", server.reconcileAttempt)
 	return server
+}
+
+func (s *Server) reconcileAttempt(writer http.ResponseWriter, request *http.Request) {
+	var input reconcileAttemptRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid reconciliation request"})
+		return
+	}
+	outcome := domain.AttemptState(input.Outcome)
+	if !isTerminalReconciliationOutcome(outcome) {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "outcome must be a known terminal attempt state"})
+		return
+	}
+	attempt, err := s.store.ReconcileUnknownAttempt(request.Context(), request.PathValue("id"), request.PathValue("attemptID"), outcome)
+	if errors.Is(err, store.ErrAttemptNotFound) {
+		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "attempt not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(writer, http.StatusConflict, map[string]string{"error": "attempt cannot be reconciled"})
+		return
+	}
+	writeJSON(writer, http.StatusOK, attemptResponse{ID: attempt.ID, Number: attempt.Number, ModelProfile: attempt.ModelProfile, State: string(attempt.State)})
 }
 
 func (s *Server) retryTask(writer http.ResponseWriter, request *http.Request) {
@@ -93,7 +141,7 @@ func (s *Server) retryTask(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writeJSON(writer, http.StatusCreated, retryTaskResponse{
-		Task: toTaskResponse(task),
+		Task:    toTaskResponse(task),
 		Attempt: attemptResponse{ID: attempt.ID, Number: attempt.Number, ModelProfile: attempt.ModelProfile, State: string(attempt.State)},
 	})
 }
@@ -129,8 +177,29 @@ func (s *Server) appendMessage(writer http.ResponseWriter, request *http.Request
 	writeJSON(writer, http.StatusCreated, map[string]string{"id": message.ID, "role": message.Role})
 }
 
+func (s *Server) listMessages(writer http.ResponseWriter, request *http.Request) {
+	messages, err := s.store.ListTaskMessages(request.Context(), request.PathValue("id"))
+	if errors.Is(err, store.ErrTaskNotFound) {
+		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "list task messages failed"})
+		return
+	}
+	response := listMessagesResponse{Messages: make([]messageResponse, 0, len(messages))}
+	for _, message := range messages {
+		response.Messages = append(response.Messages, messageResponse{ID: message.ID, Role: message.Role, Body: message.Body, CreatedAt: message.CreatedAt.Format(time.RFC3339Nano)})
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
 func (s *Server) listEvents(writer http.ResponseWriter, request *http.Request) {
 	events, err := s.store.ListTaskEvents(request.Context(), request.PathValue("id"))
+	if errors.Is(err, store.ErrTaskNotFound) {
+		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
 	if err != nil {
 		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "list task events failed"})
 		return
@@ -176,6 +245,15 @@ func (s *Server) health(writer http.ResponseWriter, _ *http.Request) {
 	writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+func (s *Server) status(writer http.ResponseWriter, request *http.Request) {
+	tasks, err := s.store.ListTasks(request.Context())
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "read controller status failed"})
+		return
+	}
+	writeJSON(writer, http.StatusOK, statusResponse{Controller: "ok", Tasks: len(tasks)})
+}
+
 func (s *Server) createTask(writer http.ResponseWriter, request *http.Request) {
 	var input createTaskRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 1<<20))
@@ -215,6 +293,14 @@ func toTaskResponse(task domain.Task) taskResponse {
 		ExecutionClass: string(task.ExecutionClass),
 		State:          string(task.State),
 	}
+}
+
+func isTerminalReconciliationOutcome(state domain.AttemptState) bool {
+	return state == domain.AttemptProviderFailed ||
+		state == domain.AttemptExecutionFailed ||
+		state == domain.AttemptValidationFailed ||
+		state == domain.AttemptCompleted ||
+		state == domain.AttemptCancelled
 }
 
 func newTaskID() string {

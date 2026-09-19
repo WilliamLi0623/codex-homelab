@@ -45,6 +45,20 @@ func (a *Attempt) TransitionTo(next AttemptState) error {
 	return fmt.Errorf("invalid attempt transition: %s -> %s", a.State, next)
 }
 
+// ReconcileTo records a verified terminal outcome for an attempt whose runtime
+// outcome was previously unknown. Reconciliation cannot restart work or make an
+// unknown attempt retryable without an explicit known outcome.
+func (a *Attempt) ReconcileTo(outcome AttemptState) error {
+	if a.State != AttemptUnknown {
+		return fmt.Errorf("attempt %s is not UNKNOWN", a.ID)
+	}
+	if !isTerminalAttemptState(outcome) {
+		return fmt.Errorf("attempt %s reconciliation outcome must be terminal, got %s", a.ID, outcome)
+	}
+	a.State = outcome
+	return nil
+}
+
 func validAttemptTransition(current, next AttemptState) bool {
 	if current == AttemptCreated {
 		return next == AttemptStarting || next == AttemptCancelled || next == AttemptUnknown

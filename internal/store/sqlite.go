@@ -48,13 +48,26 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	for _, statement := range schemaStatements {
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("apply schema: %w", err)
-		}
+	if _, err := tx.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)"); err != nil {
+		return fmt.Errorf("create migration ledger: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO schema_migrations(version) VALUES (1)"); err != nil {
-		return fmt.Errorf("record schema migration: %w", err)
+	for _, migration := range schemaMigrations {
+		var applied int
+		err := tx.QueryRowContext(ctx, "SELECT 1 FROM schema_migrations WHERE version = ?", migration.Version).Scan(&applied)
+		if err == nil {
+			continue
+		}
+		if err != sql.ErrNoRows {
+			return fmt.Errorf("read migration %d: %w", migration.Version, err)
+		}
+		for _, statement := range migration.Statements {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("apply migration %d: %w", migration.Version, err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations(version) VALUES (?)", migration.Version); err != nil {
+			return fmt.Errorf("record migration %d: %w", migration.Version, err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
@@ -62,8 +75,12 @@ func (s *Store) migrate(ctx context.Context) error {
 	return nil
 }
 
-var schemaStatements = []string{
-	"CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)",
+type schemaMigration struct {
+	Version    int
+	Statements []string
+}
+
+var schemaMigrations = []schemaMigration{{Version: 1, Statements: []string{
 	"CREATE TABLE IF NOT EXISTS repositories (id TEXT PRIMARY KEY, remote_url TEXT NOT NULL, created_at TEXT NOT NULL)",
 	"CREATE TABLE IF NOT EXISTS task_intake (idempotency_key TEXT PRIMARY KEY, task_id TEXT NOT NULL, request_hash TEXT NOT NULL, created_at TEXT NOT NULL)",
 	"CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL)",
@@ -81,4 +98,4 @@ var schemaStatements = []string{
 	"CREATE TABLE IF NOT EXISTS validation_results (id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, command TEXT NOT NULL, state TEXT NOT NULL, output_ref TEXT, created_at TEXT NOT NULL)",
 	"CREATE TABLE IF NOT EXISTS leases (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, owner_id TEXT NOT NULL, expires_at TEXT NOT NULL, UNIQUE(resource_type, resource_id))",
 	"CREATE TABLE IF NOT EXISTS commands (id TEXT PRIMARY KEY, task_id TEXT, attempt_id TEXT, command TEXT NOT NULL, state TEXT NOT NULL, output_ref TEXT, created_at TEXT NOT NULL)",
-}
+}}}

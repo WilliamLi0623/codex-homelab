@@ -56,6 +56,9 @@ func (s *Store) AppendUserMessage(ctx context.Context, taskID, body string) (Tas
 }
 
 func (s *Store) ListTaskEvents(ctx context.Context, taskID string) ([]TaskEvent, error) {
+	if _, err := s.GetTask(ctx, taskID); err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, "SELECT id, task_id, event_type, payload_json, created_at FROM task_events WHERE task_id = ? ORDER BY created_at, id", taskID)
 	if err != nil {
 		return nil, fmt.Errorf("list task events: %w", err)
@@ -80,6 +83,36 @@ func (s *Store) ListTaskEvents(ctx context.Context, taskID string) ([]TaskEvent,
 		return nil, fmt.Errorf("iterate task events: %w", err)
 	}
 	return events, nil
+}
+
+func (s *Store) ListTaskMessages(ctx context.Context, taskID string) ([]TaskMessage, error) {
+	if _, err := s.GetTask(ctx, taskID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, "SELECT id, task_id, role, body, created_at FROM task_messages WHERE task_id = ? ORDER BY created_at, id", taskID)
+	if err != nil {
+		return nil, fmt.Errorf("list task messages: %w", err)
+	}
+	defer rows.Close()
+
+	var messages []TaskMessage
+	for rows.Next() {
+		var message TaskMessage
+		var createdAt string
+		if err := rows.Scan(&message.ID, &message.TaskID, &message.Role, &message.Body, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan task message: %w", err)
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse task message timestamp: %w", err)
+		}
+		message.CreatedAt = parsed
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate task messages: %w", err)
+	}
+	return messages, nil
 }
 
 func newStoreID(prefix string) string {
