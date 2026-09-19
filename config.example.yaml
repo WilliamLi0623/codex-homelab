@@ -18,7 +18,7 @@ resources:
 models:
   openai_primary: { provider: openai }
   muse_failover: { gateway: cch, model_id: DISCOVER_AT_P6 }
-  mimo_worker: { gateway: cch, model_id: DISCOVER_AT_P6 }
+  glm_flash_worker: { gateway: cch, model_id: glm-5.3-flash }
 secrets:
   cch_api_key_host: CCH_KEY_HOST
   cch_api_key_source: CCH_KEY_SOURCE

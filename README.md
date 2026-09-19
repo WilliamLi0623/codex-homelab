@@ -22,7 +22,7 @@ The command is read-only. It prints `PLAN_VERSION=v3-final` followed by P0 throu
 
 - **Normal tasks:** `dedicated-lxc` is the default. One active task receives one disposable LXC in VMID range 3000–3999.
 - **Special tasks:** `vm-special` uses VM101 only for incompatible, dangerous, or recovery work. Normal tasks must not route there.
-- **Models:** OpenAI/Codex is primary; Muse Spark 1.3 Contributor is the first provider-failure fallback; MiMo 2.5 is the second fallback and low-cost worker model.
+- **Models:** OpenAI/Codex is primary; Muse Spark 1.3 Contributor is the first provider-failure fallback; GLM-5.3 Flash is the second fallback and low-cost worker model.
 - **Secrets:** Runtime model credentials are never committed, embedded in an LXC template, or mounted from Proxmox into a task.
 
 Read [architecture](docs/architecture.md) for responsibility boundaries, [deployment](docs/deployment.md) for staged gates, and [security](docs/security.md) for non-negotiable isolation rules.
