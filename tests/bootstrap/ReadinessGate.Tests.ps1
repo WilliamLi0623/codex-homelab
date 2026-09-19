@@ -32,3 +32,11 @@ Describe "rebuild stage guard" {
     $scriptText | Should Match 'if\(\$s\.N -eq 20 -and !\$AllowDestruction\)'
   }
 }
+
+Describe "Get-RunnerSshArguments" {
+  It "uses the configured Proxmox jump host with bounded strict SSH" {
+    $config = @{ proxmox_alias = "proxmox-pve" }
+
+    (Get-RunnerSshArguments $config) -join " " | Should Be "-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -J proxmox-pve"
+  }
+}

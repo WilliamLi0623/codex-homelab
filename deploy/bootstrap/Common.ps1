@@ -57,6 +57,16 @@ function Get-CredentialRecoveryAssets {
   )
 }
 
+function Get-RunnerSshArguments([hashtable]$Config) {
+  if (!$Config["proxmox_alias"]) { throw "proxmox_alias missing" }
+  return @(
+    "-o", "BatchMode=yes",
+    "-o", "ConnectTimeout=10",
+    "-o", "StrictHostKeyChecking=yes",
+    "-J", $Config["proxmox_alias"]
+  )
+}
+
 function Get-State {
   if(!(Test-Path $script:StatePath)) {
     return [ordered]@{
