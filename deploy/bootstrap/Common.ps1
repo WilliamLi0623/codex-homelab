@@ -1,8 +1,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$script:BootstrapRoot = Split-Path -Parent $PSScriptRoot
-if ($PSScriptRoot -match "\\stages$") { $script:BootstrapRoot = Split-Path -Parent $PSScriptRoot }
+$script:BootstrapRoot = $PSScriptRoot
 $script:ConfigPath = Join-Path $script:BootstrapRoot "config.yaml"
 $script:StatePath  = Join-Path $script:BootstrapRoot "state.json"
 $script:LogsDir    = Join-Path $script:BootstrapRoot "logs"
@@ -84,8 +83,11 @@ function Invoke-Proxmox([string]$Command,[switch]$AllowFailure) {
   $cfg=Get-SimpleConfig
   $alias=$cfg["proxmox_alias"]
   if(!$alias){throw "proxmox_alias missing"}
-  $out=& ssh.exe $alias $Command 2>&1
+  $prevEap=$ErrorActionPreference
+  $ErrorActionPreference="Continue"
+  $out=& ssh.exe -o BatchMode=yes -o ConnectTimeout=10 $alias $Command 2>&1
   $code=$LASTEXITCODE
+  $ErrorActionPreference=$prevEap
   if($code -ne 0 -and !$AllowFailure){ throw "Proxmox command failed ($code): $Command :: $($out -join ' ')" }
   return ,$out
 }
