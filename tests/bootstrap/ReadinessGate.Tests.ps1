@@ -33,6 +33,23 @@ Describe "rebuild stage guard" {
   }
 }
 
+Describe "V3 migration freeze" {
+  It "blocks the superseded V2 rebuild entrypoint when the freeze marker exists" {
+    $scriptText = Get-Content (Join-Path $bootstrapRoot "rebuild.ps1") -Raw
+
+    $scriptText | Should Match 'v3-plan-freeze\.json'
+    $scriptText | Should Match 'V2 bootstrap is frozen'
+  }
+
+  It "persists V3 supersession without deleting existing bootstrap state" {
+    $scriptText = Get-Content (Join-Path $bootstrapRoot "Freeze-V2.ps1") -Raw
+
+    $scriptText | Should Match 'PLAN_VERSION'
+    $scriptText | Should Match 'OLD_PLAN_SUPERSEDED'
+    $scriptText | Should Match 'Save-StateAtomic'
+  }
+}
+
 Describe "Get-RunnerSshArguments" {
   It "uses the configured Proxmox jump host with bounded strict SSH" {
     $config = @{ proxmox_alias = "proxmox-pve" }

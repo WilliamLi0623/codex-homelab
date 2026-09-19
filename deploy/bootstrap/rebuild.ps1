@@ -6,6 +6,10 @@ param(
 )
 $ErrorActionPreference="Stop"
 $root=Split-Path -Parent $MyInvocation.MyCommand.Path
+$freezePath=Join-Path $root "v3-plan-freeze.json"
+if(Test-Path -LiteralPath $freezePath){
+  throw "V2 bootstrap is frozen by the V3 migration marker: $freezePath"
+}
 $stageDir=Join-Path $root "stages"
 $stages=@(
   @{N=0; F="00-preflight.ps1"},
