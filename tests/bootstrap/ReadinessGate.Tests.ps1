@@ -14,3 +14,13 @@ Describe "Get-PrivateDirectory" {
     Get-PrivateDirectory $config | Should Be "C:\\CustomPrivate"
   }
 }
+
+Describe "Get-CredentialRecoveryAssets" {
+  It "lists only the credentials consumed by the rebuild stages" {
+    Get-CredentialRecoveryAssets | Should Be @(
+      "webcodex.env",
+      "cloudflared.token",
+      "codex-auth.json"
+    )
+  }
+}

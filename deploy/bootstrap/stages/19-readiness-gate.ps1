@@ -16,9 +16,8 @@ try {
   if($tmpl -notmatch [regex]::Escape(($cfg["control_template"] -replace '^local:vztmpl/',''))){throw "control template missing"}
   & gh.exe repo view "$($cfg['github_owner'])/$($cfg['github_repo'])" --json defaultBranchRef,url *> $null
   if($LASTEXITCODE -ne 0){throw "new repository not reachable"}
-  $privateDir=Get-PrivateDirectory $cfg
-  foreach($f in @("webcodex.env","cloudflared.token","linux-runner.toml","codex-auth.json")){
-    if(!(Test-Path (Join-Path $privateDir $f))){throw "credential recovery file missing: $f"}
+  foreach($f in Get-CredentialRecoveryAssets){
+    if(!(Test-RemoteFile "$($cfg['recovery_dir'])/$f")){throw "credential recovery asset missing: $f"}
   }
   $report=Join-Path $s.snapshot_path "destructive-readiness.md"
   $lines=@("# DESTRUCTIVE READINESS","","Bootstrap independent of WebCodex: PASS","Proxmox SSH: PASS","State persistence/resume: PASS","Git preservation: PASS","Creation artifacts available: PASS","Secrets recovery path tested: PASS","New repo pushed: PASS","")

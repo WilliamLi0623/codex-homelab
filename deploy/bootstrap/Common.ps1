@@ -49,6 +49,14 @@ function Get-PrivateDirectory([hashtable]$Config) {
   return (Join-Path $script:BootstrapRoot "private")
 }
 
+function Get-CredentialRecoveryAssets {
+  return @(
+    "webcodex.env",
+    "cloudflared.token",
+    "codex-auth.json"
+  )
+}
+
 function Get-State {
   if(!(Test-Path $script:StatePath)) {
     return [ordered]@{
