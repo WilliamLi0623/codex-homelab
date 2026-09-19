@@ -42,6 +42,13 @@ function Get-SimpleConfig {
   return $h
 }
 
+function Get-PrivateDirectory([hashtable]$Config) {
+  if ($Config.ContainsKey("private_dir") -and $Config["private_dir"]) {
+    return $Config["private_dir"]
+  }
+  return (Join-Path $script:BootstrapRoot "private")
+}
+
 function Get-State {
   if(!(Test-Path $script:StatePath)) {
     return [ordered]@{
