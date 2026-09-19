@@ -8,6 +8,6 @@ cloudflared=2026.9.1
 go=1.22.2
 controller_schema=1
 agentd=unreleased-blocks-deployment
-k3s=unresolved-blocks-deployment
+k3s=v1.37.0+k3s1
 kueue=unresolved-blocks-deployment
 container_image_digest=unresolved-blocks-deployment
