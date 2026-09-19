@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -89,6 +90,10 @@ type reconcileAttemptRequest struct {
 	Outcome string `json:"outcome"`
 }
 
+type startAttemptRequest struct {
+	Profile string `json:"profile"`
+}
+
 func NewServer(database *store.Store) *Server {
 	server := &Server{store: database, mux: http.NewServeMux()}
 	server.mux.HandleFunc("GET /v1/health", server.health)
@@ -101,6 +106,7 @@ func NewServer(database *store.Store) *Server {
 	server.mux.HandleFunc("GET /v1/tasks/{id}/events", server.listEvents)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/cancel", server.cancelTask)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/retry", server.retryTask)
+	server.mux.HandleFunc("POST /v1/tasks/{id}/attempts", server.startAttempt)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/attempts/{attemptID}/reconcile", server.reconcileAttempt)
 	return server
 }
@@ -130,6 +136,30 @@ func (s *Server) reconcileAttempt(writer http.ResponseWriter, request *http.Requ
 	writeJSON(writer, http.StatusOK, attemptResponse{ID: attempt.ID, Number: attempt.Number, ModelProfile: attempt.ModelProfile, State: string(attempt.State)})
 }
 
+func (s *Server) startAttempt(writer http.ResponseWriter, request *http.Request) {
+	var input startAttemptRequest
+	if request.Body != nil {
+		decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil && !errors.Is(err, io.EOF) {
+			writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid attempt request"})
+			return
+		}
+	}
+	if input.Profile == "" {
+		input.Profile = "openai-primary"
+	}
+	task, attempt, err := s.store.StartAttempt(request.Context(), request.PathValue("id"), input.Profile)
+	if errors.Is(err, store.ErrTaskNotFound) {
+		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(writer, http.StatusConflict, map[string]string{"error": "attempt cannot be started"})
+		return
+	}
+	writeJSON(writer, http.StatusCreated, retryTaskResponse{Task: toTaskResponse(task), Attempt: attemptResponse{ID: attempt.ID, Number: attempt.Number, ModelProfile: attempt.ModelProfile, State: string(attempt.State)}})
+}
 func (s *Server) retryTask(writer http.ResponseWriter, request *http.Request) {
 	task, attempt, err := s.store.RetryTask(request.Context(), request.PathValue("id"))
 	if errors.Is(err, store.ErrTaskNotFound) {
