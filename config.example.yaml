@@ -18,9 +18,12 @@ resources:
   large: { cpu: 8, memory: 16Gi, disk: 80Gi }
 models:
   openai_primary: { provider: openai, enabled: true }
-  # P7 Responses probes returned incomplete responses with no output.
+  # First CC Hub failover. P7 Responses probes returned incomplete responses
+  # with no output, so this remains fail-closed.
   muse_failover: { gateway: cch, model_id: muse-spark-1.3-contributor, enabled: false }
-  # P6/P7 discovered this ID, but the Responses probe returned 503 no_available_providers.
+  # GLM-5.3 Flash replaces the former MiMo worker position. It is also the
+  # second failover/low-cost worker once compatibility is proven.
+  # P6/P7 discovered this ID, but the last probe returned 503 no_available_providers.
   glm_flash_worker: { gateway: cch, model_id: glm-5.3-flash, enabled: false }
 secrets:
   cch_api_key_host: CCH_KEY_HOST

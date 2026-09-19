@@ -15,7 +15,7 @@ The controller decides **what** logical task happens. The model router decides *
 
 `REST/MCP/codexctl/UI → Controller → Model Router → Execution Broker → Capacity Manager → Proxmox LXC → K3s agent → task Job → codex-agentd → Codex → validation → immutable commit → controller publication`.
 
-Every attempt uses an isolated worktree and attempt-specific `CODEX_HOME`. Provider failure starts a fresh attempt from the recorded base commit; a dirty workspace is never handed from OpenAI to Muse or GLM-5.3 Flash.
+Every attempt uses an isolated worktree and attempt-specific `CODEX_HOME`. Provider failure starts a fresh attempt from the recorded base commit; a dirty workspace is never handed from OpenAI to Muse or GLM-5.3 Flash. The current routing order is OpenAI primary, Muse first failover, and GLM-5.3 Flash in the former MiMo second-failover/low-cost-worker position.
 
 ## Invariants
 

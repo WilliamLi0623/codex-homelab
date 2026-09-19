@@ -16,12 +16,14 @@ import (
 	"time"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/domain"
+	"github.com/WilliamLi0623/codex-homelab/internal/orchestrator"
 	"github.com/WilliamLi0623/codex-homelab/internal/store"
 )
 
 var (
-	ErrInvalidArguments = errors.New("invalid tool arguments")
-	ErrUnknownTool      = errors.New("unknown tool")
+	ErrInvalidArguments      = errors.New("invalid tool arguments")
+	ErrUnknownTool           = errors.New("unknown tool")
+	ErrDispatcherUnavailable = errors.New("dispatcher unavailable")
 )
 
 type Tool struct {
@@ -91,12 +93,28 @@ type GetTaskEventsResult struct {
 	Events []Event `json:"events"`
 }
 
-type Server struct {
-	store *store.Store
+type DispatchTaskResult struct {
+	TaskID    string `json:"task_id"`
+	AttemptID string `json:"attempt_id"`
+	ClaimID   string `json:"claim_id"`
+	VMID      int    `json:"vmid"`
+	JobID     string `json:"job_id"`
+	State     string `json:"state"`
 }
 
-func NewServer(database *store.Store) *Server {
-	return &Server{store: database}
+type Dispatcher interface {
+	Dispatch(context.Context, orchestrator.Request) (orchestrator.Dispatch, error)
+}
+
+type Server struct {
+	store      *store.Store
+	dispatcher Dispatcher
+}
+
+func NewServer(database *store.Store) *Server { return NewServerWithDispatcher(database, nil) }
+
+func NewServerWithDispatcher(database *store.Store, dispatcher Dispatcher) *Server {
+	return &Server{store: database, dispatcher: dispatcher}
 }
 
 func (s *Server) Tools() []Tool {
@@ -114,6 +132,7 @@ func (s *Server) Tools() []Tool {
 		tool("cancel_task", "Persist cancellation intent for a task.", taskIDSchema()),
 		tool("retry_task", "Create a new append-only attempt. The Controller rejects unresolved UNKNOWN outcomes.", taskIDSchema()),
 		tool("get_task_events", "List observable task events without hidden chain-of-thought.", taskIDSchema()),
+		tool("dispatch_task", "Dispatch a task attempt to the configured executor.", objectSchema([]string{"task_id", "attempt_id", "prompt"}, map[string]any{"task_id": stringSchema(), "attempt_id": stringSchema(), "prompt": stringSchema()})),
 	}
 }
 
@@ -222,6 +241,27 @@ func (s *Server) CallTool(ctx context.Context, name string, arguments json.RawMe
 		}
 		return RetryTaskResult{Task: taskView(task), Attempt: attemptView(attempt)}, nil
 
+	case "dispatch_task":
+		var input dispatchTaskArguments
+		if err := decodeArguments(arguments, &input); err != nil {
+			return nil, err
+		}
+		if empty(input.TaskID, input.AttemptID, input.Prompt) {
+			return nil, fmt.Errorf("%w: task_id, attempt_id, and prompt are required", ErrInvalidArguments)
+		}
+		if s.dispatcher == nil {
+			return nil, ErrDispatcherUnavailable
+		}
+		task, err := s.store.GetTask(ctx, input.TaskID)
+		if err != nil {
+			return nil, err
+		}
+		dispatch, err := s.dispatcher.Dispatch(ctx, orchestrator.Request{TaskID: task.ID, AttemptID: input.AttemptID, Prompt: input.Prompt})
+		if err != nil {
+			return nil, err
+		}
+		return DispatchTaskResult{TaskID: task.ID, AttemptID: input.AttemptID, ClaimID: dispatch.Claim.ID, VMID: dispatch.Claim.VMID, JobID: dispatch.Job.ID, State: string(dispatch.Job.State)}, nil
+
 	case "get_task_events":
 		var input taskArguments
 		if err := decodeArguments(arguments, &input); err != nil {
@@ -261,6 +301,12 @@ type startAttemptArguments struct {
 }
 type taskArguments struct {
 	TaskID string `json:"task_id"`
+}
+
+type dispatchTaskArguments struct {
+	TaskID    string `json:"task_id"`
+	AttemptID string `json:"attempt_id"`
+	Prompt    string `json:"prompt"`
 }
 
 type sendMessageArguments struct {

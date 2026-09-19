@@ -8,13 +8,22 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/WilliamLi0623/codex-homelab/internal/executor/k3s"
+	"github.com/WilliamLi0623/codex-homelab/internal/orchestrator"
 	"github.com/WilliamLi0623/codex-homelab/internal/store"
 )
+
+type fakeDispatcher struct{ request orchestrator.Request }
+
+func (f *fakeDispatcher) Dispatch(_ context.Context, r orchestrator.Request) (orchestrator.Dispatch, error) {
+	f.request = r
+	return orchestrator.Dispatch{Claim: orchestrator.Claim{ID: "claim-1", VMID: 3010}, Job: k3s.Job{ID: "job-1", TaskID: r.TaskID, AttemptID: r.AttemptID, State: k3s.JobRunning}}, nil
+}
 
 func TestToolsExposeTheControllerSurface(t *testing.T) {
 	server := newTestServer(t)
 	tools := server.Tools()
-	want := []string{"submit_task", "start_attempt", "get_task", "list_tasks", "send_message", "cancel_task", "retry_task", "get_task_events"}
+	want := []string{"submit_task", "start_attempt", "get_task", "list_tasks", "send_message", "cancel_task", "retry_task", "get_task_events", "dispatch_task"}
 	if len(tools) != len(want) {
 		t.Fatalf("tool count = %d, want %d", len(tools), len(want))
 	}
@@ -25,6 +34,46 @@ func TestToolsExposeTheControllerSurface(t *testing.T) {
 		if tools[index].InputSchema["type"] != "object" {
 			t.Fatalf("tool %q input schema type = %v, want object", name, tools[index].InputSchema["type"])
 		}
+	}
+}
+
+func TestDispatchTask(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "controller.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	d := &fakeDispatcher{}
+	server := NewServerWithDispatcher(db, d)
+	task := submitTestTask(t, server)
+	got := call[DispatchTaskResult](t, server, "dispatch_task", raw(map[string]any{"task_id": task.Task.ID, "attempt_id": "attempt-1", "prompt": "run"}))
+	if got.TaskID != task.Task.ID || got.AttemptID != "attempt-1" || got.ClaimID != "claim-1" || got.JobID != "job-1" || got.VMID != 3010 || got.State != "RUNNING" {
+		t.Fatalf("result=%+v", got)
+	}
+	if d.request.Prompt != "run" {
+		t.Fatalf("prompt=%q", d.request.Prompt)
+	}
+}
+func TestDispatchTaskErrors(t *testing.T) {
+	server := newTestServer(t)
+	task := submitTestTask(t, server)
+	_, err := server.CallTool(context.Background(), "dispatch_task", raw(map[string]any{"task_id": task.Task.ID, "attempt_id": "a", "prompt": "p"}))
+	if !errors.Is(err, ErrDispatcherUnavailable) {
+		t.Fatal(err)
+	}
+	db, err := store.Open(filepath.Join(t.TempDir(), "controller.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	server = NewServerWithDispatcher(db, &fakeDispatcher{})
+	_, err = server.CallTool(context.Background(), "dispatch_task", raw(map[string]any{"task_id": "missing", "attempt_id": "a", "prompt": "p"}))
+	if !errors.Is(err, store.ErrTaskNotFound) {
+		t.Fatal(err)
+	}
+	_, err = server.CallTool(context.Background(), "dispatch_task", raw(map[string]any{"task_id": "x", "attempt_id": "a"}))
+	if !errors.Is(err, ErrInvalidArguments) {
+		t.Fatal(err)
 	}
 }
 
