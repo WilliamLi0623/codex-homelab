@@ -50,3 +50,12 @@ Describe "runner recovery transfer" {
     $stageText | Should Not Match 'Invoke-Proxmox "scp'
   }
 }
+
+Describe "runner Codex CLI installation" {
+  It "installs and verifies the pinned platform binary" {
+    $stageText = Get-Content (Join-Path $bootstrapRoot "stages\\60-configure-runner.ps1") -Raw
+
+    $stageText | Should Match '/usr/local/lib/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex'
+    $stageText | Should Match 'codex --version'
+  }
+}

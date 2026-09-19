@@ -26,7 +26,7 @@ foreach($f in @("node-v20.19.2-linux-x64.tar.xz","webcodex-runner-0.4.1","webcod
   & scp.exe @runnerSshArgs $localRecoveryPath "${target}:/tmp/$f"
   if($LASTEXITCODE -ne 0){throw "failed to transfer runner asset: $f"}
 }
-& ssh.exe @runnerSshArgs $target "sudo tar -C /usr/local --strip-components=1 -xJf /tmp/node-v20.19.2-linux-x64.tar.xz; sudo install -m 755 /tmp/webcodex-runner-0.4.1 /usr/local/bin/webcodex-runner; sudo install -m 755 /tmp/webcodex-0.4.1 /usr/local/bin/webcodex; sudo npm install -g /tmp/openai-codex-0.155.0.tgz /tmp/openai-codex-0.155.0-linux-x64.tgz; mkdir -p ~/.codex; install -m 600 /tmp/codex-auth.json ~/.codex/auth.json; rm -f /tmp/node-v20.19.2-linux-x64.tar.xz /tmp/webcodex* /tmp/openai-codex* /tmp/codex-auth.json" | Out-Null
+& ssh.exe @runnerSshArgs $target "sudo tar -C /usr/local --strip-components=1 -xJf /tmp/node-v20.19.2-linux-x64.tar.xz; sudo install -m 755 /tmp/webcodex-runner-0.4.1 /usr/local/bin/webcodex-runner; sudo install -m 755 /tmp/webcodex-0.4.1 /usr/local/bin/webcodex; sudo npm install -g /tmp/openai-codex-0.155.0.tgz /tmp/openai-codex-0.155.0-linux-x64.tgz; sudo install -m 755 /usr/local/lib/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex /usr/local/bin/codex; codex --version; mkdir -p ~/.codex; install -m 600 /tmp/codex-auth.json ~/.codex/auth.json; rm -f /tmp/node-v20.19.2-linux-x64.tar.xz /tmp/webcodex* /tmp/openai-codex* /tmp/codex-auth.json" | Out-Null
 if($LASTEXITCODE -ne 0){throw "runner offline tool installation failed"}
 Set-Stage "runner_configured" "success"
 Write-StageLog $stage "success"
