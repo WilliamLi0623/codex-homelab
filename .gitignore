@@ -13,3 +13,6 @@ bin/
 dist/
 coverage.out
 *.test
+
+# Local linked worktrees
+.worktrees/
