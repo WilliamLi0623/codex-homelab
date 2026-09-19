@@ -33,6 +33,22 @@ func TestServiceCreatesAndPersistsThreadForAttempt(t *testing.T) {
 	if err != nil || persisted.CodexThreadID != "thr-1" {
 		t.Fatalf("GetCodexThread() = (%+v, %v), want thr-1", persisted, err)
 	}
+	events, err := database.ListTaskEvents(context.Background(), "task-1")
+	if err != nil {
+		t.Fatalf("ListTaskEvents() error = %v", err)
+	}
+	if !containsEvent(events, "codex.event") {
+		t.Fatalf("events = %+v, want forwarded codex.event", events)
+	}
+}
+
+func containsEvent(events []store.TaskEvent, eventType string) bool {
+	for _, event := range events {
+		if event.Type == eventType {
+			return true
+		}
+	}
+	return false
 }
 
 func TestServiceResumesPersistedThreadForFollowUp(t *testing.T) {

@@ -57,6 +57,11 @@ func (s *Service) RunAttempt(ctx context.Context, attemptID, prompt string) (Res
 	if err != nil {
 		return Result{}, fmt.Errorf("collect Codex turn events: %w", err)
 	}
+	for _, event := range events {
+		if err := s.store.AppendAttemptEvent(ctx, attemptID, "codex.event", event.Method); err != nil {
+			return Result{}, fmt.Errorf("persist Codex event: %w", err)
+		}
+	}
 	return Result{ThreadID: threadID, TurnID: turnID, Events: events}, nil
 }
 

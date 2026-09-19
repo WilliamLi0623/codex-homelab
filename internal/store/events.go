@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -23,6 +24,36 @@ type TaskEvent struct {
 	Type      string
 	Payload   string
 	CreatedAt time.Time
+}
+
+// AppendAttemptEvent records safe observable execution metadata. The payload is
+// deliberately limited to a caller-supplied summary, never raw model output.
+func (s *Store) AppendAttemptEvent(ctx context.Context, attemptID, eventType, summary string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin attempt event: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var taskID string
+	err = tx.QueryRowContext(ctx, "SELECT task_id FROM task_attempts WHERE id = ?", attemptID).Scan(&taskID)
+	if err == sql.ErrNoRows {
+		return ErrAttemptNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("load attempt for event: %w", err)
+	}
+	payload, err := json.Marshal(map[string]string{"summary": summary})
+	if err != nil {
+		return fmt.Errorf("encode attempt event: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, "INSERT INTO task_events(id, task_id, attempt_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)", newStoreID("event"), taskID, attemptID, eventType, string(payload), now); err != nil {
+		return fmt.Errorf("insert attempt event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit attempt event: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) AppendUserMessage(ctx context.Context, taskID, body string) (TaskMessage, error) {
