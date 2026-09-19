@@ -18,7 +18,7 @@ limit and `store: false`.
 
 | Profile | Model ID | Result | Routing state |
 | --- | --- | --- | --- |
-| Muse failover | `muse-spark-1.3-contributor` | HTTP 200 with a response ID | enabled for later P7 validation |
+| Muse failover | `muse-spark-1.3-contributor` | HTTP 200 with a response ID | discovered; requires P7 completion validation |
 | GLM Flash worker | `glm-5.3-flash` | HTTP 503 `no_available_providers` | disabled; do not route tasks |
 
 The GLM profile remains recorded so a later P6/P7 re-probe can safely enable
