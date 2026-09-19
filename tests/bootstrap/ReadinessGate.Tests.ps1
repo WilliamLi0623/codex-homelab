@@ -24,3 +24,11 @@ Describe "Get-CredentialRecoveryAssets" {
     )
   }
 }
+
+Describe "rebuild stage guard" {
+  It "requires AllowDestruction only for stage 20" {
+    $scriptText = Get-Content (Join-Path $bootstrapRoot "rebuild.ps1") -Raw
+
+    $scriptText | Should Match 'if\(\$s\.N -eq 20 -and !\$AllowDestruction\)'
+  }
+}

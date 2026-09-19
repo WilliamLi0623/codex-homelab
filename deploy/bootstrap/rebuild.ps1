@@ -24,6 +24,6 @@ $stages=@(
 )
 foreach($s in $stages){
   if($s.N -lt $FromStage -or $s.N -gt $ToStage){continue}
-  if($s.N -ge 20 -and !$AllowDestruction){throw "Stage $($s.N) requires -AllowDestruction"}
+  if($s.N -eq 20 -and !$AllowDestruction){throw "Stage $($s.N) requires -AllowDestruction"}
   & (Join-Path $stageDir $s.F)
 }
