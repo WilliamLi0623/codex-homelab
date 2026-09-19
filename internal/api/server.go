@@ -1,0 +1,109 @@
+package api
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
+
+	"github.com/WilliamLi0623/codex-homelab/internal/domain"
+	"github.com/WilliamLi0623/codex-homelab/internal/store"
+)
+
+type Server struct {
+	store *store.Store
+	mux   *http.ServeMux
+}
+
+type createTaskRequest struct {
+	Repository     string `json:"repository"`
+	BaseRef        string `json:"base_ref"`
+	Objective      string `json:"objective"`
+	Profile        string `json:"profile"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+type taskResponse struct {
+	ID             string `json:"id"`
+	Repository     string `json:"repository"`
+	BaseRef        string `json:"base_ref"`
+	Objective      string `json:"objective"`
+	ExecutionClass string `json:"execution_class"`
+	State          string `json:"state"`
+}
+
+type createTaskResponse struct {
+	Task taskResponse `json:"task"`
+}
+
+func NewServer(database *store.Store) *Server {
+	server := &Server{store: database, mux: http.NewServeMux()}
+	server.mux.HandleFunc("GET /v1/health", server.health)
+	server.mux.HandleFunc("POST /v1/tasks", server.createTask)
+	return server
+}
+
+func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	s.mux.ServeHTTP(writer, request)
+}
+
+func (s *Server) health(writer http.ResponseWriter, _ *http.Request) {
+	writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) createTask(writer http.ResponseWriter, request *http.Request) {
+	var input createTaskRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid task request"})
+		return
+	}
+	if strings.TrimSpace(input.Repository) == "" || strings.TrimSpace(input.BaseRef) == "" || strings.TrimSpace(input.Objective) == "" || strings.TrimSpace(input.IdempotencyKey) == "" {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "repository, base_ref, objective, and idempotency_key are required"})
+		return
+	}
+
+	task := domain.NewTask(newTaskID(), input.Repository, input.BaseRef, input.Objective, input.IdempotencyKey)
+	persisted, created, err := s.store.CreateTask(request.Context(), task)
+	if errors.Is(err, store.ErrIdempotencyConflict) {
+		writeJSON(writer, http.StatusConflict, map[string]string{"error": "idempotency key belongs to a different request"})
+		return
+	}
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "create task failed"})
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(writer, status, createTaskResponse{Task: toTaskResponse(persisted)})
+}
+
+func toTaskResponse(task domain.Task) taskResponse {
+	return taskResponse{
+		ID:             task.ID,
+		Repository:     task.Repository,
+		BaseRef:        task.BaseRef,
+		Objective:      task.Objective,
+		ExecutionClass: string(task.ExecutionClass),
+		State:          string(task.State),
+	}
+}
+
+func newTaskID() string {
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		panic("crypto/rand unavailable: " + err.Error())
+	}
+	return "task-" + hex.EncodeToString(bytes)
+}
+
+func writeJSON(writer http.ResponseWriter, status int, value any) {
+	writer.Header().Set("Content-Type", "application/json")
+	writer.WriteHeader(status)
+	_ = json.NewEncoder(writer).Encode(value)
+}
