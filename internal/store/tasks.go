@@ -91,6 +91,39 @@ func (s *Store) ListTasks(ctx context.Context) ([]domain.Task, error) {
 	return tasks, nil
 }
 
+func (s *Store) CancelTask(ctx context.Context, id string) (domain.Task, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Task{}, fmt.Errorf("begin task cancellation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	task, err := getTask(ctx, tx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Task{}, ErrTaskNotFound
+	}
+	if err != nil {
+		return domain.Task{}, err
+	}
+	if task.State == domain.TaskCancelled {
+		return task, nil
+	}
+	if err := task.TransitionTo(domain.TaskCancelled); err != nil {
+		return domain.Task{}, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, "UPDATE tasks SET state = ? WHERE id = ?", task.State, task.ID); err != nil {
+		return domain.Task{}, fmt.Errorf("persist task cancellation: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO task_events(id, task_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)", newStoreID("event"), task.ID, "task.cancelled", "{}", now); err != nil {
+		return domain.Task{}, fmt.Errorf("record task cancellation: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Task{}, fmt.Errorf("commit task cancellation: %w", err)
+	}
+	return task, nil
+}
+
 func getTask(ctx context.Context, queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, id string) (domain.Task, error) {

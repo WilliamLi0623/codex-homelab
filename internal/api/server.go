@@ -65,7 +65,21 @@ func NewServer(database *store.Store) *Server {
 	server.mux.HandleFunc("GET /v1/tasks/{id}", server.getTask)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/messages", server.appendMessage)
 	server.mux.HandleFunc("GET /v1/tasks/{id}/events", server.listEvents)
+	server.mux.HandleFunc("POST /v1/tasks/{id}/cancel", server.cancelTask)
 	return server
+}
+
+func (s *Server) cancelTask(writer http.ResponseWriter, request *http.Request) {
+	task, err := s.store.CancelTask(request.Context(), request.PathValue("id"))
+	if errors.Is(err, store.ErrTaskNotFound) {
+		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(writer, http.StatusConflict, map[string]string{"error": "task cannot be cancelled"})
+		return
+	}
+	writeJSON(writer, http.StatusOK, createTaskResponse{Task: toTaskResponse(task)})
 }
 
 func (s *Server) appendMessage(writer http.ResponseWriter, request *http.Request) {

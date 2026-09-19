@@ -119,6 +119,24 @@ func TestSendMessagePersistsObservableTaskEvent(t *testing.T) {
 	}
 }
 
+func TestCancelTaskPersistsCancellation(t *testing.T) {
+	server := newTestServer(t)
+	taskID := createTestTask(t, server)
+
+	cancelled := httptest.NewRecorder()
+	server.ServeHTTP(cancelled, httptest.NewRequest(http.MethodPost, "/v1/tasks/"+taskID+"/cancel", nil))
+	if cancelled.Code != http.StatusOK {
+		t.Fatalf("cancel status = %d, body = %s", cancelled.Code, cancelled.Body.String())
+	}
+	var body createTaskResponse
+	if err := json.Unmarshal(cancelled.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode cancel response: %v", err)
+	}
+	if body.Task.State != "CANCELLED" {
+		t.Fatalf("cancelled state = %q, want CANCELLED", body.Task.State)
+	}
+}
+
 func createTestTask(t *testing.T, server *Server) string {
 	t.Helper()
 	payload := []byte(`{"repository":"owner/repository","base_ref":"main","objective":"Fix the failing tests","idempotency_key":"request-1"}`)
