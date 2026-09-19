@@ -24,13 +24,13 @@ state above; it does not assert that a pre-destruction gate can be replayed.
 - Ubuntu 24.04 LXC and cloud-image artifacts are available.
 - Recovery assets exist on the Proxmox host. Their contents are not inspected
   or recorded here.
-- `/root/litellm_key` exists and is non-empty, but its mode is `0644`.
-  V3 phase P6 must change this to `0600` and verify root ownership before any
-  CC Hub profile is enabled.
+- The CC Hub deployment source was verified non-empty and corrected to
+  `root:root 0600`; its host and path stay in private runtime configuration and
+  its contents were not inspected. P6 must still discover the API Base URL and
+  exact model IDs before enabling any CC Hub profile.
 
 ## Windows bootstrap
 
 `C:\WebCodexBootstrap` remains present and independent of legacy WebCodex.
 The V3 freeze marker is present. Its `rebuild.ps1` hash matches the V3 source
 freeze guard at the time of this inventory.
-

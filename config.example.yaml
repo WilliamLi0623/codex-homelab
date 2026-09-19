@@ -20,5 +20,7 @@ models:
   muse_failover: { gateway: cch, model_id: DISCOVER_AT_P6 }
   mimo_worker: { gateway: cch, model_id: DISCOVER_AT_P6 }
 secrets:
-  cch_api_key_source: /root/litellm_key
+  cch_api_key_host: CCH_KEY_HOST
+  cch_api_key_source: CCH_KEY_SOURCE
+  cch_dashboard_url: CCH_DASHBOARD_URL
   kubernetes_secret: codex-model-gateway
