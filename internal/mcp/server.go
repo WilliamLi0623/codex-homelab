@@ -105,6 +105,7 @@ func (s *Server) Tools() []Tool {
 			[]string{"repository", "base_ref", "objective", "idempotency_key"},
 			map[string]any{"repository": stringSchema(), "base_ref": stringSchema(), "objective": stringSchema(), "idempotency_key": stringSchema()},
 		)),
+		tool("start_attempt", "Create the initial append-only Attempt for a task.", objectSchema([]string{"task_id"}, map[string]any{"task_id": stringSchema(), "profile": stringSchema()})),
 		tool("get_task", "Get the current observable state of one task.", taskIDSchema()),
 		tool("list_tasks", "List Controller tasks in creation order.", objectSchema(nil, map[string]any{})),
 		tool("send_message", "Append a user follow-up message to an existing task.", objectSchema(
@@ -133,6 +134,23 @@ func (s *Server) CallTool(ctx context.Context, name string, arguments json.RawMe
 		}
 		return SubmitTaskResult{Task: taskView(persisted), Created: created}, nil
 
+	case "start_attempt":
+		var input startAttemptArguments
+		if err := decodeArguments(arguments, &input); err != nil {
+			return nil, err
+		}
+		if empty(input.TaskID) {
+			return nil, fmt.Errorf("%w: task_id is required", ErrInvalidArguments)
+		}
+		profile := input.Profile
+		if profile == "" {
+			profile = "openai-primary"
+		}
+		task, attempt, err := s.store.StartAttempt(ctx, input.TaskID, profile)
+		if err != nil {
+			return nil, err
+		}
+		return RetryTaskResult{Task: taskView(task), Attempt: attemptView(attempt)}, nil
 	case "get_task":
 		var input taskArguments
 		if err := decodeArguments(arguments, &input); err != nil {
@@ -237,6 +255,10 @@ type submitTaskArguments struct {
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
+type startAttemptArguments struct {
+	TaskID  string `json:"task_id"`
+	Profile string `json:"profile"`
+}
 type taskArguments struct {
 	TaskID string `json:"task_id"`
 }

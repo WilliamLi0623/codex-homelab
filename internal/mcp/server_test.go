@@ -14,7 +14,7 @@ import (
 func TestToolsExposeTheControllerSurface(t *testing.T) {
 	server := newTestServer(t)
 	tools := server.Tools()
-	want := []string{"submit_task", "get_task", "list_tasks", "send_message", "cancel_task", "retry_task", "get_task_events"}
+	want := []string{"submit_task", "start_attempt", "get_task", "list_tasks", "send_message", "cancel_task", "retry_task", "get_task_events"}
 	if len(tools) != len(want) {
 		t.Fatalf("tool count = %d, want %d", len(tools), len(want))
 	}
