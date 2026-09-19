@@ -40,3 +40,13 @@ Describe "Get-RunnerSshArguments" {
     (Get-RunnerSshArguments $config) -join " " | Should Be "-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -J proxmox-pve"
   }
 }
+
+Describe "runner recovery transfer" {
+  It "stages recovery assets locally instead of requiring a Proxmox private key" {
+    $stageText = Get-Content (Join-Path $bootstrapRoot "stages\\60-configure-runner.ps1") -Raw
+
+    $stageText | Should Match '\$privateDir=Get-PrivateDirectory \$cfg'
+    $stageText | Should Match '& scp\.exe .*\$localRecoveryPath '
+    $stageText | Should Not Match 'Invoke-Proxmox "scp'
+  }
+}
