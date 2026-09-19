@@ -14,6 +14,8 @@ import (
 
 var ErrIdempotencyConflict = errors.New("idempotency key belongs to a different request")
 
+var ErrTaskNotFound = errors.New("task not found")
+
 func (s *Store) CreateTask(ctx context.Context, task domain.Task) (domain.Task, bool, error) {
 	requestHash := taskRequestHash(task)
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -55,6 +57,38 @@ func (s *Store) CreateTask(ctx context.Context, task domain.Task) (domain.Task, 
 		return domain.Task{}, false, fmt.Errorf("commit task creation: %w", err)
 	}
 	return task, true, nil
+}
+
+func (s *Store) GetTask(ctx context.Context, id string) (domain.Task, error) {
+	task, err := getTask(ctx, s.db, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Task{}, ErrTaskNotFound
+	}
+	return task, err
+}
+
+func (s *Store) ListTasks(ctx context.Context) ([]domain.Task, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT id, repository_id, base_ref, objective, execution_class, state FROM tasks ORDER BY created_at, id")
+	if err != nil {
+		return nil, fmt.Errorf("list tasks: %w", err)
+	}
+	defer rows.Close()
+
+	var tasks []domain.Task
+	for rows.Next() {
+		var task domain.Task
+		var executionClass, state string
+		if err := rows.Scan(&task.ID, &task.Repository, &task.BaseRef, &task.Objective, &executionClass, &state); err != nil {
+			return nil, fmt.Errorf("scan task: %w", err)
+		}
+		task.ExecutionClass = domain.ExecutionClass(executionClass)
+		task.State = domain.TaskState(state)
+		tasks = append(tasks, task)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate tasks: %w", err)
+	}
+	return tasks, nil
 }
 
 func getTask(ctx context.Context, queryer interface {

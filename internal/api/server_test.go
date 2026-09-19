@@ -52,6 +52,46 @@ func TestCreateTaskIsIdempotentOverHTTP(t *testing.T) {
 	}
 }
 
+func TestListAndGetTaskExposePersistedTask(t *testing.T) {
+	server := newTestServer(t)
+	payload := []byte(`{"repository":"owner/repository","base_ref":"main","objective":"Fix the failing tests","idempotency_key":"request-1"}`)
+	created := httptest.NewRecorder()
+	server.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/v1/tasks", bytes.NewReader(payload)))
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", created.Code, created.Body.String())
+	}
+	var createBody createTaskResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &createBody); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	listed := httptest.NewRecorder()
+	server.ServeHTTP(listed, httptest.NewRequest(http.MethodGet, "/v1/tasks", nil))
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listed.Code, listed.Body.String())
+	}
+	var listBody listTasksResponse
+	if err := json.Unmarshal(listed.Body.Bytes(), &listBody); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listBody.Tasks) != 1 || listBody.Tasks[0].ID != createBody.Task.ID {
+		t.Fatalf("list response = %+v, want task %q", listBody, createBody.Task.ID)
+	}
+
+	got := httptest.NewRecorder()
+	server.ServeHTTP(got, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+createBody.Task.ID, nil))
+	if got.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", got.Code, got.Body.String())
+	}
+	var gotBody createTaskResponse
+	if err := json.Unmarshal(got.Body.Bytes(), &gotBody); err != nil {
+		t.Fatalf("decode get response: %v", err)
+	}
+	if gotBody.Task.ID != createBody.Task.ID {
+		t.Fatalf("get task ID = %q, want %q", gotBody.Task.ID, createBody.Task.ID)
+	}
+}
+
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	database, err := store.Open(filepath.Join(t.TempDir(), "controller.sqlite"))

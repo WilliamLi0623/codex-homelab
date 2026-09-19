@@ -38,11 +38,43 @@ type createTaskResponse struct {
 	Task taskResponse `json:"task"`
 }
 
+type listTasksResponse struct {
+	Tasks []taskResponse `json:"tasks"`
+}
+
 func NewServer(database *store.Store) *Server {
 	server := &Server{store: database, mux: http.NewServeMux()}
 	server.mux.HandleFunc("GET /v1/health", server.health)
 	server.mux.HandleFunc("POST /v1/tasks", server.createTask)
+	server.mux.HandleFunc("GET /v1/tasks", server.listTasks)
+	server.mux.HandleFunc("GET /v1/tasks/{id}", server.getTask)
 	return server
+}
+
+func (s *Server) listTasks(writer http.ResponseWriter, request *http.Request) {
+	tasks, err := s.store.ListTasks(request.Context())
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "list tasks failed"})
+		return
+	}
+	response := listTasksResponse{Tasks: make([]taskResponse, 0, len(tasks))}
+	for _, task := range tasks {
+		response.Tasks = append(response.Tasks, toTaskResponse(task))
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
+func (s *Server) getTask(writer http.ResponseWriter, request *http.Request) {
+	task, err := s.store.GetTask(request.Context(), request.PathValue("id"))
+	if errors.Is(err, store.ErrTaskNotFound) {
+		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "get task failed"})
+		return
+	}
+	writeJSON(writer, http.StatusOK, createTaskResponse{Task: toTaskResponse(task)})
 }
 
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
