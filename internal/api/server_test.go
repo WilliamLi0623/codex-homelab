@@ -92,6 +92,48 @@ func TestListAndGetTaskExposePersistedTask(t *testing.T) {
 	}
 }
 
+func TestSendMessagePersistsObservableTaskEvent(t *testing.T) {
+	server := newTestServer(t)
+	taskID := createTestTask(t, server)
+
+	message := httptest.NewRecorder()
+	server.ServeHTTP(message, httptest.NewRequest(http.MethodPost, "/v1/tasks/"+taskID+"/messages", bytes.NewBufferString(`{"body":"Do not modify the database layer."}`)))
+	if message.Code != http.StatusCreated {
+		t.Fatalf("message status = %d, body = %s", message.Code, message.Body.String())
+	}
+
+	events := httptest.NewRecorder()
+	server.ServeHTTP(events, httptest.NewRequest(http.MethodGet, "/v1/tasks/"+taskID+"/events", nil))
+	if events.Code != http.StatusOK {
+		t.Fatalf("events status = %d, body = %s", events.Code, events.Body.String())
+	}
+	var body listEventsResponse
+	if err := json.Unmarshal(events.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode events response: %v", err)
+	}
+	if len(body.Events) != 2 {
+		t.Fatalf("event count = %d, want 2", len(body.Events))
+	}
+	if body.Events[1].Type != "task.message_received" {
+		t.Fatalf("second event type = %q, want task.message_received", body.Events[1].Type)
+	}
+}
+
+func createTestTask(t *testing.T, server *Server) string {
+	t.Helper()
+	payload := []byte(`{"repository":"owner/repository","base_ref":"main","objective":"Fix the failing tests","idempotency_key":"request-1"}`)
+	created := httptest.NewRecorder()
+	server.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/v1/tasks", bytes.NewReader(payload)))
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", created.Code, created.Body.String())
+	}
+	var body createTaskResponse
+	if err := json.Unmarshal(created.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	return body.Task.ID
+}
+
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	database, err := store.Open(filepath.Join(t.TempDir(), "controller.sqlite"))

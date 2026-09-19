@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/domain"
 	"github.com/WilliamLi0623/codex-homelab/internal/store"
@@ -42,13 +43,60 @@ type listTasksResponse struct {
 	Tasks []taskResponse `json:"tasks"`
 }
 
+type messageRequest struct {
+	Body string `json:"body"`
+}
+
+type eventResponse struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	CreatedAt string `json:"created_at"`
+}
+
+type listEventsResponse struct {
+	Events []eventResponse `json:"events"`
+}
+
 func NewServer(database *store.Store) *Server {
 	server := &Server{store: database, mux: http.NewServeMux()}
 	server.mux.HandleFunc("GET /v1/health", server.health)
 	server.mux.HandleFunc("POST /v1/tasks", server.createTask)
 	server.mux.HandleFunc("GET /v1/tasks", server.listTasks)
 	server.mux.HandleFunc("GET /v1/tasks/{id}", server.getTask)
+	server.mux.HandleFunc("POST /v1/tasks/{id}/messages", server.appendMessage)
+	server.mux.HandleFunc("GET /v1/tasks/{id}/events", server.listEvents)
 	return server
+}
+
+func (s *Server) appendMessage(writer http.ResponseWriter, request *http.Request) {
+	var input messageRequest
+	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 1<<20)).Decode(&input); err != nil || strings.TrimSpace(input.Body) == "" {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "message body is required"})
+		return
+	}
+	message, err := s.store.AppendUserMessage(request.Context(), request.PathValue("id"), input.Body)
+	if errors.Is(err, store.ErrTaskNotFound) {
+		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "append task message failed"})
+		return
+	}
+	writeJSON(writer, http.StatusCreated, map[string]string{"id": message.ID, "role": message.Role})
+}
+
+func (s *Server) listEvents(writer http.ResponseWriter, request *http.Request) {
+	events, err := s.store.ListTaskEvents(request.Context(), request.PathValue("id"))
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "list task events failed"})
+		return
+	}
+	response := listEventsResponse{Events: make([]eventResponse, 0, len(events))}
+	for _, event := range events {
+		response.Events = append(response.Events, eventResponse{ID: event.ID, Type: event.Type, CreatedAt: event.CreatedAt.Format(time.RFC3339Nano)})
+	}
+	writeJSON(writer, http.StatusOK, response)
 }
 
 func (s *Server) listTasks(writer http.ResponseWriter, request *http.Request) {
