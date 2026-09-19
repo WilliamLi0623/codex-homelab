@@ -1,0 +1,15 @@
+proxmox_alias: PROXMOX_SSH_ALIAS
+storage: STORAGE_ID
+bridge: BRIDGE_ID
+control_template: local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst
+runner_image: /var/lib/vz/template/iso/ubuntu-24.04-server-cloudimg-amd64.img
+control_ip_cidr: CONTROL_IP_CIDR
+runner_ip_cidr: RUNNER_IP_CIDR
+gateway: GATEWAY
+nameserver: DNS_SERVER
+ssh_public_key_file: C:\PATH\TO\PUBLIC_KEY.pub
+recovery_dir: /root/codex-homelab-recovery
+webcodex_npm: @yyjeqhc/webcodex@0.4.1
+cloudflared_version: 2026.9.1
+github_owner: GITHUB_OWNER
+github_repo: codex-homelab

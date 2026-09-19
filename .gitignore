@@ -1,0 +1,15 @@
+# Runtime/private state
+config.yaml
+state.json
+snapshot/
+logs/
+private/
+*.local.yaml
+*.secret
+*.token
+
+# Build/test
+bin/
+dist/
+coverage.out
+*.test

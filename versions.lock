@@ -1,0 +1,9 @@
+webcodex=0.4.1
+codex_cli=0.155.0
+github_cli=2.101.0
+go=1.22.2
+node_control=20.19.2
+cloudflared=2026.9.1
+ubuntu_lxc=24.04-2
+ubuntu_cloud_image=noble-server-cloudimg-amd64.img
+controller_schema=1
