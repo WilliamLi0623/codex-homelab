@@ -1,15 +1,24 @@
-proxmox_alias: PROXMOX_SSH_ALIAS
-storage: STORAGE_ID
-bridge: BRIDGE_ID
-control_template: local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst
-runner_image: /var/lib/vz/template/iso/ubuntu-24.04-server-cloudimg-amd64.img
-control_ip_cidr: CONTROL_IP_CIDR
-runner_ip_cidr: RUNNER_IP_CIDR
-gateway: GATEWAY
-nameserver: DNS_SERVER
-ssh_public_key_file: C:\PATH\TO\PUBLIC_KEY.pub
-recovery_dir: /root/codex-homelab-recovery
-webcodex_npm: @yyjeqhc/webcodex@0.4.1
-cloudflared_version: 2026.9.1
-github_owner: GITHUB_OWNER
-github_repo: codex-homelab
+controller:
+  listen: 127.0.0.1:8080
+execution:
+  default_class: dedicated-lxc
+  warm_ready: 1
+  max_nodes: 8
+  idle_ttl: 15m
+proxmox:
+  api_url: https://PROXMOX_HOST:8006/api2/json
+  runtime_identity: codex-homelab-runtime
+  dynamic_vmid_range: 3000-3999
+  storage: STORAGE_ID
+  bridge: vmbr0
+resources:
+  small: { cpu: 2, memory: 4Gi, disk: 20Gi }
+  medium: { cpu: 4, memory: 8Gi, disk: 40Gi }
+  large: { cpu: 8, memory: 16Gi, disk: 80Gi }
+models:
+  openai_primary: { provider: openai }
+  muse_failover: { gateway: cch, model_id: DISCOVER_AT_P6 }
+  mimo_worker: { gateway: cch, model_id: DISCOVER_AT_P6 }
+secrets:
+  cch_api_key_source: /root/litellm_key
+  kubernetes_secret: codex-model-gateway

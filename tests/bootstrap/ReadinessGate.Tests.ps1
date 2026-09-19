@@ -50,6 +50,17 @@ Describe "V3 migration freeze" {
   }
 }
 
+Describe "V3 bootstrap target" {
+  It "declares V3 as the only supported migration plan" {
+    $scriptText = Get-Content (Join-Path $bootstrapRoot "v3\Invoke-V3Migration.ps1") -Raw
+
+    $scriptText | Should Match 'PLAN_VERSION.*v3-final'
+    $scriptText | Should Match 'P0.*Freeze'
+    $scriptText | Should Match 'P1.*Inventory'
+    $scriptText | Should Not Match '20-destroy\.ps1'
+  }
+}
+
 Describe "Get-RunnerSshArguments" {
   It "uses the configured Proxmox jump host with bounded strict SSH" {
     $config = @{ proxmox_alias = "proxmox-pve" }
