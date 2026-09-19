@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -11,12 +12,31 @@ import (
 	"time"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/domain"
+	"github.com/WilliamLi0623/codex-homelab/internal/orchestrator"
 	"github.com/WilliamLi0623/codex-homelab/internal/store"
 )
 
+type Dispatcher interface {
+	Dispatch(context.Context, orchestrator.Request) (orchestrator.Dispatch, error)
+}
+
+type dispatchRequest struct {
+	AttemptID string `json:"attempt_id"`
+	Prompt    string `json:"prompt"`
+}
+
+type dispatchResponse struct {
+	TaskID    string `json:"task_id"`
+	AttemptID string `json:"attempt_id"`
+	ClaimID   string `json:"claim_id"`
+	VMID      int    `json:"vmid"`
+	JobID     string `json:"job_id"`
+	State     string `json:"state"`
+}
 type Server struct {
-	store *store.Store
-	mux   *http.ServeMux
+	store      *store.Store
+	dispatcher Dispatcher
+	mux        *http.ServeMux
 }
 
 type createTaskRequest struct {
@@ -95,7 +115,11 @@ type startAttemptRequest struct {
 }
 
 func NewServer(database *store.Store) *Server {
-	server := &Server{store: database, mux: http.NewServeMux()}
+	return NewServerWithDispatcher(database, nil)
+}
+
+func NewServerWithDispatcher(database *store.Store, dispatcher Dispatcher) *Server {
+	server := &Server{store: database, dispatcher: dispatcher, mux: http.NewServeMux()}
 	server.mux.HandleFunc("GET /v1/health", server.health)
 	server.mux.HandleFunc("GET /v1/status", server.status)
 	server.mux.HandleFunc("POST /v1/tasks", server.createTask)
@@ -105,12 +129,41 @@ func NewServer(database *store.Store) *Server {
 	server.mux.HandleFunc("GET /v1/tasks/{id}/messages", server.listMessages)
 	server.mux.HandleFunc("GET /v1/tasks/{id}/events", server.listEvents)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/cancel", server.cancelTask)
-	server.mux.HandleFunc("POST /v1/tasks/{id}/retry", server.retryTask)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/attempts", server.startAttempt)
+	server.mux.HandleFunc("POST /v1/tasks/{id}/dispatch", server.dispatchTask)
+	server.mux.HandleFunc("POST /v1/tasks/{id}/retry", server.retryTask)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/attempts/{attemptID}/reconcile", server.reconcileAttempt)
 	return server
 }
 
+func (s *Server) dispatchTask(writer http.ResponseWriter, request *http.Request) {
+	if s.dispatcher == nil {
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]string{"error": "dispatcher is not configured"})
+		return
+	}
+	var input dispatchRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil || strings.TrimSpace(input.AttemptID) == "" || strings.TrimSpace(input.Prompt) == "" {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "attempt_id and prompt are required"})
+		return
+	}
+	task, err := s.store.GetTask(request.Context(), request.PathValue("id"))
+	if errors.Is(err, store.ErrTaskNotFound) {
+		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "load task failed"})
+		return
+	}
+	dispatch, err := s.dispatcher.Dispatch(request.Context(), orchestrator.Request{TaskID: task.ID, AttemptID: input.AttemptID, Prompt: input.Prompt})
+	if err != nil {
+		writeJSON(writer, http.StatusConflict, map[string]string{"error": "task dispatch failed"})
+		return
+	}
+	writeJSON(writer, http.StatusAccepted, dispatchResponse{TaskID: task.ID, AttemptID: input.AttemptID, ClaimID: dispatch.Claim.ID, VMID: dispatch.Claim.VMID, JobID: dispatch.Job.ID, State: string(dispatch.Job.State)})
+}
 func (s *Server) reconcileAttempt(writer http.ResponseWriter, request *http.Request) {
 	var input reconcileAttemptRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 1<<20))
