@@ -124,6 +124,45 @@ func (s *Store) CancelTask(ctx context.Context, id string) (domain.Task, error) 
 	return task, nil
 }
 
+func (s *Store) RetryTask(ctx context.Context, id string) (domain.Task, domain.Attempt, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Task{}, domain.Attempt{}, fmt.Errorf("begin task retry: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	task, err := getTask(ctx, tx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Task{}, domain.Attempt{}, ErrTaskNotFound
+	}
+	if err != nil {
+		return domain.Task{}, domain.Attempt{}, err
+	}
+	if err := task.Retry(); err != nil {
+		return domain.Task{}, domain.Attempt{}, err
+	}
+
+	var latestNumber int
+	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(attempt_number), 0) FROM task_attempts WHERE task_id = ?", task.ID).Scan(&latestNumber); err != nil {
+		return domain.Task{}, domain.Attempt{}, fmt.Errorf("find attempt number: %w", err)
+	}
+	attempt := domain.NewAttempt(newStoreID("attempt"), task.ID, latestNumber+1, "openai-primary")
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, "UPDATE tasks SET state = ? WHERE id = ?", task.State, task.ID); err != nil {
+		return domain.Task{}, domain.Attempt{}, fmt.Errorf("persist retry task state: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO task_attempts(id, task_id, attempt_number, model_profile, state, created_at) VALUES (?, ?, ?, ?, ?, ?)", attempt.ID, attempt.TaskID, attempt.Number, attempt.ModelProfile, attempt.State, now); err != nil {
+		return domain.Task{}, domain.Attempt{}, fmt.Errorf("create retry attempt: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO task_events(id, task_id, attempt_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)", newStoreID("event"), task.ID, attempt.ID, "task.retry_requested", "{}", now); err != nil {
+		return domain.Task{}, domain.Attempt{}, fmt.Errorf("record task retry: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Task{}, domain.Attempt{}, fmt.Errorf("commit task retry: %w", err)
+	}
+	return task, attempt, nil
+}
+
 func getTask(ctx context.Context, queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, id string) (domain.Task, error) {

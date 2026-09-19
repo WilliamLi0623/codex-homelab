@@ -57,6 +57,18 @@ type listEventsResponse struct {
 	Events []eventResponse `json:"events"`
 }
 
+type attemptResponse struct {
+	ID           string `json:"id"`
+	Number       int    `json:"number"`
+	ModelProfile string `json:"model_profile"`
+	State        string `json:"state"`
+}
+
+type retryTaskResponse struct {
+	Task    taskResponse    `json:"task"`
+	Attempt attemptResponse `json:"attempt"`
+}
+
 func NewServer(database *store.Store) *Server {
 	server := &Server{store: database, mux: http.NewServeMux()}
 	server.mux.HandleFunc("GET /v1/health", server.health)
@@ -66,7 +78,24 @@ func NewServer(database *store.Store) *Server {
 	server.mux.HandleFunc("POST /v1/tasks/{id}/messages", server.appendMessage)
 	server.mux.HandleFunc("GET /v1/tasks/{id}/events", server.listEvents)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/cancel", server.cancelTask)
+	server.mux.HandleFunc("POST /v1/tasks/{id}/retry", server.retryTask)
 	return server
+}
+
+func (s *Server) retryTask(writer http.ResponseWriter, request *http.Request) {
+	task, attempt, err := s.store.RetryTask(request.Context(), request.PathValue("id"))
+	if errors.Is(err, store.ErrTaskNotFound) {
+		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(writer, http.StatusConflict, map[string]string{"error": "task cannot be retried"})
+		return
+	}
+	writeJSON(writer, http.StatusCreated, retryTaskResponse{
+		Task: toTaskResponse(task),
+		Attempt: attemptResponse{ID: attempt.ID, Number: attempt.Number, ModelProfile: attempt.ModelProfile, State: string(attempt.State)},
+	})
 }
 
 func (s *Server) cancelTask(writer http.ResponseWriter, request *http.Request) {

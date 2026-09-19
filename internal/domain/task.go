@@ -64,6 +64,14 @@ func (t *Task) TransitionTo(next TaskState) error {
 	return fmt.Errorf("invalid task transition: %s -> %s", t.State, next)
 }
 
+func (t *Task) Retry() error {
+	if t.State != TaskFailed && t.State != TaskBlocked && t.State != TaskCancelled {
+		return fmt.Errorf("task %s cannot be retried from %s", t.ID, t.State)
+	}
+	t.State = TaskPlanned
+	return nil
+}
+
 func validTaskTransition(current, next TaskState) bool {
 	return (current == TaskReceived && next == TaskPlanned) ||
 		(current == TaskPlanned && next == TaskWaitingForCapacity) ||

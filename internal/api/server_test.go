@@ -137,6 +137,32 @@ func TestCancelTaskPersistsCancellation(t *testing.T) {
 	}
 }
 
+func TestRetryCreatesNewAttemptForCancelledTask(t *testing.T) {
+	server := newTestServer(t)
+	taskID := createTestTask(t, server)
+	cancelled := httptest.NewRecorder()
+	server.ServeHTTP(cancelled, httptest.NewRequest(http.MethodPost, "/v1/tasks/"+taskID+"/cancel", nil))
+	if cancelled.Code != http.StatusOK {
+		t.Fatalf("cancel status = %d, body = %s", cancelled.Code, cancelled.Body.String())
+	}
+
+	retried := httptest.NewRecorder()
+	server.ServeHTTP(retried, httptest.NewRequest(http.MethodPost, "/v1/tasks/"+taskID+"/retry", nil))
+	if retried.Code != http.StatusCreated {
+		t.Fatalf("retry status = %d, body = %s", retried.Code, retried.Body.String())
+	}
+	var body retryTaskResponse
+	if err := json.Unmarshal(retried.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode retry response: %v", err)
+	}
+	if body.Task.State != "PLANNED" {
+		t.Fatalf("retry task state = %q, want PLANNED", body.Task.State)
+	}
+	if body.Attempt.Number != 1 || body.Attempt.State != "CREATED" {
+		t.Fatalf("retry attempt = %+v, want first CREATED attempt", body.Attempt)
+	}
+}
+
 func createTestTask(t *testing.T, server *Server) string {
 	t.Helper()
 	payload := []byte(`{"repository":"owner/repository","base_ref":"main","objective":"Fix the failing tests","idempotency_key":"request-1"}`)
