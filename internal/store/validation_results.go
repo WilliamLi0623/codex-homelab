@@ -9,6 +9,7 @@ import (
 )
 
 var ErrValidationResultConflict = errors.New("validation result idempotency conflict")
+var ErrValidationResultNotFound = errors.New("validation result not found")
 
 type ValidationResult struct {
 	ID        string
@@ -75,6 +76,9 @@ func (s *Store) GetValidationResult(ctx context.Context, id string) (ValidationR
 	var createdAt string
 	var outputRef sql.NullString
 	err := s.db.QueryRowContext(ctx, "SELECT id, attempt_id, command, state, output_ref, created_at FROM validation_results WHERE id = ?", id).Scan(&result.ID, &result.AttemptID, &result.Command, &result.State, &outputRef, &createdAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ValidationResult{}, ErrValidationResultNotFound
+	}
 	if err != nil {
 		return ValidationResult{}, err
 	}

@@ -9,6 +9,7 @@ import (
 )
 
 var ErrGitRefConflict = errors.New("git ref conflict")
+var ErrGitRefNotFound = errors.New("git ref not found")
 
 type GitRef struct {
 	ID          string
@@ -61,4 +62,17 @@ func (s *Store) RecordGitRef(ctx context.Context, taskID, attemptID, branch, com
 		return GitRef{}, false, fmt.Errorf("commit git ref: %w", err)
 	}
 	return ref, true, nil
+}
+
+func (s *Store) GetGitRef(ctx context.Context, taskID, attemptID string) (GitRef, error) {
+	var ref GitRef
+	err := s.db.QueryRowContext(ctx, "SELECT id, task_id, attempt_id, branch, commit_sha, remote_state FROM git_refs WHERE task_id = ? AND attempt_id = ?", taskID, attemptID).
+		Scan(&ref.ID, &ref.TaskID, &ref.AttemptID, &ref.Branch, &ref.CommitSHA, &ref.RemoteState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return GitRef{}, ErrGitRefNotFound
+	}
+	if err != nil {
+		return GitRef{}, fmt.Errorf("load git ref: %w", err)
+	}
+	return ref, nil
 }
