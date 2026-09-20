@@ -89,6 +89,10 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 		return Job{}, err
 	}
 	name := jobName(request.TaskID, request.AttemptID)
+	workspacePath := "/workspace/" + request.AttemptID
+	if request.WorkspacePath != "" && request.WorkspacePath != workspacePath {
+		return Job{}, errors.New("workspace path must be the attempt-scoped /workspace path")
+	}
 	labels := map[string]string{"task_id": request.TaskID, "attempt_id": request.AttemptID, "executor": executorName}
 	if !validLabelValue(request.TaskID) || !validLabelValue(request.AttemptID) {
 		return Job{}, errors.New("task_id and attempt_id must be valid Kubernetes label values of at most 63 characters")
@@ -115,7 +119,36 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 	if request.WorkspacePath != "" {
 		env = append(env, map[string]string{"name": "CODEX_WORKSPACE", "value": request.WorkspacePath})
 	}
-	body := map[string]any{"apiVersion": "batch/v1", "kind": "Job", "metadata": map[string]any{"name": name, "labels": labels}, "spec": map[string]any{"backoffLimit": 0, "template": map[string]any{"metadata": map[string]any{"labels": labels}, "spec": map[string]any{"restartPolicy": "Never", "serviceAccountName": r.config.ServiceAccount, "containers": []any{map[string]any{"name": "worker", "image": r.config.WorkerImage, "command": []string{"/bin/sh", "-c", "mkdir -p \"$CODEX_HOME\" && exec /usr/local/bin/codex-agentd --listen 0.0.0.0:8080"}, "env": env}}}}}}
+	container := map[string]any{
+		"name":    "worker",
+		"image":   r.config.WorkerImage,
+		"command": []string{"/bin/sh", "-c", "mkdir -p \"$CODEX_HOME\" && exec /usr/local/bin/codex-agentd --listen 0.0.0.0:8080"},
+		"env":     env,
+		"volumeMounts": []any{map[string]string{
+			"name":      "attempt-workspace",
+			"mountPath": "/workspace",
+		}},
+	}
+	body := map[string]any{
+		"apiVersion": "batch/v1",
+		"kind":       "Job",
+		"metadata":   map[string]any{"name": name, "labels": labels},
+		"spec": map[string]any{
+			"backoffLimit": 0,
+			"template": map[string]any{
+				"metadata": map[string]any{"labels": labels},
+				"spec": map[string]any{
+					"restartPolicy":      "Never",
+					"serviceAccountName": r.config.ServiceAccount,
+					"volumes": []any{map[string]any{
+						"name":     "attempt-workspace",
+						"emptyDir": map[string]any{},
+					}},
+					"containers": []any{container},
+				},
+			},
+		},
+	}
 	var created kJob
 	if err := r.doJSON(ctx, http.MethodPost, r.path("apis/batch/v1/namespaces/"+url.PathEscape(r.config.Namespace)+"/jobs"), body, &created); err != nil {
 		return Job{}, err

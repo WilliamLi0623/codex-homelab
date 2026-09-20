@@ -51,6 +51,14 @@ func TestKubernetesRuntimeCreateJobIsDeterministicAndIdempotent(t *testing.T) {
 	}
 	spec := manifest["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
 	container := spec["containers"].([]any)[0].(map[string]any)
+	volumes := spec["volumes"].([]any)
+	if len(volumes) != 1 || volumes[0].(map[string]any)["name"] != "attempt-workspace" {
+		t.Fatalf("volumes=%v", volumes)
+	}
+	mounts := container["volumeMounts"].([]any)
+	if len(mounts) != 1 || mounts[0].(map[string]any)["name"] != "attempt-workspace" || mounts[0].(map[string]any)["mountPath"] != "/workspace" {
+		t.Fatalf("volumeMounts=%v", mounts)
+	}
 	if got := container["command"].([]any); len(got) != 3 || got[0] != "/bin/sh" || got[1] != "-c" {
 		t.Fatalf("command=%v", got)
 	}
@@ -64,6 +72,13 @@ func TestKubernetesRuntimeCreateJobIsDeterministicAndIdempotent(t *testing.T) {
 	command := container["command"].([]any)[2].(string)
 	if !strings.Contains(command, `mkdir -p "$CODEX_HOME"`) || !strings.Contains(command, "/usr/local/bin/codex-agentd --listen 0.0.0.0:8080") || !strings.Contains(command, "exec") {
 		t.Fatalf("command=%q", command)
+	}
+}
+
+func TestKubernetesRuntimeRejectsNonAttemptWorkspacePath(t *testing.T) {
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: "http://127.0.0.1", Namespace: "default", Token: "secret", WorkerImage: "worker:latest", ServiceAccount: "sa"})
+	if _, err := r.CreateJob(context.Background(), JobRequest{TaskID: "task-1", AttemptID: "attempt-1", WorkspacePath: "/workspace/other"}); err == nil {
+		t.Fatal("CreateJob accepted a workspace outside the attempt scope")
 	}
 }
 
