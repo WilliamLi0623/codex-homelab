@@ -21,12 +21,13 @@ type Capacity interface {
 	Release(context.Context, Claim) error
 }
 type Request struct {
-	TaskID        string
-	AttemptID     string
-	Prompt        string
-	Repository    string
-	BaseRef       string
-	WorkspacePath string
+	TaskID            string
+	AttemptID         string
+	Prompt            string
+	Repository        string
+	BaseRef           string
+	WorkspacePath     string
+	ValidationCommand []string
 }
 type Dispatch struct {
 	Claim Claim
@@ -54,7 +55,7 @@ func (b *Broker) Dispatch(ctx context.Context, r Request) (Dispatch, error) {
 	if err != nil {
 		return Dispatch{}, err
 	}
-	job, err := b.executor.CreateJob(ctx, k3s.JobRequest{TaskID: r.TaskID, AttemptID: r.AttemptID, Prompt: r.Prompt, Repository: r.Repository, BaseRef: r.BaseRef, WorkspacePath: r.WorkspacePath})
+	job, err := b.executor.CreateJob(ctx, k3s.JobRequest{TaskID: r.TaskID, AttemptID: r.AttemptID, Prompt: r.Prompt, Repository: r.Repository, BaseRef: r.BaseRef, WorkspacePath: r.WorkspacePath, ValidationCommand: r.ValidationCommand})
 	if errors.Is(err, k3s.ErrUnknown) {
 		return Dispatch{Claim: claim}, err
 	}

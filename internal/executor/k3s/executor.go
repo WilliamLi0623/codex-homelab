@@ -41,12 +41,13 @@ const (
 )
 
 type JobRequest struct {
-	TaskID        string
-	AttemptID     string
-	Prompt        string
-	Repository    string
-	BaseRef       string
-	WorkspacePath string
+	TaskID            string
+	AttemptID         string
+	Prompt            string
+	Repository        string
+	BaseRef           string
+	WorkspacePath     string
+	ValidationCommand []string
 }
 type Job struct {
 	ID        string

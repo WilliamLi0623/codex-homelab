@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/agentd"
+	"github.com/WilliamLi0623/codex-homelab/internal/git"
 )
 
 func TestSessionRunJSONLCommitSHAIsIncludedOnlyWhenValid(t *testing.T) {
@@ -52,6 +53,35 @@ func TestSessionRunJSONLCommitSHAIsIncludedOnlyWhenValid(t *testing.T) {
 				t.Fatalf("JSONL result unexpectedly contains commit_sha: %s", output.String())
 			}
 		})
+	}
+}
+
+type commitRunner struct{ workspace string }
+
+func (r commitRunner) Run(_ context.Context, _ string, name string, args ...string) (string, error) {
+	if name == "git" && len(args) >= 2 && args[0] == "rev-parse" && args[1] == "--show-toplevel" {
+		return r.workspace + "\n", nil
+	}
+	if name == "git" && len(args) >= 2 && args[0] == "rev-parse" && args[1] == "HEAD" {
+		return "0123456789012345678901234567890123456789\n", nil
+	}
+	return "", nil
+}
+
+var _ git.Runner = commitRunner{}
+
+func TestSessionRunCommitsConfiguredWorkspaceAfterTurn(t *testing.T) {
+	workspacePath := filepath.Join(t.TempDir(), "attempt-1")
+	environment := []string{
+		"CODEX_WORKSPACE=" + workspacePath,
+		`CODEX_VALIDATION_COMMAND=["go","test","./..."]`,
+	}
+	result, err := newSessionWithEnvironment(&fakeRunner{}, environment, commitRunner{workspace: workspacePath}).run(context.Background(), request{Prompt: "first"})
+	if err != nil {
+		t.Fatalf("session.run() error = %v", err)
+	}
+	if result.CommitSHA != "0123456789012345678901234567890123456789" {
+		t.Fatalf("commit_sha = %q", result.CommitSHA)
 	}
 }
 

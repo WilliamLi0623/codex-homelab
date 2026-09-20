@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/agentd"
+	"github.com/WilliamLi0623/codex-homelab/internal/git"
+	"github.com/WilliamLi0623/codex-homelab/internal/worker"
 	"github.com/WilliamLi0623/codex-homelab/internal/workspace"
 )
 
@@ -48,10 +50,23 @@ type session struct {
 	thread        string
 	result        *response
 	commitSHAFile string
+	environment   map[string]string
+	commitRunner  git.Runner
 }
 
 func newSession(runner runner) *session {
-	return &session{runner: runner, commitSHAFile: os.Getenv("CODEX_COMMIT_SHA_FILE")}
+	return newSessionWithEnvironment(runner, os.Environ(), nil)
+}
+
+func newSessionWithEnvironment(runner runner, environment []string, commitRunner git.Runner) *session {
+	values := make(map[string]string)
+	for _, entry := range environment {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[name] = value
+		}
+	}
+	return &session{runner: runner, commitSHAFile: values["CODEX_COMMIT_SHA_FILE"], environment: values, commitRunner: commitRunner}
 }
 
 func (s *session) run(ctx context.Context, input request) (response, error) {
@@ -65,7 +80,10 @@ func (s *session) run(ctx context.Context, input request) (response, error) {
 			return response{}, err
 		}
 		s.thread = thread
-		result := response{ThreadID: thread, Events: summarizeEvents(events), CommitSHA: readCommitSHA(s.commitSHAFile)}
+		result, err := s.resultFor(ctx, thread, events)
+		if err != nil {
+			return response{}, err
+		}
 		s.result = &result
 		return result, nil
 	}
@@ -79,9 +97,23 @@ func (s *session) run(ctx context.Context, input request) (response, error) {
 	if err != nil {
 		return response{}, err
 	}
-	result := response{ThreadID: s.thread, Events: summarizeEvents(events), CommitSHA: readCommitSHA(s.commitSHAFile)}
+	result, err := s.resultFor(ctx, s.thread, events)
+	if err != nil {
+		return response{}, err
+	}
 	s.result = &result
 	return result, nil
+}
+
+func (s *session) resultFor(ctx context.Context, thread string, events []agentd.Event) (response, error) {
+	commitSHA, err := worker.CommitConfiguredWorkspace(ctx, s.environment, s.commitRunner)
+	if err != nil {
+		return response{}, err
+	}
+	if commitSHA == "" {
+		commitSHA = readCommitSHA(s.commitSHAFile)
+	}
+	return response{ThreadID: thread, Events: summarizeEvents(events), CommitSHA: commitSHA}, nil
 }
 
 func (s *session) lastResult() (response, bool) {

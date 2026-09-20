@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/executor/k3s"
@@ -47,11 +48,11 @@ func TestDispatchCarriesRepositoryBaseRefAndWorkspaceContract(t *testing.T) {
 	capacity := &fakeCapacity{}
 	executor := &fakeExecutor{}
 	broker := New(capacity, executor)
-	_, err := broker.Dispatch(context.Background(), Request{TaskID: "task-1", AttemptID: "attempt-1", Prompt: "change", Repository: "owner/repo", BaseRef: "main", WorkspacePath: "/workspace/attempt-1"})
+	_, err := broker.Dispatch(context.Background(), Request{TaskID: "task-1", AttemptID: "attempt-1", Prompt: "change", Repository: "owner/repo", BaseRef: "main", WorkspacePath: "/workspace/attempt-1", ValidationCommand: []string{"go", "test", "./..."}})
 	if err != nil {
 		t.Fatalf("Dispatch() error = %v", err)
 	}
-	if len(executor.jobs) != 1 || executor.jobs[0].Repository != "owner/repo" || executor.jobs[0].BaseRef != "main" || executor.jobs[0].WorkspacePath != "/workspace/attempt-1" {
+	if len(executor.jobs) != 1 || executor.jobs[0].Repository != "owner/repo" || executor.jobs[0].BaseRef != "main" || executor.jobs[0].WorkspacePath != "/workspace/attempt-1" || strings.Join(executor.jobs[0].ValidationCommand, " ") != "go test ./..." {
 		t.Fatalf("job request = %+v, want repository/base_ref/workspace contract", executor.jobs)
 	}
 }

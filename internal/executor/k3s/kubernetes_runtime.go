@@ -119,6 +119,13 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 	if request.WorkspacePath != "" {
 		env = append(env, map[string]string{"name": "CODEX_WORKSPACE", "value": request.WorkspacePath})
 	}
+	if len(request.ValidationCommand) != 0 {
+		validationJSON, err := json.Marshal(request.ValidationCommand)
+		if err != nil {
+			return Job{}, errors.New("validation command is invalid")
+		}
+		env = append(env, map[string]string{"name": "CODEX_VALIDATION_COMMAND", "value": string(validationJSON)})
+	}
 	container := map[string]any{
 		"name":    "worker",
 		"image":   r.config.WorkerImage,

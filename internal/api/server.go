@@ -21,8 +21,9 @@ type Dispatcher interface {
 }
 
 type dispatchRequest struct {
-	AttemptID string `json:"attempt_id"`
-	Prompt    string `json:"prompt"`
+	AttemptID         string   `json:"attempt_id"`
+	Prompt            string   `json:"prompt"`
+	ValidationCommand []string `json:"validation_command,omitempty"`
 }
 
 type dispatchResponse struct {
@@ -165,7 +166,7 @@ func (s *Server) dispatchTask(writer http.ResponseWriter, request *http.Request)
 		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "load attempt failed"})
 		return
 	}
-	dispatch, err := s.dispatcher.Dispatch(request.Context(), orchestrator.Request{TaskID: task.ID, AttemptID: input.AttemptID, Prompt: input.Prompt, Repository: task.Repository, BaseRef: task.BaseRef, WorkspacePath: "/workspace/" + input.AttemptID})
+	dispatch, err := s.dispatcher.Dispatch(request.Context(), orchestrator.Request{TaskID: task.ID, AttemptID: input.AttemptID, Prompt: input.Prompt, Repository: task.Repository, BaseRef: task.BaseRef, WorkspacePath: "/workspace/" + input.AttemptID, ValidationCommand: input.ValidationCommand})
 	if err != nil {
 		writeJSON(writer, http.StatusConflict, map[string]string{"error": "task dispatch failed"})
 		return
