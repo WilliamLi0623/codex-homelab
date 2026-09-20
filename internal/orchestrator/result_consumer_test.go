@@ -28,6 +28,27 @@ type releaseCapacity struct {
 	err   error
 }
 
+type observingResults struct {
+	result k3s.Result
+	job    k3s.Job
+}
+
+func (o observingResults) CollectResult(context.Context, string) (k3s.Result, error) {
+	return o.result, nil
+}
+func (o observingResults) Observe(context.Context, string) (k3s.Job, error) { return o.job, nil }
+
+func TestResultConsumerObserveAndCompleteRequiresSucceededJob(t *testing.T) {
+	database, task, attempt := resultConsumerFixture(t)
+	input := CompletionInput{TaskID: task.ID, AttemptID: attempt.ID, Branch: "refs/heads/task-1", ValidationCommand: []string{"go", "test"}}
+	for _, state := range []k3s.JobState{k3s.JobPending, k3s.JobRunning} {
+		consumer := NewResultConsumer(database, observingResults{job: k3s.Job{AttemptID: attempt.ID, State: state}}, &releaseCapacity{})
+		if _, _, err := consumer.ObserveAndComplete(context.Background(), input); !errors.Is(err, ErrCompletionNotReady) {
+			t.Fatalf("state %s error = %v", state, err)
+		}
+	}
+}
+
 func (c *releaseCapacity) Create(context.Context, ClaimRequest) (Claim, error) { return Claim{}, nil }
 func (c *releaseCapacity) Release(context.Context, Claim) error {
 	c.calls++

@@ -14,10 +14,18 @@ var (
 	ErrCompletionInput          = errors.New("completion input is invalid")
 	ErrCompletionResultMissing  = errors.New("worker result has no commit SHA")
 	ErrCompletionReleasePending = errors.New("completion is durable but capacity release is pending")
+	ErrCompletionNotReady       = errors.New("worker execution is not complete")
+	ErrWorkerFailed             = errors.New("worker execution failed")
+	ErrWorkerCancelled          = errors.New("worker execution was cancelled")
+	ErrObservationUnavailable   = errors.New("worker observation is unavailable")
 )
 
 type ResultCollector interface {
 	CollectResult(context.Context, string) (k3s.Result, error)
+}
+
+type ResultObserver interface {
+	Observe(context.Context, string) (k3s.Job, error)
 }
 
 type CompletionInput struct {
@@ -31,10 +39,41 @@ type ResultConsumer struct {
 	store    *store.Store
 	results  ResultCollector
 	capacity Capacity
+	observer ResultObserver
 }
 
 func NewResultConsumer(database *store.Store, results ResultCollector, capacity Capacity) *ResultConsumer {
-	return &ResultConsumer{store: database, results: results, capacity: capacity}
+	consumer := &ResultConsumer{store: database, results: results, capacity: capacity}
+	if observer, ok := results.(ResultObserver); ok {
+		consumer.observer = observer
+	}
+	return consumer
+}
+
+// ObserveAndComplete is the background-observer boundary. Observation alone
+// never implies a successful commit: only SUCCEEDED jobs proceed to Complete,
+// which still requires the worker result protocol and commit SHA.
+func (c *ResultConsumer) ObserveAndComplete(ctx context.Context, input CompletionInput) (k3s.Job, store.CompletionRecord, error) {
+	if c == nil || c.observer == nil || input.AttemptID == "" {
+		return k3s.Job{}, store.CompletionRecord{}, ErrObservationUnavailable
+	}
+	job, err := c.observer.Observe(ctx, input.AttemptID)
+	if err != nil {
+		return k3s.Job{}, store.CompletionRecord{}, err
+	}
+	switch job.State {
+	case k3s.JobPending, k3s.JobRunning:
+		return job, store.CompletionRecord{}, ErrCompletionNotReady
+	case k3s.JobFailed:
+		return job, store.CompletionRecord{}, ErrWorkerFailed
+	case k3s.JobCancelled:
+		return job, store.CompletionRecord{}, ErrWorkerCancelled
+	case k3s.JobSucceeded:
+		completion, err := c.Complete(ctx, input)
+		return job, completion, err
+	default:
+		return job, store.CompletionRecord{}, k3s.ErrUnknown
+	}
 }
 
 // Complete collects one durable worker result, atomically records validation
