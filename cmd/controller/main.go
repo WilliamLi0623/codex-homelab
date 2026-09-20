@@ -7,6 +7,9 @@ import (
 	"net/http"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/api"
+	"github.com/WilliamLi0623/codex-homelab/internal/capacity"
+	"github.com/WilliamLi0623/codex-homelab/internal/executor/k3s"
+	"github.com/WilliamLi0623/codex-homelab/internal/orchestrator"
 	"github.com/WilliamLi0623/codex-homelab/internal/store"
 )
 
@@ -15,7 +18,7 @@ func main() {
 	databasePath := flag.String("database", "controller.sqlite", "SQLite database path")
 	flag.Parse()
 
-	handler, closeStore, err := newHandler(*databasePath)
+	handler, closeStore, err := newHandlerFromEnvironment(*databasePath)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -29,6 +32,31 @@ func main() {
 
 func newHandler(databasePath string) (http.Handler, func(), error) {
 	return newHandlerWithDispatcher(databasePath, nil)
+}
+
+func newHandlerFromEnvironment(databasePath string) (http.Handler, func(), error) {
+	database, err := store.Open(databasePath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open controller store: %w", err)
+	}
+	closeStore := func() {
+		if err := database.Close(); err != nil {
+			log.Printf("close controller store: %v", err)
+		}
+	}
+
+	config, configErr := loadEnvironmentConfig()
+	if configErr != nil {
+		return api.NewServerWithDispatcher(database, nil), closeStore, nil
+	}
+
+	proxmoxRuntime := capacity.NewProxmoxRuntime(config.Proxmox)
+	manager := capacity.NewManager(proxmoxRuntime, capacity.VMIDRange{Min: controllerVMIDMin, Max: controllerVMIDMax})
+	capacityAdapter := orchestrator.NewCapacityAdapterWithConfig(database, manager, config.CapacityConfig)
+	kubernetesRuntime := k3s.NewKubernetesRuntime(config.Kubernetes)
+	executor := k3s.New(kubernetesRuntime, database)
+	dispatcher := orchestrator.New(capacityAdapter, executor)
+	return api.NewServerWithDispatcher(database, dispatcher), closeStore, nil
 }
 
 // newHandlerWithDispatcher is the explicit assembly seam for production
