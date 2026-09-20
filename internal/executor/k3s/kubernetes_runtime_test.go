@@ -38,7 +38,7 @@ func TestKubernetesRuntimeCreateJobIsDeterministicAndIdempotent(t *testing.T) {
 	}))
 	defer server.Close()
 	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "default", Token: "secret", WorkerImage: "worker:latest", ServiceAccount: "sa", HTTPClient: server.Client()})
-	first, err := r.CreateJob(context.Background(), JobRequest{TaskID: "task-1", AttemptID: "attempt-1", Prompt: "hello"})
+	first, err := r.CreateJob(context.Background(), JobRequest{TaskID: "task-1", AttemptID: "attempt-1", Prompt: "hello", Repository: "owner/repo", BaseRef: "main", WorkspacePath: "/workspace/attempt-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestKubernetesRuntimeCreateJobIsDeterministicAndIdempotent(t *testing.T) {
 		t.Fatal("legacy CLI args present")
 	}
 	envs := container["env"].([]any)
-	if !containsEnv(envs, "CODEX_AGENTD_REQUEST", `{"prompt":"hello"}`) || !containsEnv(envs, "CODEX_ATTEMPT_ID", "attempt-1") || !containsEnv(envs, "CODEX_HOME", "/work/attempt-1") {
+	if !containsEnv(envs, "CODEX_AGENTD_REQUEST", `{"prompt":"hello"}`) || !containsEnv(envs, "CODEX_ATTEMPT_ID", "attempt-1") || !containsEnv(envs, "CODEX_HOME", "/work/attempt-1") || !containsEnv(envs, "CODEX_REPOSITORY", "owner/repo") || !containsEnv(envs, "CODEX_BASE_REF", "main") || !containsEnv(envs, "CODEX_WORKSPACE", "/workspace/attempt-1") {
 		t.Fatalf("env=%v", envs)
 	}
 	command := container["command"].([]any)[2].(string)

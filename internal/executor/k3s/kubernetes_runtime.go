@@ -105,7 +105,17 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 		return Job{}, err
 	}
 	requestJSON, _ := json.Marshal(map[string]string{"prompt": request.Prompt})
-	body := map[string]any{"apiVersion": "batch/v1", "kind": "Job", "metadata": map[string]any{"name": name, "labels": labels}, "spec": map[string]any{"backoffLimit": 0, "template": map[string]any{"metadata": map[string]any{"labels": labels}, "spec": map[string]any{"restartPolicy": "Never", "serviceAccountName": r.config.ServiceAccount, "containers": []any{map[string]any{"name": "worker", "image": r.config.WorkerImage, "command": []string{"/bin/sh", "-c", "mkdir -p \"$CODEX_HOME\" && exec /usr/local/bin/codex-agentd --listen 0.0.0.0:8080"}, "env": []any{map[string]string{"name": "CODEX_AGENTD_REQUEST", "value": string(requestJSON)}, map[string]string{"name": "CODEX_ATTEMPT_ID", "value": request.AttemptID}, map[string]string{"name": "CODEX_HOME", "value": "/work/" + request.AttemptID}}}}}}}}
+	env := []any{map[string]string{"name": "CODEX_AGENTD_REQUEST", "value": string(requestJSON)}, map[string]string{"name": "CODEX_ATTEMPT_ID", "value": request.AttemptID}, map[string]string{"name": "CODEX_HOME", "value": "/work/" + request.AttemptID}}
+	if request.Repository != "" {
+		env = append(env, map[string]string{"name": "CODEX_REPOSITORY", "value": request.Repository})
+	}
+	if request.BaseRef != "" {
+		env = append(env, map[string]string{"name": "CODEX_BASE_REF", "value": request.BaseRef})
+	}
+	if request.WorkspacePath != "" {
+		env = append(env, map[string]string{"name": "CODEX_WORKSPACE", "value": request.WorkspacePath})
+	}
+	body := map[string]any{"apiVersion": "batch/v1", "kind": "Job", "metadata": map[string]any{"name": name, "labels": labels}, "spec": map[string]any{"backoffLimit": 0, "template": map[string]any{"metadata": map[string]any{"labels": labels}, "spec": map[string]any{"restartPolicy": "Never", "serviceAccountName": r.config.ServiceAccount, "containers": []any{map[string]any{"name": "worker", "image": r.config.WorkerImage, "command": []string{"/bin/sh", "-c", "mkdir -p \"$CODEX_HOME\" && exec /usr/local/bin/codex-agentd --listen 0.0.0.0:8080"}, "env": env}}}}}}
 	var created kJob
 	if err := r.doJSON(ctx, http.MethodPost, r.path("apis/batch/v1/namespaces/"+url.PathEscape(r.config.Namespace)+"/jobs"), body, &created); err != nil {
 		return Job{}, err

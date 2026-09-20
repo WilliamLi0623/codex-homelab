@@ -42,6 +42,19 @@ func (f *fakeExecutor) CreateJob(_ context.Context, r k3s.JobRequest) (k3s.Job, 
 	}
 	return k3s.Job{ID: "job-1", TaskID: r.TaskID, AttemptID: r.AttemptID, State: k3s.JobRunning}, nil
 }
+
+func TestDispatchCarriesRepositoryBaseRefAndWorkspaceContract(t *testing.T) {
+	capacity := &fakeCapacity{}
+	executor := &fakeExecutor{}
+	broker := New(capacity, executor)
+	_, err := broker.Dispatch(context.Background(), Request{TaskID: "task-1", AttemptID: "attempt-1", Prompt: "change", Repository: "owner/repo", BaseRef: "main", WorkspacePath: "/workspace/attempt-1"})
+	if err != nil {
+		t.Fatalf("Dispatch() error = %v", err)
+	}
+	if len(executor.jobs) != 1 || executor.jobs[0].Repository != "owner/repo" || executor.jobs[0].BaseRef != "main" || executor.jobs[0].WorkspacePath != "/workspace/attempt-1" {
+		t.Fatalf("job request = %+v, want repository/base_ref/workspace contract", executor.jobs)
+	}
+}
 func (f *fakeExecutor) SendMessage(_ context.Context, id, msg string) error {
 	f.messages = append(f.messages, id+":"+msg)
 	return nil
