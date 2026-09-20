@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/api"
 	"github.com/WilliamLi0623/codex-homelab/internal/capacity"
@@ -39,7 +42,9 @@ func newHandlerFromEnvironment(databasePath string) (http.Handler, func(), error
 	if err != nil {
 		return nil, nil, fmt.Errorf("open controller store: %w", err)
 	}
+	runtimeContext, cancelRuntime := context.WithCancel(context.Background())
 	closeStore := func() {
+		cancelRuntime()
 		if err := database.Close(); err != nil {
 			log.Printf("close controller store: %v", err)
 		}
@@ -57,7 +62,16 @@ func newHandlerFromEnvironment(databasePath string) (http.Handler, func(), error
 	executor := k3s.New(kubernetesRuntime, database)
 	dispatcher := orchestrator.New(capacityAdapter, executor)
 	completer := orchestrator.NewResultConsumer(database, executor, capacityAdapter)
+	startObservationLoop(runtimeContext, orchestrator.NewObservationLoop(database, completer))
 	return api.NewServerWithDispatcherAndCompletion(database, dispatcher, completer), closeStore, nil
+}
+
+func startObservationLoop(ctx context.Context, loop *orchestrator.ObservationLoop) {
+	go func() {
+		if err := loop.Run(ctx, 5*time.Second); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("controller observation loop stopped: %v", err)
+		}
+	}()
 }
 
 // newHandlerWithDispatcher is the explicit assembly seam for production

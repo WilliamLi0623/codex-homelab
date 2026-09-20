@@ -100,6 +100,39 @@ func (s *Store) GetAttemptExecutionSpec(ctx context.Context, taskID, attemptID s
 	return spec, nil
 }
 
+// ListPendingAttemptExecutionSpecs returns dispatches that do not yet have a
+// durable completion record. The completion ID is deterministic, so a
+// restarted observer can avoid recollecting an already-consumed worker result.
+func (s *Store) ListPendingAttemptExecutionSpecs(ctx context.Context) ([]AttemptExecutionSpec, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT s.id, s.task_id, s.attempt_id, s.branch, s.validation_command_json, s.created_at, s.updated_at
+FROM attempt_execution_specs s
+WHERE NOT EXISTS (SELECT 1 FROM validation_results v WHERE v.id = 'completion-' || s.attempt_id)
+ORDER BY s.created_at, s.id`)
+	if err != nil {
+		return nil, fmt.Errorf("list pending execution specs: %w", err)
+	}
+	defer rows.Close()
+	var specs []AttemptExecutionSpec
+	for rows.Next() {
+		var spec AttemptExecutionSpec
+		var commandJSON string
+		if err := rows.Scan(&spec.ID, &spec.TaskID, &spec.AttemptID, &spec.Branch, &commandJSON, &spec.CreatedAt, &spec.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan pending execution spec: %w", err)
+		}
+		if err := json.Unmarshal([]byte(commandJSON), &spec.ValidationCommand); err != nil {
+			return nil, ErrExecutionSpecInvalid
+		}
+		if err := validateExecutionSpec(spec); err != nil {
+			return nil, err
+		}
+		specs = append(specs, spec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending execution specs: %w", err)
+	}
+	return specs, nil
+}
+
 func validateExecutionSpec(spec AttemptExecutionSpec) error {
 	if spec.TaskID == "" || spec.AttemptID == "" || strings.TrimSpace(spec.Branch) == "" || len(spec.ValidationCommand) == 0 || len(spec.ValidationCommand) > 64 {
 		return ErrExecutionSpecInvalid

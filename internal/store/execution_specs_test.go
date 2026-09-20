@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/domain"
 )
@@ -42,5 +43,32 @@ func TestAttemptExecutionSpecRejectsEmptyValidation(t *testing.T) {
 	_, _, err := s.EnsureAttemptExecutionSpec(context.Background(), AttemptExecutionSpec{TaskID: "task", AttemptID: "attempt", Branch: "main"})
 	if !errors.Is(err, ErrExecutionSpecInvalid) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestListPendingAttemptExecutionSpecsExcludesDurableCompletion(t *testing.T) {
+	s := openCapacityTestStore(t)
+	task, _, err := s.CreateTask(context.Background(), domain.NewTask("task", "owner/repo", "main", "objective", "pending-spec-request"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := s.StartAttempt(context.Background(), task.ID, "openai-primary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := AttemptExecutionSpec{TaskID: task.ID, AttemptID: attempt.ID, Branch: "refs/heads/codex/task/attempt", ValidationCommand: []string{"go", "test"}}
+	if _, _, err := s.EnsureAttemptExecutionSpec(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := s.ListPendingAttemptExecutionSpecs(context.Background())
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending = (%+v, %v)", pending, err)
+	}
+	if _, err := s.RecordValidationResult(context.Background(), ValidationResult{ID: "completion-" + attempt.ID, AttemptID: attempt.ID, Command: "go test", State: "PASSED", CreatedAt: time.Now().UTC()}, ""); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = s.ListPendingAttemptExecutionSpecs(context.Background())
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("pending after completion = (%+v, %v)", pending, err)
 	}
 }
