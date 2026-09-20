@@ -9,12 +9,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"path"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/agentd"
 )
@@ -87,6 +89,7 @@ func (r clientRunner) CollectTurnEvents(ctx context.Context) ([]agentd.Event, er
 
 func main() {
 	codex := flag.String("codex", "codex", "Codex executable")
+	listen := flag.String("listen", "", "HTTP listen address")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -100,6 +103,12 @@ func main() {
 	}
 	defer func() { _ = process.Close() }()
 	session := newSession(clientRunner{client: process.Client})
+	server := startHTTPServer(ctx, *listen, session)
+	if server != nil {
+		defer func() { _ = server.Shutdown(context.Background()) }()
+		waitForHTTPServer(ctx)
+		return
+	}
 	output := bufio.NewWriter(os.Stdout)
 	encoder := json.NewEncoder(output)
 	reader := bufio.NewReader(os.Stdin)
@@ -122,6 +131,84 @@ func main() {
 			fatal(err)
 		}
 	}
+}
+
+func waitForHTTPServer(ctx context.Context) {
+	<-ctx.Done()
+}
+
+func newHTTPHandler(session *session) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeHTTPError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeHTTPError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		reader := http.MaxBytesReader(w, r.Body, maxRequestLine)
+		defer r.Body.Close()
+		decoder := json.NewDecoder(reader)
+		decoder.DisallowUnknownFields()
+		var input request
+		if err := decoder.Decode(&input); err != nil {
+			writeHTTPError(w, http.StatusBadRequest, "invalid request")
+			return
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			writeHTTPError(w, http.StatusBadRequest, "invalid request")
+			return
+		}
+		if strings.TrimSpace(input.Prompt) == "" {
+			writeHTTPError(w, http.StatusBadRequest, "invalid request")
+			return
+		}
+		result, err := session.run(r.Context(), input)
+		if err != nil {
+			if strings.Contains(err.Error(), "already in progress") {
+				writeHTTPError(w, http.StatusConflict, "request already in progress")
+				return
+			}
+			writeHTTPError(w, http.StatusInternalServerError, "runner error")
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
+	return mux
+}
+
+func startHTTPServer(ctx context.Context, address string, session *session) *http.Server {
+	if strings.TrimSpace(address) == "" {
+		return nil
+	}
+	server := &http.Server{Addr: address, Handler: newHTTPHandler(session)}
+	go func() {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			_, _ = fmt.Fprintln(os.Stderr, "agentd HTTP server stopped")
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+	return server
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func writeHTTPError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
 }
 
 func decodeNextRequest(reader *bufio.Reader) (request, error) {
