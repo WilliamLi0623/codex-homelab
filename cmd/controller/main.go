@@ -43,8 +43,12 @@ func newHandlerFromEnvironment(databasePath string) (http.Handler, func(), error
 		return nil, nil, fmt.Errorf("open controller store: %w", err)
 	}
 	runtimeContext, cancelRuntime := context.WithCancel(context.Background())
+	var observationDone <-chan struct{}
 	closeStore := func() {
 		cancelRuntime()
+		if observationDone != nil {
+			<-observationDone
+		}
 		if err := database.Close(); err != nil {
 			log.Printf("close controller store: %v", err)
 		}
@@ -62,16 +66,19 @@ func newHandlerFromEnvironment(databasePath string) (http.Handler, func(), error
 	executor := k3s.New(kubernetesRuntime, database)
 	dispatcher := orchestrator.New(capacityAdapter, executor)
 	completer := orchestrator.NewResultConsumer(database, executor, capacityAdapter)
-	startObservationLoop(runtimeContext, orchestrator.NewObservationLoop(database, completer))
+	observationDone = startObservationLoop(runtimeContext, orchestrator.NewObservationLoop(database, completer))
 	return api.NewServerWithDispatcherAndCompletion(database, dispatcher, completer), closeStore, nil
 }
 
-func startObservationLoop(ctx context.Context, loop *orchestrator.ObservationLoop) {
+func startObservationLoop(ctx context.Context, loop *orchestrator.ObservationLoop) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		if err := loop.Run(ctx, 5*time.Second); err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("controller observation loop stopped: %v", err)
 		}
 	}()
+	return done
 }
 
 // newHandlerWithDispatcher is the explicit assembly seam for production

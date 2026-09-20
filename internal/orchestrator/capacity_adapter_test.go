@@ -17,6 +17,36 @@ type adapterRuntime struct {
 	lastCreate   capacity.CreateRequest
 }
 
+type adapterReleaseOps struct{ order []string }
+
+func (o *adapterReleaseOps) mark(step string) { o.order = append(o.order, step) }
+func (o *adapterReleaseOps) Cordon(context.Context, capacity.Node) error {
+	o.mark("cordon")
+	return nil
+}
+func (o *adapterReleaseOps) Drain(context.Context, capacity.Node) error { o.mark("drain"); return nil }
+func (o *adapterReleaseOps) RemoveNode(context.Context, capacity.Node) error {
+	o.mark("remove-node")
+	return nil
+}
+func (o *adapterReleaseOps) VerifyNodeRemoved(context.Context, capacity.Node) error {
+	o.mark("verify-node-removed")
+	return nil
+}
+func (o *adapterReleaseOps) VerifyIdentity(context.Context, capacity.Node) error {
+	o.mark("verify-identity")
+	return nil
+}
+func (o *adapterReleaseOps) Stop(context.Context, capacity.Node) error { o.mark("stop"); return nil }
+func (o *adapterReleaseOps) VerifyStopped(context.Context, capacity.Node) error {
+	o.mark("verify-stopped")
+	return nil
+}
+func (o *adapterReleaseOps) Destroy(context.Context, capacity.Node) error {
+	o.mark("destroy")
+	return nil
+}
+
 var _ Capacity = (*CapacityAdapter)(nil)
 
 func (r *adapterRuntime) Create(_ context.Context, request capacity.CreateRequest) (capacity.Node, error) {
@@ -101,6 +131,38 @@ func TestCapacityAdapterReleaseFailsClosedBeforeFullLifecycle(t *testing.T) {
 	}
 	if runtime.destroyCalls != 0 {
 		t.Fatalf("destroy calls = %d, want 0", runtime.destroyCalls)
+	}
+}
+
+func TestCapacityAdapterReleasePersistsOrderAndIsIdempotent(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "capacity.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	runtime := &adapterRuntime{}
+	operations := &adapterReleaseOps{}
+	adapter := NewCapacityAdapterWithConfig(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3999}), CapacityAdapterConfig{TemplateVMID: 3005, Priority: 1, Hostname: "codex-3010-gen-1", ReleaseOperations: operations})
+	claim, err := adapter.Create(context.Background(), ClaimRequest{TaskID: "task", AttemptID: "attempt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Release(context.Background(), claim); err != nil {
+		t.Fatalf("first Release() error = %v", err)
+	}
+	want := []string{"cordon", "drain", "remove-node", "verify-node-removed", "verify-identity", "stop", "verify-stopped", "destroy"}
+	if len(operations.order) != len(want) {
+		t.Fatalf("release order = %v", operations.order)
+	}
+	if err := adapter.Release(context.Background(), claim); err != nil {
+		t.Fatalf("replay Release() error = %v", err)
+	}
+	if len(operations.order) != len(want) {
+		t.Fatalf("replay mutated order = %v", operations.order)
+	}
+	progress, err := db.GetReleaseProgress(context.Background(), claim.TaskID, claim.AttemptID)
+	if err != nil || progress.Step != store.ReleaseStepDone || progress.State != store.ReleaseStateCompleted {
+		t.Fatalf("progress = (%+v, %v)", progress, err)
 	}
 }
 

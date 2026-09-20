@@ -34,20 +34,22 @@ type CapacityClaimRequest struct {
 }
 
 type CapacityAdapter struct {
-	store   *store.Store
-	manager *capacity.Manager
-	config  CapacityAdapterConfig
+	store      *store.Store
+	manager    *capacity.Manager
+	config     CapacityAdapterConfig
+	releaseOps capacity.WorkerReleaseOperations
 }
 
 type CapacityAdapterConfig struct {
-	TemplateVMID int
-	Priority     int
-	Hostname     string
-	Storage      string
-	Bridge       string
-	Cores        int
-	MemoryMiB    int
-	DiskGiB      int
+	TemplateVMID      int
+	Priority          int
+	Hostname          string
+	Storage           string
+	Bridge            string
+	Cores             int
+	MemoryMiB         int
+	DiskGiB           int
+	ReleaseOperations capacity.WorkerReleaseOperations
 }
 
 func NewCapacityAdapter(database *store.Store, manager *capacity.Manager, templateVMID int) *CapacityAdapter {
@@ -55,7 +57,7 @@ func NewCapacityAdapter(database *store.Store, manager *capacity.Manager, templa
 }
 
 func NewCapacityAdapterWithConfig(database *store.Store, manager *capacity.Manager, config CapacityAdapterConfig) *CapacityAdapter {
-	return &CapacityAdapter{store: database, manager: manager, config: config}
+	return &CapacityAdapter{store: database, manager: manager, config: config, releaseOps: config.ReleaseOperations}
 }
 
 func (a *CapacityAdapter) Create(ctx context.Context, request ClaimRequest) (Claim, error) {
@@ -69,7 +71,7 @@ func (a *CapacityAdapter) Create(ctx context.Context, request ClaimRequest) (Cla
 		Hostname: a.config.Hostname, Storage: a.config.Storage, Bridge: a.config.Bridge,
 		Cores: a.config.Cores, MemoryMiB: a.config.MemoryMiB, DiskGiB: a.config.DiskGiB,
 	})
-	return Claim{ID: stored.ID, VMID: stored.VMID}, err
+	return Claim{ID: stored.ID, VMID: stored.VMID, TaskID: stored.TaskID, AttemptID: stored.AttemptID, Generation: stored.Generation, KubeNode: a.config.Hostname}, err
 }
 
 func (a *CapacityAdapter) Claim(ctx context.Context, request CapacityClaimRequest) (store.CapacityClaim, error) {
@@ -136,6 +138,69 @@ func deterministicGeneration(taskID, attemptID string) string {
 	return fmt.Sprintf("sha256:%x", sum[:])
 }
 
-func (a *CapacityAdapter) Release(context.Context, Claim) error {
-	return ErrCapacityReleaseUnsafe
+func (a *CapacityAdapter) Release(ctx context.Context, claim Claim) error {
+	if a == nil || a.store == nil || a.manager == nil || a.releaseOps == nil || claim.ID == "" || claim.TaskID == "" || claim.AttemptID == "" || claim.Generation == "" || claim.KubeNode == "" {
+		return ErrCapacityReleaseUnsafe
+	}
+	stored, err := a.store.GetCapacityClaim(ctx, claim.TaskID, claim.AttemptID)
+	if err != nil || stored.ID != claim.ID || stored.VMID != claim.VMID || stored.Generation != claim.Generation || stored.State != store.CapacityClaimed {
+		return ErrCapacityReleaseUnsafe
+	}
+	progress, _, err := a.store.EnsureReleaseProgress(ctx, store.ReleaseProgressRequest{TaskID: claim.TaskID, AttemptID: claim.AttemptID, VMID: claim.VMID, Generation: claim.Generation, KubeNode: claim.KubeNode})
+	if err != nil || progress.State == store.ReleaseStateUnknown {
+		return ErrCapacityReleaseUnsafe
+	}
+	if progress.Step == store.ReleaseStepDone && progress.State == store.ReleaseStateCompleted {
+		return nil
+	}
+	start := capacity.ReleaseStepCordon
+	if progress.Step != store.ReleaseStepNone {
+		if progress.State != store.ReleaseStateCompleted {
+			return ErrCapacityReleaseUnsafe
+		}
+		start, err = nextReleaseStep(progress.Step)
+		if err != nil {
+			return err
+		}
+		if start == "" {
+			return a.store.UpdateReleaseProgress(ctx, claim.TaskID, claim.AttemptID, store.ReleaseStepDone, store.ReleaseStateCompleted, "")
+		}
+	}
+	node := capacity.Node{VMID: claim.VMID, Generation: claim.Generation, TaskID: claim.TaskID, KubeNode: claim.KubeNode, State: capacity.NodeStopped}
+	checkpoint := func(checkpointCtx context.Context, _ capacity.Node, step capacity.ReleaseStep, stepErr error) error {
+		state := store.ReleaseStateCompleted
+		summary := ""
+		if stepErr != nil {
+			state = store.ReleaseStateUnknown
+			summary = "external release outcome is unknown"
+		}
+		return a.store.UpdateReleaseProgress(checkpointCtx, claim.TaskID, claim.AttemptID, string(step), state, summary)
+	}
+	if err := capacity.ReleaseWorkerFromStep(ctx, node, a.releaseOps, start, checkpoint); err != nil {
+		return err
+	}
+	return a.store.UpdateReleaseProgress(ctx, claim.TaskID, claim.AttemptID, store.ReleaseStepDone, store.ReleaseStateCompleted, "")
+}
+
+func nextReleaseStep(step string) (capacity.ReleaseStep, error) {
+	switch step {
+	case store.ReleaseStepCordon:
+		return capacity.ReleaseStepDrain, nil
+	case store.ReleaseStepDrain:
+		return capacity.ReleaseStepRemoveNode, nil
+	case store.ReleaseStepRemoveNode:
+		return capacity.ReleaseStepVerifyNodeRemoved, nil
+	case store.ReleaseStepVerifyNodeRemoved:
+		return capacity.ReleaseStepVerifyIdentity, nil
+	case store.ReleaseStepVerifyIdentity:
+		return capacity.ReleaseStepStop, nil
+	case store.ReleaseStepStop:
+		return capacity.ReleaseStepVerifyStopped, nil
+	case store.ReleaseStepVerifyStopped:
+		return capacity.ReleaseStepDestroy, nil
+	case store.ReleaseStepDestroy:
+		return "", nil
+	default:
+		return "", ErrCapacityReleaseUnsafe
+	}
 }

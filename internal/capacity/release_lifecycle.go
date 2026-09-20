@@ -8,6 +8,21 @@ import (
 
 var ErrReleaseInvalid = errors.New("worker release request is invalid")
 
+type ReleaseStep string
+
+const (
+	ReleaseStepCordon            ReleaseStep = "CORDON"
+	ReleaseStepDrain             ReleaseStep = "DRAIN"
+	ReleaseStepRemoveNode        ReleaseStep = "REMOVE_NODE"
+	ReleaseStepVerifyNodeRemoved ReleaseStep = "VERIFY_NODE_REMOVED"
+	ReleaseStepVerifyIdentity    ReleaseStep = "VERIFY_IDENTITY"
+	ReleaseStepStop              ReleaseStep = "STOP"
+	ReleaseStepVerifyStopped     ReleaseStep = "VERIFY_STOPPED"
+	ReleaseStepDestroy           ReleaseStep = "DESTROY"
+)
+
+type ReleaseCheckpoint func(context.Context, Node, ReleaseStep, error) error
+
 // WorkerReleaseOperations is the narrow, injectable boundary for removing a
 // dynamic worker. Implementations must make each operation idempotent and
 // return ErrUnknown when its external outcome cannot be established.
@@ -26,28 +41,55 @@ type WorkerReleaseOperations interface {
 // not retry or infer progress after an unknown external outcome; callers must
 // persist progress and reconcile before invoking a later step.
 func ReleaseWorker(ctx context.Context, node Node, operations WorkerReleaseOperations) error {
+	return ReleaseWorkerFromStep(ctx, node, operations, ReleaseStepCordon, nil)
+}
+
+// ReleaseWorkerFromStep resumes at start after a previously durable completed
+// step. An UNKNOWN step must be explicitly reconciled by the caller before it
+// is passed here; this function never infers external progress.
+func ReleaseWorkerFromStep(ctx context.Context, node Node, operations WorkerReleaseOperations, start ReleaseStep, checkpoint ReleaseCheckpoint) error {
 	if operations == nil || node.VMID < 3000 || node.VMID > 3999 || node.Generation == "" || node.TaskID == "" || node.KubeNode == "" || node.State == NodeUnknown {
 		return ErrReleaseInvalid
 	}
 	steps := []struct {
-		name string
+		step ReleaseStep
 		call func(context.Context, Node) error
 	}{
-		{"cordon", operations.Cordon},
-		{"drain", operations.Drain},
-		{"remove Kubernetes node", operations.RemoveNode},
-		{"verify Kubernetes node removal", operations.VerifyNodeRemoved},
-		{"verify Proxmox identity", operations.VerifyIdentity},
-		{"stop", operations.Stop},
-		{"verify stopped", operations.VerifyStopped},
-		{"destroy", operations.Destroy},
+		{ReleaseStepCordon, operations.Cordon},
+		{ReleaseStepDrain, operations.Drain},
+		{ReleaseStepRemoveNode, operations.RemoveNode},
+		{ReleaseStepVerifyNodeRemoved, operations.VerifyNodeRemoved},
+		{ReleaseStepVerifyIdentity, operations.VerifyIdentity},
+		{ReleaseStepStop, operations.Stop},
+		{ReleaseStepVerifyStopped, operations.VerifyStopped},
+		{ReleaseStepDestroy, operations.Destroy},
 	}
-	for _, step := range steps {
+	startIndex := -1
+	for index, step := range steps {
+		if step.step == start {
+			startIndex = index
+			break
+		}
+	}
+	if startIndex < 0 {
+		return ErrReleaseInvalid
+	}
+	for _, step := range steps[startIndex:] {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if err := step.call(ctx, node); err != nil {
-			return fmt.Errorf("release step %s: %w", step.name, err)
+			if checkpoint != nil {
+				if checkpointErr := checkpoint(ctx, node, step.step, err); checkpointErr != nil {
+					return fmt.Errorf("release step %s failed and checkpoint failed: %w", step.step, checkpointErr)
+				}
+			}
+			return fmt.Errorf("release step %s: %w", step.step, err)
+		}
+		if checkpoint != nil {
+			if err := checkpoint(ctx, node, step.step, nil); err != nil {
+				return fmt.Errorf("release step %s checkpoint: %w", step.step, err)
+			}
 		}
 	}
 	return nil

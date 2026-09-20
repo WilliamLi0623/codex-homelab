@@ -90,3 +90,34 @@ func TestReleaseWorkerHonorsContextCancellation(t *testing.T) {
 		t.Fatalf("mutations = %v, want none", operations.order)
 	}
 }
+
+func TestReleaseWorkerFromStepResumesAfterVerifiedCheckpoint(t *testing.T) {
+	operations := &releaseOps{}
+	if err := ReleaseWorkerFromStep(context.Background(), validReleaseNode(), operations, ReleaseStepVerifyIdentity, nil); err != nil {
+		t.Fatalf("ReleaseWorkerFromStep() error = %v", err)
+	}
+	want := []string{"verify-identity", "stop", "verify-stopped", "destroy"}
+	if !reflect.DeepEqual(operations.order, want) {
+		t.Fatalf("resumed order = %v, want %v", operations.order, want)
+	}
+}
+
+func TestReleaseWorkerCheckpointRecordsSuccessAndUnknown(t *testing.T) {
+	operations := &releaseOps{fail: "stop", err: ErrUnknown}
+	var checkpoints []string
+	err := ReleaseWorkerFromStep(context.Background(), validReleaseNode(), operations, ReleaseStepCordon, func(_ context.Context, _ Node, step ReleaseStep, stepErr error) error {
+		if stepErr == nil {
+			checkpoints = append(checkpoints, string(step)+":COMPLETED")
+		} else {
+			checkpoints = append(checkpoints, string(step)+":UNKNOWN")
+		}
+		return nil
+	})
+	if !errors.Is(err, ErrUnknown) {
+		t.Fatalf("error = %v, want ErrUnknown", err)
+	}
+	want := []string{"CORDON:COMPLETED", "DRAIN:COMPLETED", "REMOVE_NODE:COMPLETED", "VERIFY_NODE_REMOVED:COMPLETED", "VERIFY_IDENTITY:COMPLETED", "STOP:UNKNOWN"}
+	if !reflect.DeepEqual(checkpoints, want) {
+		t.Fatalf("checkpoints = %v, want %v", checkpoints, want)
+	}
+}

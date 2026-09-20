@@ -9,8 +9,12 @@ import (
 )
 
 type Claim struct {
-	ID   string
-	VMID int
+	ID         string
+	VMID       int
+	TaskID     string
+	AttemptID  string
+	Generation string
+	KubeNode   string
 }
 type ClaimRequest struct {
 	TaskID    string
