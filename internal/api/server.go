@@ -20,10 +20,19 @@ type Dispatcher interface {
 	Dispatch(context.Context, orchestrator.Request) (orchestrator.Dispatch, error)
 }
 
+type Completer interface {
+	Complete(context.Context, orchestrator.CompletionInput) (store.CompletionRecord, error)
+}
+
 type dispatchRequest struct {
 	AttemptID         string   `json:"attempt_id"`
 	Prompt            string   `json:"prompt"`
 	ValidationCommand []string `json:"validation_command,omitempty"`
+}
+
+type completeRequest struct {
+	Branch            string   `json:"branch"`
+	ValidationCommand []string `json:"validation_command"`
 }
 
 type dispatchResponse struct {
@@ -37,6 +46,7 @@ type dispatchResponse struct {
 type Server struct {
 	store      *store.Store
 	dispatcher Dispatcher
+	completer  Completer
 	mux        *http.ServeMux
 }
 
@@ -120,7 +130,11 @@ func NewServer(database *store.Store) *Server {
 }
 
 func NewServerWithDispatcher(database *store.Store, dispatcher Dispatcher) *Server {
-	server := &Server{store: database, dispatcher: dispatcher, mux: http.NewServeMux()}
+	return NewServerWithDispatcherAndCompletion(database, dispatcher, nil)
+}
+
+func NewServerWithDispatcherAndCompletion(database *store.Store, dispatcher Dispatcher, completer Completer) *Server {
+	server := &Server{store: database, dispatcher: dispatcher, completer: completer, mux: http.NewServeMux()}
 	server.mux.HandleFunc("GET /v1/health", server.health)
 	server.mux.HandleFunc("GET /v1/ready", server.ready)
 	server.mux.HandleFunc("GET /v1/status", server.status)
@@ -133,9 +147,34 @@ func NewServerWithDispatcher(database *store.Store, dispatcher Dispatcher) *Serv
 	server.mux.HandleFunc("POST /v1/tasks/{id}/cancel", server.cancelTask)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/attempts", server.startAttempt)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/dispatch", server.dispatchTask)
+	server.mux.HandleFunc("POST /v1/tasks/{id}/attempts/{attemptID}/complete", server.completeAttempt)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/retry", server.retryTask)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/attempts/{attemptID}/reconcile", server.reconcileAttempt)
 	return server
+}
+
+func (s *Server) completeAttempt(writer http.ResponseWriter, request *http.Request) {
+	if s.completer == nil {
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]string{"error": "completion consumer is not configured"})
+		return
+	}
+	var input completeRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil || strings.TrimSpace(input.Branch) == "" || len(input.ValidationCommand) == 0 {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "branch and validation_command are required"})
+		return
+	}
+	record, err := s.completer.Complete(request.Context(), orchestrator.CompletionInput{TaskID: request.PathValue("id"), AttemptID: request.PathValue("attemptID"), Branch: input.Branch, ValidationCommand: input.ValidationCommand})
+	if errors.Is(err, orchestrator.ErrCompletionReleasePending) {
+		writeJSON(writer, http.StatusAccepted, map[string]any{"completion": record, "release_pending": true})
+		return
+	}
+	if err != nil {
+		writeJSON(writer, http.StatusConflict, map[string]string{"error": "attempt completion failed"})
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"completion": record})
 }
 
 func (s *Server) dispatchTask(writer http.ResponseWriter, request *http.Request) {

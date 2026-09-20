@@ -56,7 +56,8 @@ func newHandlerFromEnvironment(databasePath string) (http.Handler, func(), error
 	kubernetesRuntime := k3s.NewKubernetesRuntime(config.Kubernetes)
 	executor := k3s.New(kubernetesRuntime, database)
 	dispatcher := orchestrator.New(capacityAdapter, executor)
-	return api.NewServerWithDispatcher(database, dispatcher), closeStore, nil
+	completer := orchestrator.NewResultConsumer(database, executor, capacityAdapter)
+	return api.NewServerWithDispatcherAndCompletion(database, dispatcher, completer), closeStore, nil
 }
 
 // newHandlerWithDispatcher is the explicit assembly seam for production
