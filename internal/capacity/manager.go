@@ -52,6 +52,7 @@ type CreateRequest struct {
 	Cores        int
 	MemoryMiB    int
 	DiskGiB      int
+	Metadata     map[string]string
 }
 
 type Runtime interface {

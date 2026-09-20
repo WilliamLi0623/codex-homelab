@@ -33,7 +33,7 @@ func TestProxmoxRuntimeCloneUsesOnlyDynamicVMIDs(t *testing.T) {
 		Client:  server.Client(),
 	})
 
-	node, err := runtime.Create(context.Background(), CreateRequest{VMID: 3010, TemplateVMID: 3005, Generation: "gen-1", Hostname: "codex-3010"})
+	node, err := runtime.Create(context.Background(), CreateRequest{VMID: 3010, TemplateVMID: 3005, Generation: "gen-1", Hostname: "codex-3010", Metadata: map[string]string{"managed-by": ManagedBy, "task": "task-1"}})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -46,7 +46,7 @@ func TestProxmoxRuntimeCloneUsesOnlyDynamicVMIDs(t *testing.T) {
 	if gotAuth == "" {
 		t.Fatal("clone request omitted injected authorization")
 	}
-	if gotForm.Get("newid") != "3010" || gotForm.Get("hostname") != "codex-3010" || gotForm.Get("full") != "1" {
+	if gotForm.Get("newid") != "3010" || gotForm.Get("hostname") != "codex-3010" || gotForm.Get("full") != "1" || gotForm.Get("description") != "managed-by=codex-homelab\ntask=task-1" {
 		t.Fatalf("clone form = %v", gotForm)
 	}
 }

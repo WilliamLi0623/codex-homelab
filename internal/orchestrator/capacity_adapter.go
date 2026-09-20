@@ -116,6 +116,7 @@ func (a *CapacityAdapter) claim(ctx context.Context, request CapacityClaimReques
 		VMID: claim.VMID, Generation: claim.Generation, TaskID: claim.TaskID,
 		TemplateVMID: templateVMID, Hostname: workerHostname(claim.VMID, claim.Generation),
 		Storage: request.Storage, Bridge: request.Bridge, Cores: request.Cores, MemoryMiB: request.MemoryMiB, DiskGiB: request.DiskGiB,
+		Metadata: workerMetadata(claim),
 	})
 	if errors.Is(err, capacity.ErrUnknown) {
 		if persistErr := a.store.UpdateCapacityClaimState(ctx, claim.TaskID, claim.AttemptID, store.CapacityUnknown); persistErr != nil {
@@ -143,6 +144,14 @@ func workerHostname(vmid int, generation string) string {
 		return ""
 	}
 	return hostname
+}
+
+func workerMetadata(claim store.CapacityClaim) map[string]string {
+	metadata, err := capacity.WorkerMetadata(claim.Generation, claim.TaskID, claim.CreatedAt)
+	if err != nil {
+		return nil
+	}
+	return metadata
 }
 
 func deterministicGeneration(taskID, attemptID string) string {

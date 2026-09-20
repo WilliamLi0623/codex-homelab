@@ -116,6 +116,13 @@ func (r *ProxmoxRuntime) Create(ctx context.Context, request CreateRequest) (Nod
 	if request.Hostname != "" {
 		form.Set("hostname", request.Hostname)
 	}
+	if len(request.Metadata) > 0 {
+		metadata, err := EncodeMetadata(request.Metadata)
+		if err != nil {
+			return Node{}, err
+		}
+		form.Set("description", metadata)
+	}
 	if request.Storage != "" {
 		form.Set("storage", request.Storage)
 	}
