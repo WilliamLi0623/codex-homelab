@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/agentd"
+	"github.com/WilliamLi0623/codex-homelab/internal/workspace"
 )
 
 func TestDecodeNextRequestAllowsCumulativeInputOverOneMiB(t *testing.T) {
@@ -53,6 +55,49 @@ func TestValidateEnvironmentAcceptsSafeAttemptSpecificCodexHome(t *testing.T) {
 	env := []string{fmt.Sprintf("CODEX_HOME=/tmp/%s", "attempt-1"), "CODEX_ATTEMPT_ID=attempt-1"}
 	if err := validateEnvironment(env); err != nil {
 		t.Fatalf("validateEnvironment() error = %v", err)
+	}
+}
+
+type workspaceRunner struct {
+	calls []struct {
+		dir  string
+		name string
+		args []string
+	}
+}
+
+func (r *workspaceRunner) Run(_ context.Context, dir, name string, args ...string) (string, error) {
+	r.calls = append(r.calls, struct {
+		dir  string
+		name string
+		args []string
+	}{dir: dir, name: name, args: append([]string(nil), args...)})
+	return "", nil
+}
+
+var _ workspace.Runner = (*workspaceRunner)(nil)
+
+func TestPrepareConfiguredWorkspaceIsOptionalOrComplete(t *testing.T) {
+	base := []string{"CODEX_HOME=/tmp/attempt-1", "CODEX_ATTEMPT_ID=attempt-1"}
+	if err := prepareConfiguredWorkspace(context.Background(), base, &workspaceRunner{}); err != nil {
+		t.Fatalf("unconfigured workspace error = %v", err)
+	}
+	if err := prepareConfiguredWorkspace(context.Background(), append(base, "CODEX_REPOSITORY=repo"), &workspaceRunner{}); err == nil {
+		t.Fatal("partial workspace configuration accepted")
+	}
+
+	root := t.TempDir()
+	runner := &workspaceRunner{}
+	env := append(base,
+		"CODEX_REPOSITORY=https://example.invalid/repo.git",
+		"CODEX_BASE_REF=refs/heads/main",
+		"CODEX_WORKSPACE="+filepath.Join(root, "attempt-1"),
+	)
+	if err := prepareConfiguredWorkspace(context.Background(), env, runner); err != nil {
+		t.Fatalf("complete workspace configuration error = %v", err)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("workspace calls = %d, want 2", len(runner.calls))
 	}
 }
 

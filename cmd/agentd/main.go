@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/agentd"
+	"github.com/WilliamLi0623/codex-homelab/internal/workspace"
 )
 
 type request struct {
@@ -115,6 +116,9 @@ func main() {
 	defer stop()
 	environment := os.Environ()
 	if err := validateEnvironment(environment); err != nil {
+		fatal(err)
+	}
+	if err := prepareConfiguredWorkspace(ctx, environment, nil); err != nil {
 		fatal(err)
 	}
 	process, err := agentd.StartCodexAppServer(ctx, *codex, environment)
@@ -355,6 +359,35 @@ func validateEnvironment(environment []string) error {
 	}
 	if path.Base(path.Clean(home)) != attemptID {
 		return errors.New("agentd requires CODEX_HOME basename to equal CODEX_ATTEMPT_ID")
+	}
+	return nil
+}
+
+func prepareConfiguredWorkspace(ctx context.Context, environment []string, runner workspace.Runner) error {
+	values := make(map[string]string)
+	for _, entry := range environment {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[name] = value
+		}
+	}
+	repository := strings.TrimSpace(values["CODEX_REPOSITORY"])
+	baseRef := strings.TrimSpace(values["CODEX_BASE_REF"])
+	workspacePath := strings.TrimSpace(values["CODEX_WORKSPACE"])
+	configured := 0
+	for _, value := range []string{repository, baseRef, workspacePath} {
+		if value != "" {
+			configured++
+		}
+	}
+	if configured == 0 {
+		return nil
+	}
+	if configured != 3 {
+		return errors.New("agentd workspace configuration is incomplete")
+	}
+	if err := workspace.Prepare(ctx, repository, baseRef, workspacePath, values["CODEX_ATTEMPT_ID"], runner); err != nil {
+		return errors.New("agentd workspace preparation failed")
 	}
 	return nil
 }
