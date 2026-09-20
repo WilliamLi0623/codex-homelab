@@ -17,6 +17,7 @@ coverage.out
 .readonly-gocache/
 .codex-go-cache/
 .review-gocache*/
+.test-gocache/
 
 # Local linked worktrees
 .worktrees/
