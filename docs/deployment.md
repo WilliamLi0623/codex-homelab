@@ -23,7 +23,9 @@ App Server with an explicit attempt-specific `CODEX_HOME`, reads newline-
 delimited JSON requests containing `prompt` from stdin, and emits one result
 per request. The first request starts a thread; later requests resume that
 same thread before starting a new turn. Results contain only a thread ID and
-event method names. Build a Linux amd64 artifact with:
+event method names. The worker requires non-empty `CODEX_HOME` and
+`CODEX_ATTEMPT_ID`; the final directory name of `CODEX_HOME` must equal the
+safe attempt ID. Build a Linux amd64 artifact with:
 
 ```powershell
 $env:GOOS = "linux"

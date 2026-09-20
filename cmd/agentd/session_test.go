@@ -1,11 +1,60 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/agentd"
 )
+
+func TestDecodeNextRequestAllowsCumulativeInputOverOneMiB(t *testing.T) {
+	line := `{"prompt":"` + strings.Repeat("x", 700_000) + `"}` + "\n"
+	input := strings.Repeat(line, 2)
+	reader := bufio.NewReader(strings.NewReader(input))
+	for i := 0; i < 2; i++ {
+		if _, err := decodeNextRequest(reader); err != nil {
+			t.Fatalf("request %d: %v", i+1, err)
+		}
+	}
+}
+
+func TestDecodeNextRequestRejectsSingleOversizedJSONLine(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader(`{"prompt":"` + strings.Repeat("x", 1<<20) + `"}` + "\n"))
+	if _, err := decodeNextRequest(reader); err == nil {
+		t.Fatal("decodeNextRequest() accepted an oversized request")
+	}
+}
+
+func TestValidateEnvironmentRequiresAttemptSpecificCodexHome(t *testing.T) {
+	cases := []struct {
+		name string
+		env  []string
+	}{
+		{name: "relative codex home", env: []string{"CODEX_HOME=attempt-1", "CODEX_ATTEMPT_ID=attempt-1"}},
+		{name: "missing codex home", env: []string{"CODEX_ATTEMPT_ID=attempt-1"}},
+		{name: "empty codex home", env: []string{"CODEX_HOME=", "CODEX_ATTEMPT_ID=attempt-1"}},
+		{name: "missing attempt id", env: []string{"CODEX_HOME=/tmp/attempt-1"}},
+		{name: "empty attempt id", env: []string{"CODEX_HOME=/tmp/attempt-1", "CODEX_ATTEMPT_ID="}},
+		{name: "mismatched final directory", env: []string{"CODEX_HOME=/tmp/other", "CODEX_ATTEMPT_ID=attempt-1"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateEnvironment(tc.env); err == nil {
+				t.Fatalf("validateEnvironment(%v) accepted invalid environment", tc.env)
+			}
+		})
+	}
+}
+
+func TestValidateEnvironmentAcceptsSafeAttemptSpecificCodexHome(t *testing.T) {
+	env := []string{fmt.Sprintf("CODEX_HOME=/tmp/%s", "attempt-1"), "CODEX_ATTEMPT_ID=attempt-1"}
+	if err := validateEnvironment(env); err != nil {
+		t.Fatalf("validateEnvironment() error = %v", err)
+	}
+}
 
 type fakeRunner struct {
 	calls []string
