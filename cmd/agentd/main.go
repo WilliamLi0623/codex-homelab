@@ -42,6 +42,7 @@ type session struct {
 	runner runner
 	mu     sync.Mutex
 	thread string
+	result *response
 }
 
 func newSession(runner runner) *session { return &session{runner: runner} }
@@ -57,7 +58,9 @@ func (s *session) run(ctx context.Context, input request) (response, error) {
 			return response{}, err
 		}
 		s.thread = thread
-		return response{ThreadID: thread, Events: summarizeEvents(events)}, nil
+		result := response{ThreadID: thread, Events: summarizeEvents(events)}
+		s.result = &result
+		return result, nil
 	}
 	if err := s.runner.ResumeThread(ctx, s.thread); err != nil {
 		return response{}, err
@@ -69,7 +72,18 @@ func (s *session) run(ctx context.Context, input request) (response, error) {
 	if err != nil {
 		return response{}, err
 	}
-	return response{ThreadID: s.thread, Events: summarizeEvents(events)}, nil
+	result := response{ThreadID: s.thread, Events: summarizeEvents(events)}
+	s.result = &result
+	return result, nil
+}
+
+func (s *session) lastResult() (response, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.result == nil {
+		return response{}, false
+	}
+	return *s.result, true
 }
 
 type clientRunner struct{ client *agentd.Client }
@@ -105,6 +119,15 @@ func main() {
 	session := newSession(clientRunner{client: process.Client})
 	server := startHTTPServer(ctx, *listen, session)
 	if server != nil {
+		if raw := os.Getenv("CODEX_AGENTD_REQUEST"); raw != "" {
+			input, err := decodeEnvironmentRequest(raw)
+			if err != nil {
+				fatal(errors.New("invalid CODEX_AGENTD_REQUEST"))
+			}
+			if _, err := session.run(ctx, input); err != nil {
+				fatal(errors.New("initial agentd request failed"))
+			}
+		}
 		defer func() { _ = server.Shutdown(context.Background()) }()
 		waitForHTTPServer(ctx)
 		return
@@ -145,6 +168,18 @@ func newHTTPHandler(session *session) http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("/v1/result", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeHTTPError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		result, ok := session.lastResult()
+		if !ok {
+			writeHTTPError(w, http.StatusNotFound, "result not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
 	})
 	mux.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -224,6 +259,22 @@ func decodeNextRequest(reader *bufio.Reader) (request, error) {
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return request{}, errors.New("worker request line must contain one JSON object")
+	}
+	if strings.TrimSpace(input.Prompt) == "" {
+		return request{}, errors.New("worker prompt is required")
+	}
+	return input, nil
+}
+
+func decodeEnvironmentRequest(raw string) (request, error) {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var input request
+	if err := decoder.Decode(&input); err != nil {
+		return request{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return request{}, errors.New("environment request must contain one JSON object")
 	}
 	if strings.TrimSpace(input.Prompt) == "" {
 		return request{}, errors.New("worker prompt is required")

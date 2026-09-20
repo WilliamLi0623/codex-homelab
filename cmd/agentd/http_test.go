@@ -22,6 +22,67 @@ func TestHTTPHealthz(t *testing.T) {
 	}
 }
 
+func TestHTTPResultInitiallyNotFound(t *testing.T) {
+	h := newHTTPHandler(newSession(&httpFakeRunner{}))
+	r := httptest.NewRecorder()
+	h.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/v1/result", nil))
+	if r.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
+	}
+}
+
+func TestHTTPResultReturnsMostRecentSuccessfulResponse(t *testing.T) {
+	h := newHTTPHandler(newSession(&httpFakeRunner{}))
+	post := httptest.NewRecorder()
+	h.ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"prompt":"first"}`)))
+	if post.Code != http.StatusOK {
+		t.Fatalf("post status=%d body=%s", post.Code, post.Body.String())
+	}
+	get := httptest.NewRecorder()
+	h.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/v1/result", nil))
+	if get.Code != http.StatusOK {
+		t.Fatalf("get status=%d body=%s", get.Code, get.Body.String())
+	}
+	var got response
+	if err := json.NewDecoder(get.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ThreadID != "thread-1" || len(got.Events) != 1 || got.Events[0] != "turn/completed" {
+		t.Fatalf("result=%+v", got)
+	}
+}
+
+func TestInitialEnvironmentRequestUsesStrictJSON(t *testing.T) {
+	valid := `{"prompt":"initial"}`
+	input, err := decodeEnvironmentRequest(valid)
+	if err != nil || input.Prompt != "initial" {
+		t.Fatalf("input=%+v err=%v", input, err)
+	}
+	for _, raw := range []string{`{"prompt":"initial","extra":1}`, `{"prompt":"initial"}{}`, `{}`, `{"prompt":""}`} {
+		if _, err := decodeEnvironmentRequest(raw); err == nil {
+			t.Fatalf("accepted invalid environment request %q", raw)
+		}
+	}
+}
+
+func TestHTTPResultNotChangedByFailedRequest(t *testing.T) {
+	runner := &httpFakeRunner{}
+	h := newHTTPHandler(newSession(runner))
+	first := httptest.NewRecorder()
+	h.ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"prompt":"first"}`)))
+	runner.err = errors.New("prompt must not leak")
+	failed := httptest.NewRecorder()
+	h.ServeHTTP(failed, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"prompt":"secret-prompt"}`)))
+	if strings.Contains(failed.Body.String(), "secret-prompt") || strings.Contains(failed.Body.String(), "prompt must not leak") {
+		t.Fatalf("error leaked sensitive data: %s", failed.Body.String())
+	}
+	got := httptest.NewRecorder()
+	h.ServeHTTP(got, httptest.NewRequest(http.MethodGet, "/v1/result", nil))
+	if got.Code != http.StatusOK || !strings.Contains(got.Body.String(), "thread-1") {
+		t.Fatalf("status=%d body=%s", got.Code, got.Body.String())
+	}
+}
+
 func TestHTTPMessagesShareSessionAcrossFollowUp(t *testing.T) {
 	runner := &httpFakeRunner{}
 	h := newHTTPHandler(newSession(runner))
