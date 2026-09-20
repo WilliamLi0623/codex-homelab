@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,7 +62,7 @@ func TestKubernetesRuntimeCreateJobIsDeterministicAndIdempotent(t *testing.T) {
 		t.Fatalf("env=%v", envs)
 	}
 	command := container["command"].([]any)[2].(string)
-	if !strings.Contains(command, `mkdir -p "$CODEX_HOME"`) || strings.Index(command, "mkdir -p") > strings.Index(command, "printf") {
+	if !strings.Contains(command, `mkdir -p "$CODEX_HOME"`) || !strings.Contains(command, "/usr/local/bin/codex-agentd --listen 0.0.0.0:8080") || !strings.Contains(command, "exec") {
 		t.Fatalf("command=%q", command)
 	}
 }
@@ -88,6 +89,12 @@ func TestKubernetesRuntimeConfigValidationAndFailClosed(t *testing.T) {
 	}
 	if _, err := r.Observe(context.Background(), "job"); err == nil {
 		t.Fatal("Observe accepted invalid config")
+	}
+	if err := r.SendMessage(context.Background(), "job", "message"); err == nil {
+		t.Fatal("SendMessage accepted invalid config")
+	}
+	if _, err := r.CollectResult(context.Background(), "job"); err == nil {
+		t.Fatal("CollectResult accepted invalid config")
 	}
 }
 
@@ -161,16 +168,20 @@ func TestKubernetesRuntimeTimeoutIsUnknownAndTokenIsNotLeaked(t *testing.T) {
 	}
 }
 
-func TestKubernetesRuntimeCollectResultRequiresCompletionAndCommit(t *testing.T) {
+func TestKubernetesRuntimeCollectResultUsesPersistentResultProxy(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/jobs/"):
-			w.Write([]byte(`{"metadata":{"name":"job"},"status":{"succeeded":1}}`))
 		case r.URL.Path == "/api/v1/namespaces/ns/pods":
+			if r.Method != http.MethodGet || r.URL.Query().Get("labelSelector") != "job-name=job" {
+				t.Errorf("pod list request: method=%s query=%s", r.Method, r.URL.RawQuery)
+			}
 			w.Write([]byte(`{"items":[{"metadata":{"name":"pod"}}]}`))
-		case strings.HasSuffix(r.URL.Path, "/pods/pod/log"):
-			w.Write([]byte(`{"thread_id":"thread-1","events":["done"],"commit_sha":"abc123"}`))
+		case r.URL.Path == "/api/v1/namespaces/ns/pods/pod:8080/proxy/v1/result":
+			if r.Method != http.MethodGet {
+				t.Errorf("result proxy method=%s", r.Method)
+			}
+			w.Write([]byte(`{"thread_id":"thread-1","events":["done"],"commit_sha":"0123456789abcdef0123456789abcdef01234567"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -178,14 +189,86 @@ func TestKubernetesRuntimeCollectResultRequiresCompletionAndCommit(t *testing.T)
 	defer server.Close()
 	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", Token: "token", WorkerImage: "image", ServiceAccount: "sa", HTTPClient: server.Client()})
 	result, err := r.CollectResult(context.Background(), "job")
-	if err != nil || result.CommitSHA != "abc123" || !strings.Contains(result.Output, "thread-1") {
+	if err != nil || result.CommitSHA != "0123456789abcdef0123456789abcdef01234567" || !strings.Contains(result.Output, "thread-1") {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 }
 
 func TestKubernetesRuntimeFollowUpUnsupportedAndCancelNotFound(t *testing.T) {
-	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: "http://127.0.0.1:1", Namespace: "ns"})
-	if err := r.SendMessage(context.Background(), "job", "hi"); !errors.Is(err, ErrFollowUpUnsupported) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"items":[]}`))
+	}))
+	defer server.Close()
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", Token: "token", WorkerImage: "image", ServiceAccount: "sa", HTTPClient: server.Client()})
+	if err := r.SendMessage(context.Background(), "job", "hi"); !errors.Is(err, ErrWorkerNotReady) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestKubernetesRuntimeSendMessageUsesPodProxy(t *testing.T) {
+	var gotPath, gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/namespaces/ns/pods" {
+			if r.Method != http.MethodGet || r.URL.Query().Get("labelSelector") != "job-name=job" {
+				t.Errorf("pod list request: method=%s query=%s", r.Method, r.URL.RawQuery)
+			}
+			w.Write([]byte(`{"items":[{"metadata":{"name":"pod"}}]}`))
+			return
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/namespaces/ns/pods/pod:8080/proxy/v1/messages" {
+			t.Errorf("proxy request: method=%s path=%s", r.Method, r.URL.Path)
+		}
+		gotPath = r.URL.Path
+		data, _ := io.ReadAll(r.Body)
+		gotBody = string(data)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", Token: "token", WorkerImage: "image", ServiceAccount: "sa", HTTPClient: server.Client()})
+	if err := r.SendMessage(context.Background(), "job", "follow up"); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/api/v1/namespaces/ns/pods/pod:8080/proxy/v1/messages" || gotBody != `{"prompt":"follow up"}` {
+		t.Fatalf("path=%q body=%q", gotPath, gotBody)
+	}
+}
+
+func TestKubernetesRuntimeCollectResultRequiresCommitSHA(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/namespaces/ns/pods" {
+			if r.Method != http.MethodGet || r.URL.Query().Get("labelSelector") != "job-name=job" {
+				t.Errorf("pod list request: method=%s query=%s", r.Method, r.URL.RawQuery)
+			}
+			w.Write([]byte(`{"items":[{"metadata":{"name":"pod"}}]}`))
+			return
+		}
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/namespaces/ns/pods/pod:8080/proxy/v1/result" {
+			t.Errorf("result proxy request: method=%s path=%s", r.Method, r.URL.Path)
+		}
+		w.Write([]byte(`{"thread_id":"thread-1","events":["done"]}`))
+	}))
+	defer server.Close()
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", Token: "token", WorkerImage: "image", ServiceAccount: "sa", HTTPClient: server.Client()})
+	if _, err := r.CollectResult(context.Background(), "job"); !errors.Is(err, ErrResultProtocol) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestKubernetesRuntimeCollectResultRejectsInvalidCommitSHA(t *testing.T) {
+	for _, commitSHA := range []string{"abc123", "0123456789abcdef0123456789abcdef0123456z"} {
+		t.Run(commitSHA, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/namespaces/ns/pods" {
+					w.Write([]byte(`{"items":[{"metadata":{"name":"pod"}}]}`))
+					return
+				}
+				w.Write([]byte(`{"thread_id":"thread-1","events":["done"],"commit_sha":"` + commitSHA + `"}`))
+			}))
+			defer server.Close()
+			r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", Token: "token", WorkerImage: "image", ServiceAccount: "sa", HTTPClient: server.Client()})
+			if _, err := r.CollectResult(context.Background(), "job"); !errors.Is(err, ErrResultProtocol) {
+				t.Fatalf("err=%v", err)
+			}
+		})
 	}
 }

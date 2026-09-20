@@ -28,11 +28,18 @@ func main() {
 }
 
 func newHandler(databasePath string) (http.Handler, func(), error) {
+	return newHandlerWithDispatcher(databasePath, nil)
+}
+
+// newHandlerWithDispatcher is the explicit assembly seam for production
+// dependencies. A nil dispatcher is intentionally retained as an unconfigured
+// state so readiness stays fail-closed until a validated broker is injected.
+func newHandlerWithDispatcher(databasePath string, dispatcher api.Dispatcher) (http.Handler, func(), error) {
 	database, err := store.Open(databasePath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open controller store: %w", err)
 	}
-	return api.NewServer(database), func() {
+	return api.NewServerWithDispatcher(database, dispatcher), func() {
 		if err := database.Close(); err != nil {
 			log.Printf("close controller store: %v", err)
 		}

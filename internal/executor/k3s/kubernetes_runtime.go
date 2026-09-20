@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-var ErrFollowUpUnsupported = errors.New("follow-up messages are unsupported for one-shot Kubernetes Jobs")
+var ErrWorkerNotReady = errors.New("Kubernetes worker Pod is not ready")
 var ErrResultProtocol = errors.New("agentd result protocol is invalid")
 var labelValuePattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$`)
 
@@ -105,7 +105,7 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 		return Job{}, err
 	}
 	requestJSON, _ := json.Marshal(map[string]string{"prompt": request.Prompt})
-	body := map[string]any{"apiVersion": "batch/v1", "kind": "Job", "metadata": map[string]any{"name": name, "labels": labels}, "spec": map[string]any{"backoffLimit": 0, "template": map[string]any{"metadata": map[string]any{"labels": labels}, "spec": map[string]any{"restartPolicy": "Never", "serviceAccountName": r.config.ServiceAccount, "containers": []any{map[string]any{"name": "worker", "image": r.config.WorkerImage, "command": []string{"/bin/sh", "-c", "mkdir -p \"$CODEX_HOME\" && printf '%s\\n' \"$CODEX_AGENTD_REQUEST\" | /usr/local/bin/codex-agentd"}, "env": []any{map[string]string{"name": "CODEX_AGENTD_REQUEST", "value": string(requestJSON)}, map[string]string{"name": "CODEX_ATTEMPT_ID", "value": request.AttemptID}, map[string]string{"name": "CODEX_HOME", "value": "/work/" + request.AttemptID}}}}}}}}
+	body := map[string]any{"apiVersion": "batch/v1", "kind": "Job", "metadata": map[string]any{"name": name, "labels": labels}, "spec": map[string]any{"backoffLimit": 0, "template": map[string]any{"metadata": map[string]any{"labels": labels}, "spec": map[string]any{"restartPolicy": "Never", "serviceAccountName": r.config.ServiceAccount, "containers": []any{map[string]any{"name": "worker", "image": r.config.WorkerImage, "command": []string{"/bin/sh", "-c", "mkdir -p \"$CODEX_HOME\" && exec /usr/local/bin/codex-agentd --listen 0.0.0.0:8080"}, "env": []any{map[string]string{"name": "CODEX_AGENTD_REQUEST", "value": string(requestJSON)}, map[string]string{"name": "CODEX_ATTEMPT_ID", "value": request.AttemptID}, map[string]string{"name": "CODEX_HOME", "value": "/work/" + request.AttemptID}}}}}}}}
 	var created kJob
 	if err := r.doJSON(ctx, http.MethodPost, r.path("apis/batch/v1/namespaces/"+url.PathEscape(r.config.Namespace)+"/jobs"), body, &created); err != nil {
 		return Job{}, err
@@ -127,8 +127,15 @@ func (r *KubernetesRuntime) Observe(ctx context.Context, id string) (Job, error)
 	return Job{ID: id, TaskID: job.Metadata.Labels["task_id"], AttemptID: job.Metadata.Labels["attempt_id"], State: jobState(job.Status.Active, job.Status.Succeeded, job.Status.Failed)}, nil
 }
 
-func (r *KubernetesRuntime) SendMessage(context.Context, string, string) error {
-	return ErrFollowUpUnsupported
+func (r *KubernetesRuntime) SendMessage(ctx context.Context, id, message string) error {
+	if err := r.config.ValidateConfig(); err != nil {
+		return err
+	}
+	pod, err := r.workerPod(ctx, id)
+	if err != nil {
+		return err
+	}
+	return r.doJSON(ctx, http.MethodPost, r.podProxyPath(pod, "messages"), map[string]string{"prompt": message}, nil)
 }
 
 func (r *KubernetesRuntime) Cancel(ctx context.Context, id string) error {
@@ -140,23 +147,15 @@ func (r *KubernetesRuntime) Cancel(ctx context.Context, id string) error {
 }
 
 func (r *KubernetesRuntime) CollectResult(ctx context.Context, id string) (Result, error) {
-	job, err := r.Observe(ctx, id)
+	if err := r.config.ValidateConfig(); err != nil {
+		return Result{}, err
+	}
+	pod, err := r.workerPod(ctx, id)
 	if err != nil {
 		return Result{}, err
 	}
-	if job.State != JobSucceeded && job.State != JobFailed {
-		return Result{}, fmt.Errorf("cannot collect result from incomplete Job %q", id)
-	}
-	var pods kPodList
-	selector := url.QueryEscape("job-name=" + id)
-	if err := r.doJSON(ctx, http.MethodGet, r.path("api/v1/namespaces/"+url.PathEscape(r.config.Namespace)+"/pods?labelSelector="+selector), nil, &pods); err != nil {
-		return Result{}, err
-	}
-	if len(pods.Items) == 0 {
-		return Result{}, fmt.Errorf("%w: no worker Pod", ErrResultProtocol)
-	}
 	// A successful result requires worker stdout to contain commit_sha; this adapter never fabricates it.
-	data, err := r.read(ctx, http.MethodGet, r.path("api/v1/namespaces/"+url.PathEscape(r.config.Namespace)+"/pods/"+url.PathEscape(pods.Items[0].Metadata.Name)+"/log"))
+	data, err := r.read(ctx, http.MethodGet, r.podProxyPath(pod, "result"))
 	if err != nil {
 		return Result{}, err
 	}
@@ -168,10 +167,29 @@ func (r *KubernetesRuntime) CollectResult(ctx context.Context, id string) (Resul
 	if json.Unmarshal(bytes.TrimSpace(data), &response) != nil || response.ThreadID == "" || len(response.Events) == 0 || string(response.Events) == "null" {
 		return Result{}, fmt.Errorf("%w: thread_id and events are required", ErrResultProtocol)
 	}
-	if response.CommitSHA == "" {
-		return Result{}, fmt.Errorf("%w: commit_sha is required", ErrResultProtocol)
+	if len(response.CommitSHA) != 40 {
+		return Result{}, fmt.Errorf("%w: commit_sha must be 40 hexadecimal characters", ErrResultProtocol)
+	}
+	if _, err := hex.DecodeString(response.CommitSHA); err != nil {
+		return Result{}, fmt.Errorf("%w: commit_sha must be 40 hexadecimal characters", ErrResultProtocol)
 	}
 	return Result{Output: string(bytes.TrimSpace(data)), CommitSHA: response.CommitSHA}, nil
+}
+
+func (r *KubernetesRuntime) workerPod(ctx context.Context, id string) (string, error) {
+	var pods kPodList
+	selector := url.QueryEscape("job-name=" + id)
+	if err := r.doJSON(ctx, http.MethodGet, r.path("api/v1/namespaces/"+url.PathEscape(r.config.Namespace)+"/pods?labelSelector="+selector), nil, &pods); err != nil {
+		return "", err
+	}
+	if len(pods.Items) == 0 {
+		return "", ErrWorkerNotReady
+	}
+	return pods.Items[0].Metadata.Name, nil
+}
+
+func (r *KubernetesRuntime) podProxyPath(pod, endpoint string) string {
+	return r.path("api/v1/namespaces/" + url.PathEscape(r.config.Namespace) + "/pods/" + url.PathEscape(pod) + ":8080/proxy/v1/" + endpoint)
 }
 
 func (r *KubernetesRuntime) path(p string) string {

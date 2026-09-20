@@ -22,8 +22,14 @@ Do not use this command to provision infrastructure; it only reports the checked
 App Server with an explicit attempt-specific `CODEX_HOME`, reads newline-
 delimited JSON requests containing `prompt` from stdin, and emits one result
 per request. The first request starts a thread; later requests resume that
-same thread before starting a new turn. Results contain only a thread ID and
-event method names. The worker requires non-empty `CODEX_HOME` and
+same thread before starting a new turn. Results contain a thread ID and event
+method names. When the external validation/publication flow writes a result
+file, it may set `CODEX_COMMIT_SHA_FILE` to an absolute, attempt-scoped path.
+After a successful turn, agentd reads that file and includes optional
+`commit_sha` only when the file content is exactly 40 hexadecimal characters.
+Missing, unreadable, or invalid files leave the field absent; agentd does not
+infer the SHA or run Git. The file is read again after each successful
+follow-up turn. The worker requires non-empty `CODEX_HOME` and
 `CODEX_ATTEMPT_ID`; the final directory name of `CODEX_HOME` must equal the
 safe attempt ID. For a persistent Pod worker, pass `--listen 0.0.0.0:8080`;
 the worker then exposes `GET /v1/healthz` and `POST /v1/messages` over the

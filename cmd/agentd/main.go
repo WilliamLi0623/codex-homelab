@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -25,8 +27,9 @@ type request struct {
 	Prompt string `json:"prompt"`
 }
 type response struct {
-	ThreadID string   `json:"thread_id"`
-	Events   []string `json:"events"`
+	ThreadID  string   `json:"thread_id"`
+	Events    []string `json:"events"`
+	CommitSHA string   `json:"commit_sha,omitempty"`
 }
 
 const maxRequestLine = 1 << 20
@@ -39,13 +42,16 @@ type runner interface {
 }
 
 type session struct {
-	runner runner
-	mu     sync.Mutex
-	thread string
-	result *response
+	runner        runner
+	mu            sync.Mutex
+	thread        string
+	result        *response
+	commitSHAFile string
 }
 
-func newSession(runner runner) *session { return &session{runner: runner} }
+func newSession(runner runner) *session {
+	return &session{runner: runner, commitSHAFile: os.Getenv("CODEX_COMMIT_SHA_FILE")}
+}
 
 func (s *session) run(ctx context.Context, input request) (response, error) {
 	if !s.mu.TryLock() {
@@ -58,7 +64,7 @@ func (s *session) run(ctx context.Context, input request) (response, error) {
 			return response{}, err
 		}
 		s.thread = thread
-		result := response{ThreadID: thread, Events: summarizeEvents(events)}
+		result := response{ThreadID: thread, Events: summarizeEvents(events), CommitSHA: readCommitSHA(s.commitSHAFile)}
 		s.result = &result
 		return result, nil
 	}
@@ -72,7 +78,7 @@ func (s *session) run(ctx context.Context, input request) (response, error) {
 	if err != nil {
 		return response{}, err
 	}
-	result := response{ThreadID: s.thread, Events: summarizeEvents(events)}
+	result := response{ThreadID: s.thread, Events: summarizeEvents(events), CommitSHA: readCommitSHA(s.commitSHAFile)}
 	s.result = &result
 	return result, nil
 }
@@ -374,4 +380,19 @@ func summarizeEvents(events []agentd.Event) []string {
 	}
 	return methods
 }
+
+func readCommitSHA(filename string) string {
+	if !filepath.IsAbs(filename) {
+		return ""
+	}
+	contents, err := os.ReadFile(filename)
+	if err != nil || len(contents) != 40 {
+		return ""
+	}
+	if _, err := hex.DecodeString(string(contents)); err != nil {
+		return ""
+	}
+	return string(contents)
+}
+
 func fatal(err error) { _, _ = fmt.Fprintln(os.Stderr, err); os.Exit(1) }
