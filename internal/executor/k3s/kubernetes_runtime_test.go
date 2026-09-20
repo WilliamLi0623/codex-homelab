@@ -82,6 +82,50 @@ func TestKubernetesRuntimeRejectsNonAttemptWorkspacePath(t *testing.T) {
 	}
 }
 
+func TestKubernetesRuntimeNodeLifecycleCordonDrainRemoveAndVerify(t *testing.T) {
+	activePodDeleted := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/nodes/codex-node":
+			var patch map[string]map[string]bool
+			if err := json.NewDecoder(r.Body).Decode(&patch); err != nil || !patch["spec"]["unschedulable"] {
+				t.Fatalf("cordon patch = %+v, err = %v", patch, err)
+			}
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/pods":
+			if activePodDeleted {
+				_, _ = io.WriteString(w, `{"items":[{"metadata":{"name":"daemon","namespace":"kube-system","ownerReferences":[{"kind":"DaemonSet"}]},"status":{"phase":"Running"}}]}`)
+			} else {
+				_, _ = io.WriteString(w, `{"items":[{"metadata":{"name":"work","namespace":"default"},"status":{"phase":"Running"}},{"metadata":{"name":"daemon","namespace":"kube-system","ownerReferences":[{"kind":"DaemonSet"}]},"status":{"phase":"Running"}},{"metadata":{"name":"mirror","namespace":"kube-system","annotations":{"kubernetes.io/config.mirror":"hash"}},"status":{"phase":"Running"}}]}`)
+			}
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/namespaces/default/pods/work":
+			activePodDeleted = true
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/nodes/codex-node":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/nodes/codex-node":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			t.Fatalf("unexpected node lifecycle request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "default", Token: "secret", WorkerImage: "worker:latest", ServiceAccount: "sa", HTTPClient: server.Client(), DrainTimeout: time.Second, DrainPollInterval: time.Millisecond})
+	if err := r.Cordon(context.Background(), "codex-node"); err != nil {
+		t.Fatalf("Cordon() = %v", err)
+	}
+	if err := r.Drain(context.Background(), "codex-node"); err != nil {
+		t.Fatalf("Drain() = %v", err)
+	}
+	if err := r.RemoveNode(context.Background(), "codex-node"); err != nil {
+		t.Fatalf("RemoveNode() = %v", err)
+	}
+	if err := r.VerifyNodeRemoved(context.Background(), "codex-node"); err != nil {
+		t.Fatalf("VerifyNodeRemoved() = %v", err)
+	}
+}
+
 func containsEnv(envs []any, name, value string) bool {
 	for _, raw := range envs {
 		e := raw.(map[string]any)

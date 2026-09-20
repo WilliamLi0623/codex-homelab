@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 )
 
 var ErrWorkerNotReady = errors.New("Kubernetes worker Pod is not ready")
@@ -20,12 +21,14 @@ var ErrResultProtocol = errors.New("agentd result protocol is invalid")
 var labelValuePattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$`)
 
 type KubernetesConfig struct {
-	BaseURL        string
-	Namespace      string
-	Token          string
-	WorkerImage    string
-	ServiceAccount string
-	HTTPClient     *http.Client
+	BaseURL           string
+	Namespace         string
+	Token             string
+	WorkerImage       string
+	ServiceAccount    string
+	HTTPClient        *http.Client
+	DrainTimeout      time.Duration
+	DrainPollInterval time.Duration
 }
 
 type KubernetesRuntime struct{ config KubernetesConfig }
