@@ -22,6 +22,32 @@ func TestHealthReportsControllerReady(t *testing.T) {
 	}
 }
 
+func TestReadinessReportsDispatcherUnavailable(t *testing.T) {
+	server := newTestServer(t)
+	recorder := httptest.NewRecorder()
+
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/ready", nil))
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
+	}
+	if recorder.Body.String() != "{\"error\":\"dispatcher is not configured\"}\n" {
+		t.Fatalf("body = %q, want stable readiness error", recorder.Body.String())
+	}
+}
+
+func TestReadinessReportsConfiguredDispatcher(t *testing.T) {
+	base := newTestServer(t)
+	server := NewServerWithDispatcher(base.store, &fakeDispatcher{})
+	recorder := httptest.NewRecorder()
+
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/ready", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+}
+
 func TestStatusReportsControllerAndTaskCounts(t *testing.T) {
 	server := newTestServer(t)
 	createTestTask(t, server)
@@ -201,6 +227,48 @@ func TestReconcileAttemptRejectsUnknownOutcome(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
+}
+
+func TestDispatchRejectsUnknownAttemptBeforeDispatcher(t *testing.T) {
+	base := newTestServer(t)
+	dispatcher := &fakeDispatcher{}
+	server := NewServerWithDispatcher(base.store, dispatcher)
+	taskID := createTestTask(t, server)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/tasks/"+taskID+"/dispatch", bytes.NewBufferString(`{"attempt_id":"missing","prompt":"run"}`)))
+	if recorder.Code < http.StatusBadRequest || recorder.Code >= http.StatusInternalServerError || len(dispatcher.requests) != 0 {
+		t.Fatalf("status = %d, requests = %d, body = %s; want 4xx and no dispatch", recorder.Code, len(dispatcher.requests), recorder.Body.String())
+	}
+}
+
+func TestDispatchRejectsAttemptBelongingToAnotherTaskBeforeDispatcher(t *testing.T) {
+	base := newTestServer(t)
+	dispatcher := &fakeDispatcher{}
+	server := NewServerWithDispatcher(base.store, dispatcher)
+	firstTaskID := createTestTask(t, server)
+	secondTaskID := createSecondTestTask(t, server)
+	start := httptest.NewRecorder()
+	server.ServeHTTP(start, httptest.NewRequest(http.MethodPost, "/v1/tasks/"+firstTaskID+"/attempts", bytes.NewBufferString(`{"profile":"openai-primary"}`)))
+	var started retryTaskResponse
+	if start.Code != http.StatusCreated || json.Unmarshal(start.Body.Bytes(), &started) != nil {
+		t.Fatalf("start status = %d, body = %s", start.Code, start.Body.String())
+	}
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/tasks/"+secondTaskID+"/dispatch", bytes.NewBufferString(`{"attempt_id":"`+started.Attempt.ID+`","prompt":"run"}`)))
+	if recorder.Code < http.StatusBadRequest || recorder.Code >= http.StatusInternalServerError || len(dispatcher.requests) != 0 {
+		t.Fatalf("status = %d, requests = %d, body = %s; want 4xx and no dispatch", recorder.Code, len(dispatcher.requests), recorder.Body.String())
+	}
+}
+
+func createSecondTestTask(t *testing.T, server *Server) string {
+	t.Helper()
+	created := httptest.NewRecorder()
+	server.ServeHTTP(created, httptest.NewRequest(http.MethodPost, "/v1/tasks", bytes.NewBufferString(`{"repository":"owner/repository","base_ref":"main","objective":"Another change","idempotency_key":"request-2"}`)))
+	var body createTaskResponse
+	if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &body) != nil {
+		t.Fatalf("create status = %d, body = %s", created.Code, created.Body.String())
+	}
+	return body.Task.ID
 }
 
 func createTestTask(t *testing.T, server *Server) string {

@@ -34,8 +34,12 @@ func TestDispatchTaskOverHTTPUsesPersistedAttempt(t *testing.T) {
 	if start.Code != http.StatusCreated {
 		t.Fatalf("start status=%d body=%s", start.Code, start.Body.String())
 	}
+	var started retryTaskResponse
+	if err := json.Unmarshal(start.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
 	dispatch := httptest.NewRecorder()
-	server.ServeHTTP(dispatch, httptest.NewRequest(http.MethodPost, "/v1/tasks/"+created.Task.ID+"/dispatch", bytes.NewBufferString(`{"attempt_id":"attempt-1","prompt":"run"}`)))
+	server.ServeHTTP(dispatch, httptest.NewRequest(http.MethodPost, "/v1/tasks/"+created.Task.ID+"/dispatch", bytes.NewBufferString(`{"attempt_id":"`+started.Attempt.ID+`","prompt":"run"}`)))
 	if dispatch.Code != http.StatusAccepted {
 		t.Fatalf("dispatch status=%d body=%s", dispatch.Code, dispatch.Body.String())
 	}

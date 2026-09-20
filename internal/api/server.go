@@ -121,6 +121,7 @@ func NewServer(database *store.Store) *Server {
 func NewServerWithDispatcher(database *store.Store, dispatcher Dispatcher) *Server {
 	server := &Server{store: database, dispatcher: dispatcher, mux: http.NewServeMux()}
 	server.mux.HandleFunc("GET /v1/health", server.health)
+	server.mux.HandleFunc("GET /v1/ready", server.ready)
 	server.mux.HandleFunc("GET /v1/status", server.status)
 	server.mux.HandleFunc("POST /v1/tasks", server.createTask)
 	server.mux.HandleFunc("GET /v1/tasks", server.listTasks)
@@ -155,6 +156,13 @@ func (s *Server) dispatchTask(writer http.ResponseWriter, request *http.Request)
 	}
 	if err != nil {
 		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "load task failed"})
+		return
+	}
+	if _, err := s.store.GetAttempt(request.Context(), task.ID, input.AttemptID); errors.Is(err, store.ErrAttemptNotFound) {
+		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "attempt not found for task"})
+		return
+	} else if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "load attempt failed"})
 		return
 	}
 	dispatch, err := s.dispatcher.Dispatch(request.Context(), orchestrator.Request{TaskID: task.ID, AttemptID: input.AttemptID, Prompt: input.Prompt})
@@ -326,6 +334,14 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 
 func (s *Server) health(writer http.ResponseWriter, _ *http.Request) {
 	writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) ready(writer http.ResponseWriter, _ *http.Request) {
+	if s.dispatcher == nil {
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]string{"error": "dispatcher is not configured"})
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]string{"status": "ready"})
 }
 
 func (s *Server) status(writer http.ResponseWriter, request *http.Request) {

@@ -29,6 +29,26 @@ type ProxmoxRuntime struct {
 	client  *http.Client
 }
 
+// ValidateConfig checks the configuration required by the Proxmox runtime.
+// Callers should validate configuration before constructing a runtime.
+func (config ProxmoxConfig) ValidateConfig() error {
+	baseURL := strings.TrimSpace(config.BaseURL)
+	parsedURL, err := url.Parse(baseURL)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
+		return errors.New("proxmox BaseURL must be an http/https URL with a host")
+	}
+	if strings.TrimSpace(config.Node) == "" {
+		return errors.New("proxmox node must not be empty")
+	}
+	if strings.TrimSpace(config.Token) == "" {
+		return errors.New("proxmox token must not be empty")
+	}
+	if config.Range.Min > config.Range.Max || config.Range.Min > 3000 || config.Range.Max < 3999 {
+		return errors.New("proxmox dynamic VMID range must be valid and cover 3000-3999")
+	}
+	return nil
+}
+
 func NewProxmoxRuntime(config ProxmoxConfig) *ProxmoxRuntime {
 	client := config.Client
 	if client == nil {

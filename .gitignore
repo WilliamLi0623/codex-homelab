@@ -13,6 +13,8 @@ bin/
 dist/
 coverage.out
 *.test
+.gocache/
+.readonly-gocache/
 
 # Local linked worktrees
 .worktrees/
