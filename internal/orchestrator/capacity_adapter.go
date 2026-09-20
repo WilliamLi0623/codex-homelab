@@ -71,7 +71,11 @@ func (a *CapacityAdapter) Create(ctx context.Context, request ClaimRequest) (Cla
 		Hostname: a.config.Hostname, Storage: a.config.Storage, Bridge: a.config.Bridge,
 		Cores: a.config.Cores, MemoryMiB: a.config.MemoryMiB, DiskGiB: a.config.DiskGiB,
 	})
-	return Claim{ID: stored.ID, VMID: stored.VMID, TaskID: stored.TaskID, AttemptID: stored.AttemptID, Generation: stored.Generation, KubeNode: a.config.Hostname}, err
+	kubeNode, identityErr := capacity.DynamicHostname(stored.VMID, stored.Generation)
+	if err == nil && identityErr != nil {
+		err = identityErr
+	}
+	return Claim{ID: stored.ID, VMID: stored.VMID, TaskID: stored.TaskID, AttemptID: stored.AttemptID, Generation: stored.Generation, KubeNode: kubeNode}, err
 }
 
 func (a *CapacityAdapter) Claim(ctx context.Context, request CapacityClaimRequest) (store.CapacityClaim, error) {
@@ -110,7 +114,7 @@ func (a *CapacityAdapter) claim(ctx context.Context, request CapacityClaimReques
 	}
 	_, err = a.manager.Create(ctx, capacity.CreateRequest{
 		VMID: claim.VMID, Generation: claim.Generation, TaskID: claim.TaskID,
-		TemplateVMID: templateVMID, Hostname: request.Hostname,
+		TemplateVMID: templateVMID, Hostname: workerHostname(claim.VMID, claim.Generation),
 		Storage: request.Storage, Bridge: request.Bridge, Cores: request.Cores, MemoryMiB: request.MemoryMiB, DiskGiB: request.DiskGiB,
 	})
 	if errors.Is(err, capacity.ErrUnknown) {
@@ -131,6 +135,14 @@ func (a *CapacityAdapter) claim(ctx context.Context, request CapacityClaimReques
 	}
 	claim.State = store.CapacityClaimed
 	return claim, nil
+}
+
+func workerHostname(vmid int, generation string) string {
+	hostname, err := capacity.DynamicHostname(vmid, generation)
+	if err != nil {
+		return ""
+	}
+	return hostname
 }
 
 func deterministicGeneration(taskID, attemptID string) string {

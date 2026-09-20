@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/WilliamLi0623/codex-homelab/internal/capacity"
 	"github.com/WilliamLi0623/codex-homelab/internal/executor/k3s"
 	"github.com/WilliamLi0623/codex-homelab/internal/store"
 )
@@ -139,7 +140,11 @@ func (c *ResultConsumer) Complete(ctx context.Context, input CompletionInput) (s
 	if err := c.store.FinalizeAttemptSuccess(ctx, input.TaskID, input.AttemptID); err != nil {
 		return completion, fmt.Errorf("finalize task and attempt state: %w", err)
 	}
-	if err := c.capacity.Release(ctx, Claim{ID: claim.ID, VMID: claim.VMID}); err != nil {
+	kubeNode, identityErr := capacity.DynamicHostname(claim.VMID, claim.Generation)
+	if identityErr != nil {
+		return completion, fmt.Errorf("derive worker identity: %w", identityErr)
+	}
+	if err := c.capacity.Release(ctx, Claim{ID: claim.ID, VMID: claim.VMID, TaskID: claim.TaskID, AttemptID: claim.AttemptID, Generation: claim.Generation, KubeNode: kubeNode}); err != nil {
 		return completion, fmt.Errorf("%w: %v", ErrCompletionReleasePending, err)
 	}
 	return completion, nil
