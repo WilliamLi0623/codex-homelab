@@ -205,12 +205,30 @@ func (s *Server) dispatchTask(writer http.ResponseWriter, request *http.Request)
 		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "load attempt failed"})
 		return
 	}
+	if len(input.ValidationCommand) > 0 {
+		if _, _, err := s.store.EnsureAttemptExecutionSpec(request.Context(), store.AttemptExecutionSpec{
+			TaskID: task.ID, AttemptID: input.AttemptID,
+			Branch:            deterministicAttemptBranch(task.ID, input.AttemptID),
+			ValidationCommand: input.ValidationCommand,
+		}); err != nil {
+			if errors.Is(err, store.ErrExecutionSpecConflict) {
+				writeJSON(writer, http.StatusConflict, map[string]string{"error": "attempt execution spec conflicts with prior dispatch"})
+				return
+			}
+			writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid execution spec"})
+			return
+		}
+	}
 	dispatch, err := s.dispatcher.Dispatch(request.Context(), orchestrator.Request{TaskID: task.ID, AttemptID: input.AttemptID, Prompt: input.Prompt, Repository: task.Repository, BaseRef: task.BaseRef, WorkspacePath: "/workspace/" + input.AttemptID, ValidationCommand: input.ValidationCommand})
 	if err != nil {
 		writeJSON(writer, http.StatusConflict, map[string]string{"error": "task dispatch failed"})
 		return
 	}
 	writeJSON(writer, http.StatusAccepted, dispatchResponse{TaskID: task.ID, AttemptID: input.AttemptID, ClaimID: dispatch.Claim.ID, VMID: dispatch.Claim.VMID, JobID: dispatch.Job.ID, State: string(dispatch.Job.State)})
+}
+
+func deterministicAttemptBranch(taskID, attemptID string) string {
+	return "refs/heads/codex/" + taskID + "/" + attemptID
 }
 func (s *Server) reconcileAttempt(writer http.ResponseWriter, request *http.Request) {
 	var input reconcileAttemptRequest

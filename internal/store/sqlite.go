@@ -122,4 +122,6 @@ var schemaMigrations = []schemaMigration{{Version: 1, Statements: []string{
 	"CREATE UNIQUE INDEX IF NOT EXISTS capacity_nodes_task_attempt ON capacity_nodes(task_id, attempt_id) WHERE task_id IS NOT NULL AND attempt_id IS NOT NULL",
 }}, {Version: 3, Statements: []string{
 	"CREATE TABLE IF NOT EXISTS release_progress (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, attempt_id TEXT NOT NULL, vmid INTEGER NOT NULL, generation TEXT NOT NULL, kube_node TEXT NOT NULL, step TEXT NOT NULL, state TEXT NOT NULL, error_summary TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(task_id, attempt_id))",
+}}, {Version: 4, Statements: []string{
+	"CREATE TABLE IF NOT EXISTS attempt_execution_specs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, attempt_id TEXT NOT NULL UNIQUE, branch TEXT NOT NULL, validation_command_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
 }}}

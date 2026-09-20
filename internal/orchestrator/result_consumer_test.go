@@ -49,6 +49,20 @@ func TestResultConsumerObserveAndCompleteRequiresSucceededJob(t *testing.T) {
 	}
 }
 
+func TestResultConsumerObserveAndCompleteStoredRequiresPersistedSpec(t *testing.T) {
+	database, task, attempt := resultConsumerFixture(t)
+	consumer := NewResultConsumer(database, observingResults{job: k3s.Job{AttemptID: attempt.ID, State: k3s.JobRunning}}, &releaseCapacity{})
+	if _, _, err := consumer.ObserveAndCompleteStored(context.Background(), task.ID, attempt.ID); !errors.Is(err, store.ErrExecutionSpecNotFound) {
+		t.Fatalf("missing spec error = %v", err)
+	}
+	if _, _, err := database.EnsureAttemptExecutionSpec(context.Background(), store.AttemptExecutionSpec{TaskID: task.ID, AttemptID: attempt.ID, Branch: "refs/heads/codex/task/attempt", ValidationCommand: []string{"go", "test"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := consumer.ObserveAndCompleteStored(context.Background(), task.ID, attempt.ID); !errors.Is(err, ErrCompletionNotReady) {
+		t.Fatalf("stored running error = %v", err)
+	}
+}
+
 func (c *releaseCapacity) Create(context.Context, ClaimRequest) (Claim, error) { return Claim{}, nil }
 func (c *releaseCapacity) Release(context.Context, Claim) error {
 	c.calls++

@@ -20,7 +20,7 @@ func TestOpenMigratesV3ControllerSchema(t *testing.T) {
 		"repositories", "task_intake", "runs", "tasks", "task_attempts",
 		"execution_handles", "capacity_nodes", "codex_threads", "task_messages",
 		"task_events", "model_profiles", "model_attempts", "provider_health",
-		"git_refs", "validation_results", "leases", "commands", "release_progress", "schema_migrations",
+		"git_refs", "validation_results", "leases", "commands", "release_progress", "attempt_execution_specs", "schema_migrations",
 	} {
 		if err := store.RequireTable(context.Background(), table); err != nil {
 			t.Errorf("RequireTable(%q) error = %v", table, err)

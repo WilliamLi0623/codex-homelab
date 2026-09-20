@@ -39,8 +39,11 @@ func TestDispatchTaskOverHTTPUsesPersistedAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatch := httptest.NewRecorder()
-	server.ServeHTTP(dispatch, httptest.NewRequest(http.MethodPost, "/v1/tasks/"+created.Task.ID+"/dispatch", bytes.NewBufferString(`{"attempt_id":"`+started.Attempt.ID+`","prompt":"run"}`)))
+	server.ServeHTTP(dispatch, httptest.NewRequest(http.MethodPost, "/v1/tasks/"+created.Task.ID+"/dispatch", bytes.NewBufferString(`{"attempt_id":"`+started.Attempt.ID+`","prompt":"run","validation_command":["go","test","./..."]}`)))
 	if dispatch.Code != http.StatusAccepted {
 		t.Fatalf("dispatch status=%d body=%s", dispatch.Code, dispatch.Body.String())
+	}
+	if _, err := base.store.GetAttemptExecutionSpec(context.Background(), created.Task.ID, started.Attempt.ID); err != nil {
+		t.Fatalf("execution spec missing: %v", err)
 	}
 }

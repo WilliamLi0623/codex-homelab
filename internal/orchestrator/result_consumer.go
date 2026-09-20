@@ -76,6 +76,19 @@ func (c *ResultConsumer) ObserveAndComplete(ctx context.Context, input Completio
 	}
 }
 
+// ObserveAndCompleteStored reconstructs completion input after a controller
+// restart. It deliberately refuses to guess the branch or validation command.
+func (c *ResultConsumer) ObserveAndCompleteStored(ctx context.Context, taskID, attemptID string) (k3s.Job, store.CompletionRecord, error) {
+	if c == nil || c.store == nil || taskID == "" || attemptID == "" {
+		return k3s.Job{}, store.CompletionRecord{}, ErrObservationUnavailable
+	}
+	spec, err := c.store.GetAttemptExecutionSpec(ctx, taskID, attemptID)
+	if err != nil {
+		return k3s.Job{}, store.CompletionRecord{}, err
+	}
+	return c.ObserveAndComplete(ctx, CompletionInput{TaskID: taskID, AttemptID: attemptID, Branch: spec.Branch, ValidationCommand: spec.ValidationCommand})
+}
+
 // Complete collects one durable worker result, atomically records validation
 // and the local git ref, then attempts capacity release. A release failure is
 // returned after durable completion so reconciliation can retry cleanup without
