@@ -19,9 +19,11 @@ Do not use this command to provision infrastructure; it only reports the checked
 ## Worker runtime gate
 
 `cmd/agentd` is the headless worker entrypoint. It starts the official Codex
-App Server with an explicit attempt-specific `CODEX_HOME`, reads one JSON
-request containing `prompt` from stdin, and emits only a thread ID and event
-method names. Build a Linux amd64 artifact with:
+App Server with an explicit attempt-specific `CODEX_HOME`, reads newline-
+delimited JSON requests containing `prompt` from stdin, and emits one result
+per request. The first request starts a thread; later requests resume that
+same thread before starting a new turn. Results contain only a thread ID and
+event method names. Build a Linux amd64 artifact with:
 
 ```powershell
 $env:GOOS = "linux"
