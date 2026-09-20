@@ -37,7 +37,7 @@ func TestKubernetesRuntimeCreateJobIsDeterministicAndIdempotent(t *testing.T) {
 		w.Write([]byte(`{"metadata":{"name":"ignored"}}`))
 	}))
 	defer server.Close()
-	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "default", Token: "secret", WorkerImage: "worker:latest", ServiceAccount: "sa", HTTPClient: server.Client()})
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "default", Token: "secret", WorkerImage: "worker:latest", ServiceAccount: "sa", Model: "glm-5.3-flash", OpenAIBaseURL: "https://cch.example/v1", ModelSecretName: "codex-model-gateway", ModelSecretKey: "api-key", HTTPClient: server.Client()})
 	first, err := r.CreateJob(context.Background(), JobRequest{TaskID: "task-1", AttemptID: "attempt-1", Prompt: "hello", Repository: "owner/repo", BaseRef: "main", WorkspacePath: "/workspace/attempt-1", ValidationCommand: []string{"go", "test", "./..."}})
 	if err != nil {
 		t.Fatal(err)
@@ -68,6 +68,13 @@ func TestKubernetesRuntimeCreateJobIsDeterministicAndIdempotent(t *testing.T) {
 	envs := container["env"].([]any)
 	if !containsEnv(envs, "CODEX_AGENTD_REQUEST", `{"prompt":"hello"}`) || !containsEnv(envs, "CODEX_ATTEMPT_ID", "attempt-1") || !containsEnv(envs, "CODEX_HOME", "/work/attempt-1") || !containsEnv(envs, "CODEX_REPOSITORY", "owner/repo") || !containsEnv(envs, "CODEX_BASE_REF", "main") || !containsEnv(envs, "CODEX_WORKSPACE", "/workspace/attempt-1") || !containsEnv(envs, "CODEX_VALIDATION_COMMAND", `["go","test","./..."]`) {
 		t.Fatalf("env=%v", envs)
+	}
+	if !containsEnv(envs, "CODEX_MODEL", "glm-5.3-flash") || !containsEnv(envs, "CODEX_OPENAI_BASE_URL", "https://cch.example/v1") {
+		t.Fatalf("provider env=%v", envs)
+	}
+	secretEnv, ok := findEnv(envs, "OPENAI_API_KEY")
+	if !ok || secretEnv["valueFrom"].(map[string]any)["secretKeyRef"].(map[string]any)["name"] != "codex-model-gateway" {
+		t.Fatalf("secret env=%v", envs)
 	}
 	command := container["command"].([]any)[2].(string)
 	if !strings.Contains(command, `mkdir -p "$CODEX_HOME"`) || !strings.Contains(command, "/usr/local/bin/codex-agentd --listen 0.0.0.0:8080") || !strings.Contains(command, "exec") {
@@ -134,6 +141,16 @@ func containsEnv(envs []any, name, value string) bool {
 		}
 	}
 	return false
+}
+
+func findEnv(envs []any, name string) (map[string]any, bool) {
+	for _, raw := range envs {
+		e := raw.(map[string]any)
+		if e["name"] == name {
+			return e, true
+		}
+	}
+	return nil, false
 }
 
 func TestKubernetesRuntimeConfigValidationAndFailClosed(t *testing.T) {

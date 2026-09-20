@@ -153,6 +153,9 @@ func main() {
 	if err := prepareConfiguredWorkspace(ctx, environment, nil); err != nil {
 		fatal(err)
 	}
+	if err := ensureCodexConfig(environment); err != nil {
+		fatal(err)
+	}
 	process, err := agentd.StartCodexAppServer(ctx, *codex, environment)
 	if err != nil {
 		fatal(err)

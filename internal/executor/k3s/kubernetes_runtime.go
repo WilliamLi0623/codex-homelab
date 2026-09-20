@@ -26,6 +26,10 @@ type KubernetesConfig struct {
 	Token             string
 	WorkerImage       string
 	ServiceAccount    string
+	Model             string
+	OpenAIBaseURL     string
+	ModelSecretName   string
+	ModelSecretKey    string
 	HTTPClient        *http.Client
 	DrainTimeout      time.Duration
 	DrainPollInterval time.Duration
@@ -113,6 +117,12 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 	}
 	requestJSON, _ := json.Marshal(map[string]string{"prompt": request.Prompt})
 	env := []any{map[string]string{"name": "CODEX_AGENTD_REQUEST", "value": string(requestJSON)}, map[string]string{"name": "CODEX_ATTEMPT_ID", "value": request.AttemptID}, map[string]string{"name": "CODEX_HOME", "value": "/work/" + request.AttemptID}}
+	if r.config.Model != "" {
+		env = append(env, map[string]string{"name": "CODEX_MODEL", "value": r.config.Model})
+	}
+	if r.config.OpenAIBaseURL != "" {
+		env = append(env, map[string]string{"name": "CODEX_OPENAI_BASE_URL", "value": r.config.OpenAIBaseURL})
+	}
 	if request.Repository != "" {
 		env = append(env, map[string]string{"name": "CODEX_REPOSITORY", "value": request.Repository})
 	}
@@ -158,6 +168,18 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 				},
 			},
 		},
+	}
+	if r.config.ModelSecretName != "" {
+		containerEnv := container["env"].([]any)
+		secretKey := r.config.ModelSecretKey
+		if secretKey == "" {
+			secretKey = "api-key"
+		}
+		containerEnv = append(containerEnv, map[string]any{
+			"name":      "OPENAI_API_KEY",
+			"valueFrom": map[string]any{"secretKeyRef": map[string]string{"name": r.config.ModelSecretName, "key": secretKey}},
+		})
+		container["env"] = containerEnv
 	}
 	var created kJob
 	if err := r.doJSON(ctx, http.MethodPost, r.path("apis/batch/v1/namespaces/"+url.PathEscape(r.config.Namespace)+"/jobs"), body, &created); err != nil {

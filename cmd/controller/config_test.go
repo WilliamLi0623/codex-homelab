@@ -35,6 +35,14 @@ func TestLoadEnvironmentConfigRejectsTemplateVMIDOutsideDynamicRange(t *testing.
 	}
 }
 
+func TestLoadEnvironmentConfigRejectsPartialModelSecretConfig(t *testing.T) {
+	setControllerEnvironment(t)
+	t.Setenv("CODEX_MODEL", "glm-5.3-flash")
+	if _, err := loadEnvironmentConfig(); err == nil {
+		t.Fatal("partial model config succeeded")
+	}
+}
+
 func setControllerEnvironment(t *testing.T) {
 	t.Helper()
 	t.Setenv("PROXMOX_BASE_URL", "https://proxmox.example")

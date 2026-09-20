@@ -45,6 +45,14 @@ func loadEnvironmentConfig() (environmentConfig, error) {
 	if err != nil || templateVMID < controllerVMIDMin || templateVMID > controllerVMIDMax {
 		return environmentConfig{}, fmt.Errorf("PROXMOX_TEMPLATE_VMID must be an integer in %d-%d", controllerVMIDMin, controllerVMIDMax)
 	}
+	model := strings.TrimSpace(os.Getenv("CODEX_MODEL"))
+	baseURL := strings.TrimSpace(os.Getenv("CODEX_OPENAI_BASE_URL"))
+	secretName := strings.TrimSpace(os.Getenv("CODEX_MODEL_SECRET_NAME"))
+	if model != "" || baseURL != "" || secretName != "" {
+		if model == "" || baseURL == "" || secretName == "" {
+			return environmentConfig{}, fmt.Errorf("CODEX_MODEL, CODEX_OPENAI_BASE_URL, and CODEX_MODEL_SECRET_NAME must be configured together")
+		}
+	}
 
 	config := environmentConfig{
 		Proxmox: capacity.ProxmoxConfig{
@@ -54,11 +62,15 @@ func loadEnvironmentConfig() (environmentConfig, error) {
 			Range:   capacity.VMIDRange{Min: controllerVMIDMin, Max: controllerVMIDMax},
 		},
 		Kubernetes: k3s.KubernetesConfig{
-			BaseURL:        values["KUBERNETES_BASE_URL"],
-			Namespace:      values["KUBERNETES_NAMESPACE"],
-			Token:          values["KUBERNETES_TOKEN"],
-			WorkerImage:    values["KUBERNETES_WORKER_IMAGE"],
-			ServiceAccount: values["KUBERNETES_SERVICE_ACCOUNT"],
+			BaseURL:         values["KUBERNETES_BASE_URL"],
+			Namespace:       values["KUBERNETES_NAMESPACE"],
+			Token:           values["KUBERNETES_TOKEN"],
+			WorkerImage:     values["KUBERNETES_WORKER_IMAGE"],
+			ServiceAccount:  values["KUBERNETES_SERVICE_ACCOUNT"],
+			Model:           model,
+			OpenAIBaseURL:   baseURL,
+			ModelSecretName: secretName,
+			ModelSecretKey:  strings.TrimSpace(os.Getenv("CODEX_MODEL_SECRET_KEY")),
 		},
 		CapacityConfig: orchestrator.CapacityAdapterConfig{
 			TemplateVMID: templateVMID,
