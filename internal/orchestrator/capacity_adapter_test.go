@@ -17,34 +17,38 @@ type adapterRuntime struct {
 	lastCreate   capacity.CreateRequest
 }
 
-type adapterReleaseOps struct{ order []string }
+type adapterReleaseOps struct {
+	order []string
+	fail  string
+	err   error
+}
 
-func (o *adapterReleaseOps) mark(step string) { o.order = append(o.order, step) }
-func (o *adapterReleaseOps) Cordon(context.Context, capacity.Node) error {
-	o.mark("cordon")
+func (o *adapterReleaseOps) mark(step string) error {
+	o.order = append(o.order, step)
+	if step == o.fail {
+		return o.err
+	}
 	return nil
 }
-func (o *adapterReleaseOps) Drain(context.Context, capacity.Node) error { o.mark("drain"); return nil }
+func (o *adapterReleaseOps) Cordon(context.Context, capacity.Node) error {
+	return o.mark("cordon")
+}
+func (o *adapterReleaseOps) Drain(context.Context, capacity.Node) error { return o.mark("drain") }
 func (o *adapterReleaseOps) RemoveNode(context.Context, capacity.Node) error {
-	o.mark("remove-node")
-	return nil
+	return o.mark("remove-node")
 }
 func (o *adapterReleaseOps) VerifyNodeRemoved(context.Context, capacity.Node) error {
-	o.mark("verify-node-removed")
-	return nil
+	return o.mark("verify-node-removed")
 }
 func (o *adapterReleaseOps) VerifyIdentity(context.Context, capacity.Node) error {
-	o.mark("verify-identity")
-	return nil
+	return o.mark("verify-identity")
 }
-func (o *adapterReleaseOps) Stop(context.Context, capacity.Node) error { o.mark("stop"); return nil }
+func (o *adapterReleaseOps) Stop(context.Context, capacity.Node) error { return o.mark("stop") }
 func (o *adapterReleaseOps) VerifyStopped(context.Context, capacity.Node) error {
-	o.mark("verify-stopped")
-	return nil
+	return o.mark("verify-stopped")
 }
 func (o *adapterReleaseOps) Destroy(context.Context, capacity.Node) error {
-	o.mark("destroy")
-	return nil
+	return o.mark("destroy")
 }
 
 var _ Capacity = (*CapacityAdapter)(nil)
@@ -163,6 +167,37 @@ func TestCapacityAdapterReleasePersistsOrderAndIsIdempotent(t *testing.T) {
 	progress, err := db.GetReleaseProgress(context.Background(), claim.TaskID, claim.AttemptID)
 	if err != nil || progress.Step != store.ReleaseStepDone || progress.State != store.ReleaseStateCompleted {
 		t.Fatalf("progress = (%+v, %v)", progress, err)
+	}
+}
+
+func TestCapacityAdapterRequiresExplicitReconcileAfterUnknown(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "capacity.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	runtime := &adapterRuntime{}
+	operations := &adapterReleaseOps{fail: "stop", err: capacity.ErrUnknown}
+	adapter := NewCapacityAdapterWithConfig(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3999}), CapacityAdapterConfig{TemplateVMID: 3005, Priority: 1, Hostname: "codex-3010-gen-1", ReleaseOperations: operations})
+	claim, err := adapter.Create(context.Background(), ClaimRequest{TaskID: "task", AttemptID: "attempt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Release(context.Background(), claim); !errors.Is(err, capacity.ErrUnknown) {
+		t.Fatalf("first release = %v", err)
+	}
+	if err := adapter.Release(context.Background(), claim); !errors.Is(err, ErrCapacityReleaseUnsafe) {
+		t.Fatalf("unreconciled release = %v", err)
+	}
+	if err := adapter.ReconcileRelease(context.Background(), claim, "Proxmox and Kubernetes observations agree"); err != nil {
+		t.Fatalf("reconcile = %v", err)
+	}
+	operations.fail = ""
+	if err := adapter.Release(context.Background(), claim); err != nil {
+		t.Fatalf("resumed release = %v", err)
+	}
+	if len(operations.order) != 9 {
+		t.Fatalf("operations after resume = %v", operations.order)
 	}
 }
 

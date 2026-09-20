@@ -42,6 +42,13 @@ func TestReleaseProgressDoesNotRegressAndPersistsUnknown(t *testing.T) {
 	if err := s.UpdateReleaseProgress(context.Background(), "task", "attempt", ReleaseStepCordon, ReleaseStatePending, ""); !errors.Is(err, ErrReleaseProgressRegress) {
 		t.Fatalf("regression error = %v", err)
 	}
+	if err := s.ReconcileReleaseProgress(context.Background(), ReleaseProgressRequest{TaskID: "task", AttemptID: "attempt", VMID: 3010, Generation: "gen", KubeNode: "node"}, "verified node still present"); err != nil {
+		t.Fatalf("reconcile = %v", err)
+	}
+	got, err = s.GetReleaseProgress(context.Background(), "task", "attempt")
+	if err != nil || got.State != ReleaseStatePending || got.Step != ReleaseStepDrain {
+		t.Fatalf("reconciled progress = (%+v, %v)", got, err)
+	}
 }
 
 func TestReleaseProgressRejectsUnsafeInputs(t *testing.T) {

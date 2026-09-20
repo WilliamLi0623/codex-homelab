@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -26,10 +27,11 @@ const (
 )
 
 var (
-	ErrReleaseProgressConflict = errors.New("release progress conflicts with existing identity")
-	ErrReleaseProgressInvalid  = errors.New("release progress is invalid")
-	ErrReleaseProgressNotFound = errors.New("release progress not found")
-	ErrReleaseProgressRegress  = errors.New("release progress cannot move backwards")
+	ErrReleaseProgressConflict  = errors.New("release progress conflicts with existing identity")
+	ErrReleaseProgressInvalid   = errors.New("release progress is invalid")
+	ErrReleaseProgressNotFound  = errors.New("release progress not found")
+	ErrReleaseProgressRegress   = errors.New("release progress cannot move backwards")
+	ErrReleaseProgressReconcile = errors.New("release progress cannot be reconciled")
 )
 
 type ReleaseProgressRequest struct {
@@ -106,12 +108,35 @@ func (s *Store) UpdateReleaseProgress(ctx context.Context, taskID, attemptID, st
 	if releaseStepOrder[step] < releaseStepOrder[current.Step] {
 		return ErrReleaseProgressRegress
 	}
+	if current.State == ReleaseStateUnknown && state != ReleaseStateUnknown && state != ReleaseStateCompleted {
+		return ErrReleaseProgressReconcile
+	}
 	if releaseStepOrder[step] == releaseStepOrder[current.Step] && current.State == ReleaseStateCompleted && state != ReleaseStateCompleted {
 		return ErrReleaseProgressRegress
 	}
 	_, err = s.db.ExecContext(ctx, "UPDATE release_progress SET step = ?, state = ?, error_summary = ?, updated_at = ? WHERE task_id = ? AND attempt_id = ?", step, state, errorSummary, time.Now().UTC().Format(time.RFC3339Nano), taskID, attemptID)
 	if err != nil {
 		return fmt.Errorf("update release progress: %w", err)
+	}
+	return nil
+}
+
+// ReconcileReleaseProgress is the only way to reopen an UNKNOWN step. The
+// proof is an external observation summary; this method does not verify it.
+func (s *Store) ReconcileReleaseProgress(ctx context.Context, request ReleaseProgressRequest, proof string) error {
+	if err := validateReleaseProgressRequest(request); err != nil || strings.TrimSpace(proof) == "" || len(proof) > 2048 {
+		return ErrReleaseProgressReconcile
+	}
+	current, err := s.GetReleaseProgress(ctx, request.TaskID, request.AttemptID)
+	if err != nil {
+		return err
+	}
+	if current.VMID != request.VMID || current.Generation != request.Generation || current.KubeNode != request.KubeNode || current.State != ReleaseStateUnknown {
+		return ErrReleaseProgressReconcile
+	}
+	_, err = s.db.ExecContext(ctx, "UPDATE release_progress SET state = ?, error_summary = ?, updated_at = ? WHERE task_id = ? AND attempt_id = ?", ReleaseStatePending, "reconciled: "+strings.TrimSpace(proof), time.Now().UTC().Format(time.RFC3339Nano), request.TaskID, request.AttemptID)
+	if err != nil {
+		return fmt.Errorf("reconcile release progress: %w", err)
 	}
 	return nil
 }

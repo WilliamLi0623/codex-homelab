@@ -155,10 +155,14 @@ func (a *CapacityAdapter) Release(ctx context.Context, claim Claim) error {
 	}
 	start := capacity.ReleaseStepCordon
 	if progress.Step != store.ReleaseStepNone {
-		if progress.State != store.ReleaseStateCompleted {
+		if progress.State == store.ReleaseStateUnknown {
 			return ErrCapacityReleaseUnsafe
 		}
-		start, err = nextReleaseStep(progress.Step)
+		if progress.State == store.ReleaseStateCompleted {
+			start, err = nextReleaseStep(progress.Step)
+		} else {
+			start, err = releaseStepFromStore(progress.Step)
+		}
 		if err != nil {
 			return err
 		}
@@ -182,6 +186,19 @@ func (a *CapacityAdapter) Release(ctx context.Context, claim Claim) error {
 	return a.store.UpdateReleaseProgress(ctx, claim.TaskID, claim.AttemptID, store.ReleaseStepDone, store.ReleaseStateCompleted, "")
 }
 
+// ReconcileRelease records an explicit external observation before a later
+// Release call may retry an UNKNOWN step.
+func (a *CapacityAdapter) ReconcileRelease(ctx context.Context, claim Claim, proof string) error {
+	if a == nil || a.store == nil || claim.ID == "" || claim.TaskID == "" || claim.AttemptID == "" || claim.Generation == "" || claim.KubeNode == "" {
+		return ErrCapacityReleaseUnsafe
+	}
+	stored, err := a.store.GetCapacityClaim(ctx, claim.TaskID, claim.AttemptID)
+	if err != nil || stored.ID != claim.ID || stored.VMID != claim.VMID || stored.Generation != claim.Generation {
+		return ErrCapacityReleaseUnsafe
+	}
+	return a.store.ReconcileReleaseProgress(ctx, store.ReleaseProgressRequest{TaskID: claim.TaskID, AttemptID: claim.AttemptID, VMID: claim.VMID, Generation: claim.Generation, KubeNode: claim.KubeNode}, proof)
+}
+
 func nextReleaseStep(step string) (capacity.ReleaseStep, error) {
 	switch step {
 	case store.ReleaseStepCordon:
@@ -200,6 +217,29 @@ func nextReleaseStep(step string) (capacity.ReleaseStep, error) {
 		return capacity.ReleaseStepDestroy, nil
 	case store.ReleaseStepDestroy:
 		return "", nil
+	default:
+		return "", ErrCapacityReleaseUnsafe
+	}
+}
+
+func releaseStepFromStore(step string) (capacity.ReleaseStep, error) {
+	switch step {
+	case store.ReleaseStepCordon:
+		return capacity.ReleaseStepCordon, nil
+	case store.ReleaseStepDrain:
+		return capacity.ReleaseStepDrain, nil
+	case store.ReleaseStepRemoveNode:
+		return capacity.ReleaseStepRemoveNode, nil
+	case store.ReleaseStepVerifyNodeRemoved:
+		return capacity.ReleaseStepVerifyNodeRemoved, nil
+	case store.ReleaseStepVerifyIdentity:
+		return capacity.ReleaseStepVerifyIdentity, nil
+	case store.ReleaseStepStop:
+		return capacity.ReleaseStepStop, nil
+	case store.ReleaseStepVerifyStopped:
+		return capacity.ReleaseStepVerifyStopped, nil
+	case store.ReleaseStepDestroy:
+		return capacity.ReleaseStepDestroy, nil
 	default:
 		return "", ErrCapacityReleaseUnsafe
 	}
