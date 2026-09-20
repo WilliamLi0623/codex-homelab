@@ -3,6 +3,7 @@ package capacity
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -85,5 +86,40 @@ func TestProxmoxRuntimeObservesStatusWithoutExposingToken(t *testing.T) {
 	}
 	if node.VMID != 3010 || node.State != NodeRunning || node.KubeNode != "codex-3010" {
 		t.Fatalf("observed node = %+v", node)
+	}
+}
+
+func TestProxmoxRuntimeVerifiesExactDynamicIdentityReadOnly(t *testing.T) {
+	metadata, err := WorkerMetadata("gen-1", "task-1", "2026-09-20T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	description, err := EncodeMetadata(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api2/json/nodes/pve-node/lxc/3010/config" {
+			t.Fatalf("identity request = %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"vmid": 3010, "hostname": "codex-lxc-3010-gen-1", "description": description}})
+	}))
+	defer server.Close()
+	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3999}, Client: server.Client()})
+	if err := runtime.VerifyIdentity(context.Background(), Node{VMID: 3010, Generation: "gen-1", TaskID: "task-1"}); err != nil {
+		t.Fatalf("VerifyIdentity() error = %v", err)
+	}
+}
+
+func TestProxmoxRuntimeRejectsMismatchedIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"vmid": 3011, "hostname": "codex-lxc-3010-gen-1", "description": "managed-by=codex-homelab"}})
+	}))
+	defer server.Close()
+	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3999}, Client: server.Client()})
+	if err := runtime.VerifyIdentity(context.Background(), Node{VMID: 3010, Generation: "gen-1", TaskID: "task-1"}); !errors.Is(err, ErrIdentityInvalid) {
+		t.Fatalf("VerifyIdentity() error = %v, want ErrIdentityInvalid", err)
 	}
 }

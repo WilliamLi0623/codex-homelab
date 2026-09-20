@@ -27,3 +27,22 @@ func TestEncodeMetadataRejectsUnsafeValues(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodeAndValidateWorkerMetadata(t *testing.T) {
+	metadata, err := WorkerMetadata("gen-1", "task-1", "2026-09-20T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := EncodeMetadata(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeMetadata(encoded)
+	if err != nil || ValidateWorkerMetadata(decoded, "gen-1", "task-1") != nil {
+		t.Fatalf("decoded metadata = %+v, err = %v", decoded, err)
+	}
+	decoded["task"] = "other"
+	if !errors.Is(ValidateWorkerMetadata(decoded, "gen-1", "task-1"), ErrMetadataInvalid) {
+		t.Fatal("mismatched task metadata was accepted")
+	}
+}

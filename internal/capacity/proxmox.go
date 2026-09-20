@@ -165,6 +165,46 @@ func (r *ProxmoxRuntime) Observe(ctx context.Context, vmid int) (Node, error) {
 	return Node{VMID: envelope.Data.VMID, KubeNode: envelope.Data.Name, State: state}, nil
 }
 
+// VerifyIdentity performs a read-only exact identity check before any release
+// mutation. It verifies the dynamic VMID, deterministic hostname, and all
+// ownership metadata stored in the LXC description.
+func (r *ProxmoxRuntime) VerifyIdentity(ctx context.Context, node Node) error {
+	if err := r.validate(node.VMID); err != nil {
+		return err
+	}
+	if node.Generation == "" || node.TaskID == "" {
+		return ErrIdentityInvalid
+	}
+	expectedHostname, err := DynamicHostname(node.VMID, node.Generation)
+	if err != nil {
+		return err
+	}
+	path := "/nodes/" + url.PathEscape(r.node) + "/lxc/" + strconv.Itoa(node.VMID) + "/config"
+	response, err := r.request(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return ErrUnknown
+	}
+	defer response.Body.Close()
+	var envelope struct {
+		Data struct {
+			VMID        int    `json:"vmid"`
+			Hostname    string `json:"hostname"`
+			Description string `json:"description"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+		return fmt.Errorf("decode Proxmox identity: %w", err)
+	}
+	if envelope.Data.VMID != node.VMID || envelope.Data.Hostname != expectedHostname {
+		return ErrIdentityInvalid
+	}
+	metadata, err := DecodeMetadata(envelope.Data.Description)
+	if err != nil || ValidateWorkerMetadata(metadata, node.Generation, node.TaskID) != nil {
+		return ErrIdentityInvalid
+	}
+	return nil
+}
+
 func (r *ProxmoxRuntime) action(ctx context.Context, method string, vmid int, suffix string) error {
 	if err := r.validate(vmid); err != nil {
 		return err

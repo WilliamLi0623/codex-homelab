@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"time"
 )
 
 var ErrMetadataInvalid = errors.New("worker metadata is invalid")
@@ -44,4 +45,32 @@ func EncodeMetadata(metadata map[string]string) (string, error) {
 		parts = append(parts, key+"="+metadata[key])
 	}
 	return strings.Join(parts, "\n"), nil
+}
+
+func DecodeMetadata(encoded string) (map[string]string, error) {
+	if strings.TrimSpace(encoded) == "" {
+		return nil, ErrMetadataInvalid
+	}
+	metadata := make(map[string]string)
+	for _, line := range strings.Split(encoded, "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" || strings.ContainsAny(key, "\r\n=;") || strings.ContainsAny(value, "\r\n") {
+			return nil, ErrMetadataInvalid
+		}
+		if _, exists := metadata[key]; exists {
+			return nil, ErrMetadataInvalid
+		}
+		metadata[key] = value
+	}
+	return metadata, nil
+}
+
+func ValidateWorkerMetadata(metadata map[string]string, generation, taskID string) error {
+	if metadata["managed-by"] != ManagedBy || metadata["generation"] != generation || metadata["task"] != taskID || metadata["execution-class"] != "dedicated-lxc" {
+		return ErrMetadataInvalid
+	}
+	if _, err := time.Parse(time.RFC3339Nano, metadata["created"]); err != nil {
+		return ErrMetadataInvalid
+	}
+	return nil
 }
