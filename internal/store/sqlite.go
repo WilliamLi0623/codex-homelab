@@ -4,20 +4,38 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
 
 type Store struct {
-	db *sql.DB
+	db                      *sql.DB
+	capacityMu              sync.Mutex
+	reservedVMIDs           map[int]struct{}
+	capacityStateUpdateHook func(context.Context, string, string, string) error
 }
 
 func Open(path string) (*Store, error) {
+	return OpenWithCapacityConfig(path, CapacityConfig{ReservedVMIDs: []int{3005}})
+}
+
+func OpenWithCapacityConfig(path string, config CapacityConfig) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
 	}
-	store := &Store{db: db}
+	reserved, err := normalizeReservedVMIDs(config.ReservedVMIDs)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	store := &Store{db: db, reservedVMIDs: reserved}
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("set sqlite busy timeout: %w", err)
+	}
 	if err := store.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -98,4 +116,8 @@ var schemaMigrations = []schemaMigration{{Version: 1, Statements: []string{
 	"CREATE TABLE IF NOT EXISTS validation_results (id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, command TEXT NOT NULL, state TEXT NOT NULL, output_ref TEXT, created_at TEXT NOT NULL)",
 	"CREATE TABLE IF NOT EXISTS leases (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, owner_id TEXT NOT NULL, expires_at TEXT NOT NULL, UNIQUE(resource_type, resource_id))",
 	"CREATE TABLE IF NOT EXISTS commands (id TEXT PRIMARY KEY, task_id TEXT, attempt_id TEXT, command TEXT NOT NULL, state TEXT NOT NULL, output_ref TEXT, created_at TEXT NOT NULL)",
+}}, {Version: 2, Statements: []string{
+	"ALTER TABLE capacity_nodes ADD COLUMN attempt_id TEXT",
+	"ALTER TABLE capacity_nodes ADD COLUMN priority INTEGER NOT NULL DEFAULT 1",
+	"CREATE UNIQUE INDEX IF NOT EXISTS capacity_nodes_task_attempt ON capacity_nodes(task_id, attempt_id) WHERE task_id IS NOT NULL AND attempt_id IS NOT NULL",
 }}}
