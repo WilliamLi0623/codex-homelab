@@ -84,6 +84,9 @@ func (c *ResultConsumer) Complete(ctx context.Context, input CompletionInput) (s
 			return store.CompletionRecord{}, fmt.Errorf("record completion: %w", err)
 		}
 	}
+	if err := c.store.FinalizeAttemptSuccess(ctx, input.TaskID, input.AttemptID); err != nil {
+		return completion, fmt.Errorf("finalize task and attempt state: %w", err)
+	}
 	if err := c.capacity.Release(ctx, Claim{ID: claim.ID, VMID: claim.VMID}); err != nil {
 		return completion, fmt.Errorf("%w: %v", ErrCompletionReleasePending, err)
 	}
