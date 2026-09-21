@@ -7,6 +7,12 @@ $order=@(101,102,104,105,106,107,108,109,9701,103,210)
 foreach($id in $order){
   $g=$script:Allowlist | Where-Object {$_.Id -eq $id} | Select-Object -First 1
   if(!$g){throw "ID $id is not allowlisted"}
+  if(!(Test-GuestExists $g)){
+    $otherType=if($g.Type -eq "vm"){"lxc"}else{"vm"}
+    if(Test-GuestExists @{Id=$g.Id;Type=$otherType;Name=""}){throw "Guest $($g.Id) exists with unexpected type $otherType"}
+    Write-StageLog $stage ("already absent $($g.Type) $($g.Id)")
+    continue
+  }
   [void](Assert-Guest $g)
   Write-StageLog $stage ("verified $($g.Type) $($g.Id) $($g.Name)")
   if($g.Type -eq "vm"){

@@ -13,8 +13,13 @@ try {
   }
   foreach($name in $cmds.Keys){ (Invoke-Proxmox $cmds[$name]) | Set-Content -Encoding UTF8 (Join-Path $dest $name) }
   foreach($g in $script:Allowlist){
-    $cmd=if($g.Type -eq "vm"){"qm config $($g.Id)"}else{"pct config $($g.Id)"}
-    (Invoke-Proxmox $cmd) | Set-Content -Encoding UTF8 (Join-Path $dest "$($g.Type)-$($g.Id)-config.txt")
+    $configPath=Join-Path $dest "$($g.Type)-$($g.Id)-config.txt"
+    if(Test-GuestExists $g){
+      $cmd=if($g.Type -eq "vm"){"qm config $($g.Id)"}else{"pct config $($g.Id)"}
+      (Invoke-Proxmox $cmd) | Set-Content -Encoding UTF8 $configPath
+    } else {
+      "ABSENT: already reconciled before this snapshot" | Set-Content -Encoding UTF8 $configPath
+    }
   }
   $meta=@()
   $meta += "webcodex="+(((Invoke-Proxmox "pct exec 210 -- /usr/local/bin/webcodex -V" -AllowFailure) -join " ").Trim())

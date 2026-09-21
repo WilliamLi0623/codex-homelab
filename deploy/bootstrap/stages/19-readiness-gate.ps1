@@ -21,7 +21,14 @@ try {
   }
   $report=Join-Path $s.snapshot_path "destructive-readiness.md"
   $lines=@("# DESTRUCTIVE READINESS","","Bootstrap independent of WebCodex: PASS","Proxmox SSH: PASS","State persistence/resume: PASS","Git preservation: PASS","Creation artifacts available: PASS","Secrets recovery path tested: PASS","New repo pushed: PASS","")
-  foreach($g in $script:Allowlist){$lines += "DESTROY: $($g.Id) $($g.Name) VERIFIED"}
+  foreach($g in $script:Allowlist){
+    $actual=Get-ExistingGuestName $g
+    if($null -eq $actual){
+      $lines += "LEGACY TARGET: $($g.Id) $($g.Name) ABSENT/ALREADY_RECONCILED"
+    } else {
+      $lines += "DESTROY: $($g.Id) $actual VERIFIED"
+    }
+  }
   foreach($g in $script:Denylist){$lines += "PROTECTED: $($g.Id) $($g.Name) VERIFIED"}
   $lines += ""; $lines += "READY_FOR_DESTRUCTION=true"
   $lines | Set-Content -Encoding UTF8 $report

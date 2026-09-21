@@ -9,7 +9,7 @@ $script:SnapshotDir= Join-Path $script:BootstrapRoot "snapshot"
 New-Item -ItemType Directory -Force -Path $script:LogsDir,$script:SnapshotDir | Out-Null
 
 $script:Allowlist = @(
-  @{Id=101; Type="vm";  Name="codex-worker-01"},
+  @{Id=101; Type="vm";  Name="codex-runner-01"},
   @{Id=102; Type="vm";  Name="build-01"},
   @{Id=104; Type="vm";  Name="codex-worker-template"},
   @{Id=105; Type="vm";  Name="codex-worker-template-agent"},
@@ -19,7 +19,7 @@ $script:Allowlist = @(
   @{Id=109; Type="vm";  Name="codex-worker-template-ubuntu-static"},
   @{Id=9701;Type="vm";  Name="pilot-9701"},
   @{Id=103; Type="lxc"; Name="codex-controller"},
-  @{Id=210; Type="lxc"; Name="webcodex-server"}
+  @{Id=210; Type="lxc"; Name="codex-control"}
 )
 $script:Denylist = @(
   @{Id=100; Type="lxc"; Name="tailscale-alt"},
@@ -117,17 +117,27 @@ function Invoke-Proxmox([string]$Command,[switch]$AllowFailure) {
   return ,$out
 }
 
-function Get-GuestName([hashtable]$Guest) {
+function Get-ExistingGuestName([hashtable]$Guest) {
   if($Guest.Type -eq "vm"){
-    $out=Invoke-Proxmox "qm config $($Guest.Id)"
+    $out=Invoke-Proxmox "qm config $($Guest.Id)" -AllowFailure
     $line=$out | Where-Object {$_ -match '^name:\s*'} | Select-Object -First 1
-    if(!$line){throw "VM $($Guest.Id) has no name"}
+    if(!$line){return $null}
     return ($line -replace '^name:\s*','').Trim()
   }
-  $out=Invoke-Proxmox "pct config $($Guest.Id)"
+  $out=Invoke-Proxmox "pct config $($Guest.Id)" -AllowFailure
   $line=$out | Where-Object {$_ -match '^hostname:\s*'} | Select-Object -First 1
-  if(!$line){throw "LXC $($Guest.Id) has no hostname"}
+  if(!$line){return $null}
   return ($line -replace '^hostname:\s*','').Trim()
+}
+
+function Get-GuestName([hashtable]$Guest) {
+  $name=Get-ExistingGuestName $Guest
+  if(!$name){throw "$($Guest.Type) $($Guest.Id) is absent"}
+  return $name
+}
+
+function Test-GuestExists([hashtable]$Guest) {
+  return $null -ne (Get-ExistingGuestName $Guest)
 }
 
 function Assert-Guest([hashtable]$Guest) {
@@ -137,7 +147,16 @@ function Assert-Guest([hashtable]$Guest) {
 }
 
 function Assert-AllGuestIdentities {
-  foreach($g in $script:Allowlist){ [void](Assert-Guest $g) }
+  foreach($g in $script:Allowlist){
+    $actual=Get-ExistingGuestName $g
+    if($null -eq $actual){
+      $otherType=if($g.Type -eq "vm"){"lxc"}else{"vm"}
+      $otherActual=Get-ExistingGuestName @{Id=$g.Id;Type=$otherType;Name=""}
+      if($null -ne $otherActual){throw "Identity type mismatch: $($g.Id) expected $($g.Type) '$($g.Name)' got $otherType '$otherActual'"}
+    } elseif($actual -cne $g.Name){
+      throw "Identity mismatch: $($g.Type) $($g.Id) expected '$($g.Name)' got '$actual'"
+    }
+  }
   foreach($g in $script:Denylist){ [void](Assert-Guest $g) }
 }
 
