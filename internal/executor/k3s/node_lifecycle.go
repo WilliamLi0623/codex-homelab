@@ -49,7 +49,11 @@ func (r *KubernetesRuntime) Cordon(ctx context.Context, node string) error {
 		return errors.New("Kubernetes Node name is required")
 	}
 	path := r.path("api/v1/nodes/" + url.PathEscape(node))
-	return r.doJSON(ctx, http.MethodPatch, path, map[string]any{"spec": map[string]bool{"unschedulable": true}}, nil)
+	err := r.doJSON(ctx, http.MethodPatch, path, map[string]any{"spec": map[string]bool{"unschedulable": true}}, nil)
+	if isNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 // Drain cordons first, then deletes only ordinary non-terminal Pods assigned
@@ -115,15 +119,38 @@ func (r *KubernetesRuntime) VerifyNodeRemoved(ctx context.Context, node string) 
 	if err := r.config.ValidateConfig(); err != nil {
 		return err
 	}
-	var response map[string]any
-	err := r.doJSON(ctx, http.MethodGet, r.path("api/v1/nodes/"+url.PathEscape(node)), nil, &response)
-	if isNotFound(err) {
-		return nil
+	timeout := r.config.DrainTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
 	}
-	if err != nil {
-		return err
+	interval := r.config.DrainPollInterval
+	if interval <= 0 {
+		interval = 100 * time.Millisecond
 	}
-	return fmt.Errorf("%w: %s", ErrNodeStillPresent, node)
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		var response map[string]any
+		err := r.doJSON(ctx, http.MethodGet, r.path("api/v1/nodes/"+url.PathEscape(node)), nil, &response)
+		if isNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := r.RemoveNode(ctx, node); err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("%w: %s", ErrNodeStillPresent, node)
+		case <-ticker.C:
+		}
+	}
 }
 
 func (r *KubernetesRuntime) podsOnNode(ctx context.Context, node string) ([]podReference, error) {

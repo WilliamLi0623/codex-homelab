@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/capacity"
@@ -12,6 +13,7 @@ import (
 
 type adapterRuntime struct {
 	createCalls  int
+	startCalls   int
 	createErr    error
 	destroyCalls int
 	lastCreate   capacity.CreateRequest
@@ -64,7 +66,7 @@ func (r *adapterRuntime) Create(_ context.Context, request capacity.CreateReques
 func (r *adapterRuntime) Observe(context.Context, int) (capacity.Node, error) {
 	return capacity.Node{}, nil
 }
-func (r *adapterRuntime) Start(context.Context, int) error   { return nil }
+func (r *adapterRuntime) Start(context.Context, int) error   { r.startCalls++; return nil }
 func (r *adapterRuntime) Join(context.Context, int) error    { return nil }
 func (r *adapterRuntime) Stop(context.Context, int) error    { return nil }
 func (r *adapterRuntime) Destroy(context.Context, int) error { r.destroyCalls++; return nil }
@@ -115,6 +117,9 @@ func TestCapacityAdapterSameAttemptIsIdempotentAndDoesNotCreateTwice(t *testing.
 	}
 	if first.VMID != second.VMID || first.Generation != second.Generation || runtime.createCalls != 1 {
 		t.Fatalf("first=%+v second=%+v createCalls=%d", first, second, runtime.createCalls)
+	}
+	if runtime.startCalls != 1 {
+		t.Fatalf("start calls = %d, want one start for the created worker", runtime.startCalls)
 	}
 }
 
@@ -185,6 +190,10 @@ func TestCapacityAdapterRequiresExplicitReconcileAfterUnknown(t *testing.T) {
 	}
 	if err := adapter.Release(context.Background(), claim); !errors.Is(err, capacity.ErrUnknown) {
 		t.Fatalf("first release = %v", err)
+	}
+	progress, err := db.GetReleaseProgress(context.Background(), claim.TaskID, claim.AttemptID)
+	if err != nil || !strings.Contains(progress.ErrorSummary, "external operation outcome is unknown") {
+		t.Fatalf("unknown release summary = (%+v, %v)", progress, err)
 	}
 	if err := adapter.Release(context.Background(), claim); !errors.Is(err, ErrCapacityReleaseUnsafe) {
 		t.Fatalf("unreconciled release = %v", err)

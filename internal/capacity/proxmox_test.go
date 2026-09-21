@@ -17,8 +17,13 @@ func TestProxmoxRuntimeCloneUsesOnlyDynamicVMIDs(t *testing.T) {
 	var gotAuth string
 	var gotForm url.Values
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
+		if strings.Contains(r.URL.Path, "/tasks/") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":{"status":"stopped","exitstatus":"OK"}}`)
+			return
+		}
+		gotPath = r.URL.Path
 		_ = r.ParseForm()
 		gotForm = r.PostForm
 		w.Header().Set("Content-Type", "application/json")
@@ -47,7 +52,7 @@ func TestProxmoxRuntimeCloneUsesOnlyDynamicVMIDs(t *testing.T) {
 	if gotAuth == "" {
 		t.Fatal("clone request omitted injected authorization")
 	}
-	if gotForm.Get("newid") != "3010" || gotForm.Get("hostname") != "codex-3010" || gotForm.Get("full") != "1" || gotForm.Get("description") != "managed-by=codex-homelab\ntask=task-1" {
+	if gotForm.Get("newid") != "3010" || gotForm.Get("hostname") != "codex-3010" || gotForm.Get("full") != "1" || gotForm.Get("pool") != "codex-workers" || gotForm.Get("description") != "managed-by=codex-homelab\ntask=task-1" {
 		t.Fatalf("clone form = %v", gotForm)
 	}
 }
@@ -89,6 +94,22 @@ func TestProxmoxRuntimeObservesStatusWithoutExposingToken(t *testing.T) {
 	}
 }
 
+func TestProxmoxRuntimeStopTreatsAlreadyStoppedAsIdempotent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api2/json/nodes/pve-node/lxc/3010/status/current" {
+			t.Fatalf("unexpected stop request = %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":{"vmid":3010,"name":"codex-3010","status":"stopped"}}`)
+	}))
+	defer server.Close()
+
+	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3999}, Client: server.Client()})
+	if err := runtime.Stop(context.Background(), 3010); err != nil {
+		t.Fatalf("Stop(already stopped) error = %v", err)
+	}
+}
+
 func TestProxmoxRuntimeVerifiesExactDynamicIdentityReadOnly(t *testing.T) {
 	metadata, err := WorkerMetadata("gen-1", "task-1", "2026-09-20T00:00:00Z")
 	if err != nil {
@@ -103,7 +124,7 @@ func TestProxmoxRuntimeVerifiesExactDynamicIdentityReadOnly(t *testing.T) {
 			t.Fatalf("identity request = %s %s", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"vmid": 3010, "hostname": "codex-lxc-3010-gen-1", "description": description}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"hostname": "codex-lxc-3010-gen-1", "description": description}})
 	}))
 	defer server.Close()
 	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3999}, Client: server.Client()})
@@ -119,7 +140,7 @@ func TestProxmoxRuntimeRejectsMismatchedIdentity(t *testing.T) {
 	}))
 	defer server.Close()
 	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3999}, Client: server.Client()})
-	if err := runtime.VerifyIdentity(context.Background(), Node{VMID: 3010, Generation: "gen-1", TaskID: "task-1"}); !errors.Is(err, ErrIdentityInvalid) {
+	if err := runtime.VerifyIdentity(context.Background(), Node{VMID: 3010, Generation: "gen-1", TaskID: "task-1"}); !errors.Is(err, ErrIdentityInvalid) || !strings.Contains(err.Error(), "identity fields mismatch") {
 		t.Fatalf("VerifyIdentity() error = %v, want ErrIdentityInvalid", err)
 	}
 }

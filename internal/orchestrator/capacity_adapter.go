@@ -112,7 +112,7 @@ func (a *CapacityAdapter) claim(ctx context.Context, request CapacityClaimReques
 	if templateVMID == 0 {
 		templateVMID = a.config.TemplateVMID
 	}
-	_, err = a.manager.Create(ctx, capacity.CreateRequest{
+	createdNode, err := a.manager.Create(ctx, capacity.CreateRequest{
 		VMID: claim.VMID, Generation: claim.Generation, TaskID: claim.TaskID,
 		TemplateVMID: templateVMID, Hostname: workerHostname(claim.VMID, claim.Generation),
 		Storage: request.Storage, Bridge: request.Bridge, Cores: request.Cores, MemoryMiB: request.MemoryMiB, DiskGiB: request.DiskGiB,
@@ -126,9 +126,19 @@ func (a *CapacityAdapter) claim(ctx context.Context, request CapacityClaimReques
 			return claim, fmt.Errorf("%w: %w: persist UNKNOWN claim: %w", capacity.ErrUnknown, ErrCapacityLedgerReconciliation, persistErr)
 		}
 		claim.State = store.CapacityUnknown
-		return claim, capacity.ErrUnknown
+		return claim, err
 	}
 	if err != nil {
+		return claim, err
+	}
+	if err := a.manager.Start(ctx, createdNode); errors.Is(err, capacity.ErrUnknown) {
+		if persistErr := a.store.UpdateCapacityClaimState(ctx, claim.TaskID, claim.AttemptID, store.CapacityUnknown); persistErr != nil {
+			claim.State = store.CapacityCreating
+			return claim, fmt.Errorf("%w: %w: persist UNKNOWN claim: %w", capacity.ErrUnknown, ErrCapacityLedgerReconciliation, persistErr)
+		}
+		claim.State = store.CapacityUnknown
+		return claim, err
+	} else if err != nil {
 		return claim, err
 	}
 	if err := a.store.UpdateCapacityClaimState(ctx, claim.TaskID, claim.AttemptID, store.CapacityClaimed); err != nil {
@@ -197,7 +207,10 @@ func (a *CapacityAdapter) Release(ctx context.Context, claim Claim) error {
 		summary := ""
 		if stepErr != nil {
 			state = store.ReleaseStateUnknown
-			summary = "external release outcome is unknown"
+			summary = fmt.Sprintf("external release outcome is unknown: %v", stepErr)
+			if len(summary) > 2048 {
+				summary = summary[:2048]
+			}
 		}
 		return a.store.UpdateReleaseProgress(checkpointCtx, claim.TaskID, claim.AttemptID, string(step), state, summary)
 	}

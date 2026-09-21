@@ -24,7 +24,7 @@ func TestKubernetesRuntimeCreateJobIsDeterministicAndIdempotent(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"metadata":{"name":"job","labels":{"task_id":"task-1","attempt_id":"attempt-1","executor":"k3s"}}}`))
+			w.Write([]byte(`{"metadata":{"name":"job","labels":{"task_id":"task-1","attempt_id":"attempt-1","executor":"k3s","kueue.x-k8s.io/queue-name":"default"}}}`))
 			return
 		}
 		calls++
@@ -37,8 +37,8 @@ func TestKubernetesRuntimeCreateJobIsDeterministicAndIdempotent(t *testing.T) {
 		w.Write([]byte(`{"metadata":{"name":"ignored"}}`))
 	}))
 	defer server.Close()
-	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "default", Token: "secret", WorkerImage: "worker:latest", ServiceAccount: "sa", Model: "glm-5.3-flash", OpenAIBaseURL: "https://cch.example/v1", ModelSecretName: "codex-model-gateway", ModelSecretKey: "api-key", HTTPClient: server.Client()})
-	first, err := r.CreateJob(context.Background(), JobRequest{TaskID: "task-1", AttemptID: "attempt-1", Prompt: "hello", Repository: "owner/repo", BaseRef: "main", WorkspacePath: "/workspace/attempt-1", ValidationCommand: []string{"go", "test", "./..."}})
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "default", Token: "secret", WorkerImage: "worker:latest", ServiceAccount: "sa", Model: "openai-primary", WireAPI: "responses", OpenAIBaseURL: "https://cch.example/v1", ModelSecretName: "codex-model-gateway", ModelSecretKey: "api-key", QueueName: "default", CPURequest: "500m", MemoryRequest: "512Mi", CPULimit: "1", MemoryLimit: "1Gi", HTTPClient: server.Client()})
+	first, err := r.CreateJob(context.Background(), JobRequest{TaskID: "task-1", AttemptID: "attempt-1", ModelProfile: "openai-primary", NodeName: "codex-node", Prompt: "hello", Repository: "owner/repo", BaseRef: "main", WorkspacePath: "/workspace/attempt-1", ValidationCommand: []string{"go", "test", "./..."}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,9 +51,20 @@ func TestKubernetesRuntimeCreateJobIsDeterministicAndIdempotent(t *testing.T) {
 	}
 	spec := manifest["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
 	container := spec["containers"].([]any)[0].(map[string]any)
+	jobLabels := manifest["metadata"].(map[string]any)["labels"].(map[string]any)
+	if jobLabels["kueue.x-k8s.io/queue-name"] != "default" {
+		t.Fatalf("job labels=%v", jobLabels)
+	}
+	resources := container["resources"].(map[string]any)
+	if resources["requests"].(map[string]any)["cpu"] != "500m" || resources["requests"].(map[string]any)["memory"] != "512Mi" || resources["limits"].(map[string]any)["cpu"] != "1" || resources["limits"].(map[string]any)["memory"] != "1Gi" {
+		t.Fatalf("resources=%v", resources)
+	}
 	volumes := spec["volumes"].([]any)
 	if len(volumes) != 1 || volumes[0].(map[string]any)["name"] != "attempt-workspace" {
 		t.Fatalf("volumes=%v", volumes)
+	}
+	if spec["nodeName"] != "codex-node" {
+		t.Fatalf("nodeName=%v, want codex-node", spec["nodeName"])
 	}
 	mounts := container["volumeMounts"].([]any)
 	if len(mounts) != 1 || mounts[0].(map[string]any)["name"] != "attempt-workspace" || mounts[0].(map[string]any)["mountPath"] != "/workspace" {
@@ -69,19 +80,60 @@ func TestKubernetesRuntimeCreateJobIsDeterministicAndIdempotent(t *testing.T) {
 	if !containsEnv(envs, "CODEX_AGENTD_REQUEST", `{"prompt":"hello"}`) || !containsEnv(envs, "CODEX_ATTEMPT_ID", "attempt-1") || !containsEnv(envs, "CODEX_HOME", "/work/attempt-1") || !containsEnv(envs, "CODEX_REPOSITORY", "owner/repo") || !containsEnv(envs, "CODEX_BASE_REF", "main") || !containsEnv(envs, "CODEX_WORKSPACE", "/workspace/attempt-1") || !containsEnv(envs, "CODEX_VALIDATION_COMMAND", `["go","test","./..."]`) {
 		t.Fatalf("env=%v", envs)
 	}
-	if !containsEnv(envs, "CODEX_MODEL", "glm-5.3-flash") || !containsEnv(envs, "CODEX_OPENAI_BASE_URL", "https://cch.example/v1") {
+	if !containsEnv(envs, "CODEX_MODEL_PROFILE", "openai-primary") || !containsEnv(envs, "CODEX_MODEL", "openai-primary") || !containsEnv(envs, "CODEX_WIRE_API", "responses") || !containsEnv(envs, "CODEX_OPENAI_BASE_URL", "https://cch.example/v1") {
 		t.Fatalf("provider env=%v", envs)
 	}
-	secretEnv, ok := findEnv(envs, "OPENAI_API_KEY")
+	secretEnv, ok := findEnv(envs, "CODEX_API_KEY")
 	if !ok || secretEnv["valueFrom"].(map[string]any)["secretKeyRef"].(map[string]any)["name"] != "codex-model-gateway" {
 		t.Fatalf("secret env=%v", envs)
 	}
 	command := container["command"].([]any)[2].(string)
-	if !strings.Contains(command, `mkdir -p "$CODEX_HOME"`) || !strings.Contains(command, "/usr/local/bin/codex-agentd --listen 0.0.0.0:8080") || !strings.Contains(command, "exec") {
+	if !strings.Contains(command, "chmod 0755") || !strings.Contains(command, "GIT_AUTHOR_NAME=codex-agent") || !strings.Contains(command, "GIT_COMMITTER_EMAIL=codex-agent@localhost") || !strings.Contains(command, "codex login --with-api-key") || !strings.Contains(command, "/usr/local/bin/codex-agentd --listen 0.0.0.0:8080") || !strings.Contains(command, "exec") {
 		t.Fatalf("command=%q", command)
 	}
 }
 
+func TestKubernetesRuntimeRejectsUnconfiguredModelProfile(t *testing.T) {
+	r := NewKubernetesRuntime(KubernetesConfig{
+		BaseURL: "http://127.0.0.1", Namespace: "default", Token: "secret",
+		WorkerImage: "worker:latest", ServiceAccount: "sa", ModelProfile: "muse-spark-1.3-contributor",
+	})
+	if _, err := r.CreateJob(context.Background(), JobRequest{TaskID: "task-1", AttemptID: "attempt-1", ModelProfile: "openai-primary"}); err == nil || !strings.Contains(err.Error(), "model profile") {
+		t.Fatalf("CreateJob() error = %v; want model profile mismatch", err)
+	}
+}
+
+func TestKubernetesRuntimeRequiresKueueRequests(t *testing.T) {
+	config := KubernetesConfig{BaseURL: "http://127.0.0.1", Namespace: "default", Token: "secret", WorkerImage: "worker:latest", ServiceAccount: "sa", QueueName: "default"}
+	if err := config.ValidateConfig(); err == nil || !strings.Contains(err.Error(), "CPU and memory requests") {
+		t.Fatalf("ValidateConfig() error = %v, want required Kueue requests", err)
+	}
+}
+
+func TestKubernetesRuntimeValidatesKubernetesQuantities(t *testing.T) {
+	base := KubernetesConfig{BaseURL: "http://127.0.0.1", Namespace: "default", Token: "secret", WorkerImage: "worker:latest", ServiceAccount: "sa", QueueName: "default", CPURequest: "500m", MemoryRequest: "1Gi"}
+	for _, value := range []string{"1k", "1.5Gi", "1e3"} {
+		config := base
+		config.MemoryRequest = value
+		if err := config.ValidateConfig(); err != nil {
+			t.Errorf("quantity %q rejected: %v", value, err)
+		}
+	}
+	for _, value := range []string{"1K", "-1Gi", "garbage"} {
+		config := base
+		config.MemoryRequest = value
+		if err := config.ValidateConfig(); err == nil {
+			t.Errorf("quantity %q accepted", value)
+		}
+	}
+}
+
+func TestKubernetesRuntimeUsesDirectMuseAgentdCommand(t *testing.T) {
+	command := workerCommand(KubernetesConfig{Model: "muse-spark-1.3-contributor", ModelProfile: "muse-spark-1.3-contributor"})
+	if strings.Contains(command, "codex login") || strings.Contains(command, "/opt/codex/vendor") || !strings.Contains(command, "/usr/local/bin/codex-agentd") {
+		t.Fatalf("Muse command = %q", command)
+	}
+}
 func TestKubernetesRuntimeRejectsNonAttemptWorkspacePath(t *testing.T) {
 	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: "http://127.0.0.1", Namespace: "default", Token: "secret", WorkerImage: "worker:latest", ServiceAccount: "sa"})
 	if _, err := r.CreateJob(context.Background(), JobRequest{TaskID: "task-1", AttemptID: "attempt-1", WorkspacePath: "/workspace/other"}); err == nil {
@@ -95,6 +147,9 @@ func TestKubernetesRuntimeNodeLifecycleCordonDrainRemoveAndVerify(t *testing.T) 
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/nodes/codex-node":
+			if got := r.Header.Get("Content-Type"); got != "application/strategic-merge-patch+json" {
+				t.Fatalf("cordon content type = %q", got)
+			}
 			var patch map[string]map[string]bool
 			if err := json.NewDecoder(r.Body).Decode(&patch); err != nil || !patch["spec"]["unschedulable"] {
 				t.Fatalf("cordon patch = %+v, err = %v", patch, err)
@@ -130,6 +185,56 @@ func TestKubernetesRuntimeNodeLifecycleCordonDrainRemoveAndVerify(t *testing.T) 
 	}
 	if err := r.VerifyNodeRemoved(context.Background(), "codex-node"); err != nil {
 		t.Fatalf("VerifyNodeRemoved() = %v", err)
+	}
+}
+
+func TestKubernetesRuntimeCordonTreatsMissingNodeAsIdempotent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/v1/nodes/codex-node" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		http.Error(w, "node not found", http.StatusNotFound)
+	}))
+	defer server.Close()
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "default", Token: "secret", WorkerImage: "worker:latest", ServiceAccount: "sa", HTTPClient: server.Client()})
+	if err := r.Cordon(context.Background(), "codex-node"); err != nil {
+		t.Fatalf("Cordon() for missing node = %v", err)
+	}
+}
+
+func TestKubernetesRuntimeVerifyNodeRemovedWaitsForDeletionPropagation(t *testing.T) {
+	gets := 0
+	deleted := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/nodes/codex-node" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		if r.Method == http.MethodDelete {
+			deleted = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		gets++
+		if !deleted {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "{\"metadata\":{\"name\":\"codex-node\"}}")
+			return
+		}
+		http.Error(w, "node not found", http.StatusNotFound)
+	}))
+	defer server.Close()
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "default", Token: "secret", WorkerImage: "worker:latest", ServiceAccount: "sa", HTTPClient: server.Client(), DrainTimeout: time.Second, DrainPollInterval: time.Millisecond})
+	if err := r.VerifyNodeRemoved(context.Background(), "codex-node"); err != nil {
+		t.Fatalf("VerifyNodeRemoved() = %v", err)
+	}
+	if gets < 2 {
+		t.Fatalf("GET calls = %d, want propagation retry", gets)
+	}
+	if !deleted {
+		t.Fatal("VerifyNodeRemoved did not repeat idempotent node deletion")
 	}
 }
 

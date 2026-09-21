@@ -19,6 +19,7 @@ import (
 var ErrWorkerNotReady = errors.New("Kubernetes worker Pod is not ready")
 var ErrResultProtocol = errors.New("agentd result protocol is invalid")
 var labelValuePattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$`)
+var resourceQuantityPattern = regexp.MustCompile(`^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+|n|u|m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$`)
 
 type KubernetesConfig struct {
 	BaseURL           string
@@ -27,9 +28,16 @@ type KubernetesConfig struct {
 	WorkerImage       string
 	ServiceAccount    string
 	Model             string
+	ModelProfile      string
+	WireAPI           string
 	OpenAIBaseURL     string
 	ModelSecretName   string
 	ModelSecretKey    string
+	QueueName         string
+	CPURequest        string
+	MemoryRequest     string
+	CPULimit          string
+	MemoryLimit       string
 	HTTPClient        *http.Client
 	DrainTimeout      time.Duration
 	DrainPollInterval time.Duration
@@ -51,6 +59,29 @@ func (c KubernetesConfig) ValidateConfig() error {
 	}
 	if c.Namespace == "" || c.WorkerImage == "" || c.ServiceAccount == "" || c.Token == "" {
 		return errors.New("Kubernetes namespace, worker image, service account, and token are required")
+	}
+	if c.QueueName == "" {
+		if c.CPURequest != "" || c.MemoryRequest != "" || c.CPULimit != "" || c.MemoryLimit != "" {
+			return errors.New("Kubernetes resource requests and limits require a Kueue queue")
+		}
+		return nil
+	}
+	if !validLabelValue(c.QueueName) {
+		return errors.New("Kueue queue name must be a valid Kubernetes label value")
+	}
+	if c.CPURequest == "" || c.MemoryRequest == "" {
+		return errors.New("Kueue queue requires CPU and memory requests")
+	}
+	for name, value := range map[string]string{
+		"CPU request": c.CPURequest, "memory request": c.MemoryRequest,
+		"CPU limit": c.CPULimit, "memory limit": c.MemoryLimit,
+	} {
+		if value != "" && !resourceQuantityPattern.MatchString(value) {
+			return fmt.Errorf("invalid Kubernetes %s quantity %q", name, value)
+		}
+	}
+	if (c.CPULimit == "") != (c.MemoryLimit == "") {
+		return errors.New("Kubernetes CPU and memory limits must be configured together")
 	}
 	return nil
 }
@@ -95,14 +126,23 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 	if err := r.config.ValidateConfig(); err != nil {
 		return Job{}, err
 	}
+	if request.ModelProfile != "" && r.config.ModelProfile != "" && request.ModelProfile != r.config.ModelProfile {
+		return Job{}, fmt.Errorf("model profile %q is not configured for this worker (configured %q)", request.ModelProfile, r.config.ModelProfile)
+	}
 	name := jobName(request.TaskID, request.AttemptID)
 	workspacePath := "/workspace/" + request.AttemptID
 	if request.WorkspacePath != "" && request.WorkspacePath != workspacePath {
 		return Job{}, errors.New("workspace path must be the attempt-scoped /workspace path")
 	}
 	labels := map[string]string{"task_id": request.TaskID, "attempt_id": request.AttemptID, "executor": executorName}
+	if r.config.QueueName != "" {
+		labels["kueue.x-k8s.io/queue-name"] = r.config.QueueName
+	}
 	if !validLabelValue(request.TaskID) || !validLabelValue(request.AttemptID) {
 		return Job{}, errors.New("task_id and attempt_id must be valid Kubernetes label values of at most 63 characters")
+	}
+	if request.NodeName != "" && !validLabelValue(request.NodeName) {
+		return Job{}, errors.New("node name must be a valid Kubernetes node label value")
 	}
 	var existing kJob
 	err := r.doJSON(ctx, http.MethodGet, r.path("apis/batch/v1/namespaces/"+url.PathEscape(r.config.Namespace)+"/jobs/"+url.PathEscape(name)), nil, &existing)
@@ -117,8 +157,14 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 	}
 	requestJSON, _ := json.Marshal(map[string]string{"prompt": request.Prompt})
 	env := []any{map[string]string{"name": "CODEX_AGENTD_REQUEST", "value": string(requestJSON)}, map[string]string{"name": "CODEX_ATTEMPT_ID", "value": request.AttemptID}, map[string]string{"name": "CODEX_HOME", "value": "/work/" + request.AttemptID}}
+	if request.ModelProfile != "" {
+		env = append(env, map[string]string{"name": "CODEX_MODEL_PROFILE", "value": request.ModelProfile})
+	}
 	if r.config.Model != "" {
 		env = append(env, map[string]string{"name": "CODEX_MODEL", "value": r.config.Model})
+	}
+	if r.config.WireAPI != "" {
+		env = append(env, map[string]string{"name": "CODEX_WIRE_API", "value": r.config.WireAPI})
 	}
 	if r.config.OpenAIBaseURL != "" {
 		env = append(env, map[string]string{"name": "CODEX_OPENAI_BASE_URL", "value": r.config.OpenAIBaseURL})
@@ -142,12 +188,33 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 	container := map[string]any{
 		"name":    "worker",
 		"image":   r.config.WorkerImage,
-		"command": []string{"/bin/sh", "-c", "mkdir -p \"$CODEX_HOME\" && exec /usr/local/bin/codex-agentd --listen 0.0.0.0:8080"},
+		"command": []string{"/bin/sh", "-c", workerCommand(r.config)},
 		"env":     env,
 		"volumeMounts": []any{map[string]string{
 			"name":      "attempt-workspace",
 			"mountPath": "/workspace",
 		}},
+	}
+	resources := map[string]any{
+		"requests": map[string]string{"cpu": r.config.CPURequest, "memory": r.config.MemoryRequest},
+	}
+	if r.config.CPULimit != "" {
+		resources["limits"] = map[string]string{"cpu": r.config.CPULimit, "memory": r.config.MemoryLimit}
+	}
+	if r.config.QueueName != "" {
+		container["resources"] = resources
+	}
+	podSpec := map[string]any{
+		"restartPolicy":      "Never",
+		"serviceAccountName": r.config.ServiceAccount,
+		"volumes": []any{map[string]any{
+			"name":     "attempt-workspace",
+			"emptyDir": map[string]any{},
+		}},
+		"containers": []any{container},
+	}
+	if request.NodeName != "" {
+		podSpec["nodeName"] = request.NodeName
 	}
 	body := map[string]any{
 		"apiVersion": "batch/v1",
@@ -157,15 +224,7 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 			"backoffLimit": 0,
 			"template": map[string]any{
 				"metadata": map[string]any{"labels": labels},
-				"spec": map[string]any{
-					"restartPolicy":      "Never",
-					"serviceAccountName": r.config.ServiceAccount,
-					"volumes": []any{map[string]any{
-						"name":     "attempt-workspace",
-						"emptyDir": map[string]any{},
-					}},
-					"containers": []any{container},
-				},
+				"spec":     podSpec,
 			},
 		},
 	}
@@ -176,7 +235,7 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 			secretKey = "api-key"
 		}
 		containerEnv = append(containerEnv, map[string]any{
-			"name":      "OPENAI_API_KEY",
+			"name":      "CODEX_API_KEY",
 			"valueFrom": map[string]any{"secretKeyRef": map[string]string{"name": r.config.ModelSecretName, "key": secretKey}},
 		})
 		container["env"] = containerEnv
@@ -186,6 +245,13 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 		return Job{}, err
 	}
 	return Job{ID: name, TaskID: request.TaskID, AttemptID: request.AttemptID, State: JobPending}, nil
+}
+
+func workerCommand(config KubernetesConfig) string {
+	if config.Model == "muse-spark-1.3-contributor" || config.ModelProfile == "muse-spark-1.3-contributor" {
+		return "chmod 0755 /usr/local/bin/codex-agentd && export GIT_AUTHOR_NAME=codex-agent GIT_AUTHOR_EMAIL=codex-agent@localhost GIT_COMMITTER_NAME=codex-agent GIT_COMMITTER_EMAIL=codex-agent@localhost && mkdir -p \"$CODEX_HOME\" && exec /usr/local/bin/codex-agentd --listen 0.0.0.0:8080"
+	}
+	return "chmod 0755 /opt/codex/vendor/x86_64-unknown-linux-musl/bin/codex /usr/local/bin/codex /usr/local/bin/codex-agentd && export GIT_AUTHOR_NAME=codex-agent GIT_AUTHOR_EMAIL=codex-agent@localhost GIT_COMMITTER_NAME=codex-agent GIT_COMMITTER_EMAIL=codex-agent@localhost && mkdir -p \"$CODEX_HOME\" && printf '%s\\n' \"$CODEX_API_KEY\" | /usr/local/bin/codex login --with-api-key >/dev/null && exec /usr/local/bin/codex-agentd --listen 0.0.0.0:8080"
 }
 
 func (r *KubernetesRuntime) Observe(ctx context.Context, id string) (Job, error) {
@@ -232,6 +298,9 @@ func (r *KubernetesRuntime) CollectResult(ctx context.Context, id string) (Resul
 	// A successful result requires worker stdout to contain commit_sha; this adapter never fabricates it.
 	data, err := r.read(ctx, http.MethodGet, r.podProxyPath(pod, "result"))
 	if err != nil {
+		if isNotFound(err) {
+			return Result{}, ErrWorkerNotReady
+		}
 		return Result{}, err
 	}
 	var response struct {
@@ -306,7 +375,11 @@ func (r *KubernetesRuntime) doJSON(ctx context.Context, method, endpoint string,
 		return unknown(err)
 	}
 	if input != nil {
-		req.Header.Set("Content-Type", "application/json")
+		contentType := "application/json"
+		if method == http.MethodPatch {
+			contentType = "application/strategic-merge-patch+json"
+		}
+		req.Header.Set("Content-Type", contentType)
 	}
 	if r.config.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+r.config.Token)

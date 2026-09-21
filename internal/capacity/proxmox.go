@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var ErrJoinDelegated = errors.New("k3s join is delegated to the executor")
@@ -17,6 +19,7 @@ type ProxmoxConfig struct {
 	BaseURL string
 	Node    string
 	Token   string
+	Pool    string
 	Range   VMIDRange
 	Client  *http.Client
 }
@@ -25,6 +28,7 @@ type ProxmoxRuntime struct {
 	baseURL string
 	node    string
 	token   string
+	pool    string
 	range_  VMIDRange
 	client  *http.Client
 }
@@ -58,9 +62,17 @@ func NewProxmoxRuntime(config ProxmoxConfig) *ProxmoxRuntime {
 		baseURL: strings.TrimRight(config.BaseURL, "/"),
 		node:    config.Node,
 		token:   config.Token,
+		pool:    defaultPool(config.Pool),
 		range_:  config.Range,
 		client:  client,
 	}
+}
+
+func defaultPool(pool string) string {
+	if strings.TrimSpace(pool) == "" {
+		return "codex-workers"
+	}
+	return strings.TrimSpace(pool)
 }
 
 func (r *ProxmoxRuntime) validate(vmid int) error {
@@ -97,7 +109,8 @@ func (r *ProxmoxRuntime) request(ctx context.Context, method, path string, form 
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		defer response.Body.Close()
-		return nil, fmt.Errorf("proxmox %s %s returned %s", method, path, response.Status)
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return nil, fmt.Errorf("proxmox %s %s returned %s: %s", method, path, response.Status, strings.TrimSpace(string(body)))
 	}
 	return response, nil
 }
@@ -126,13 +139,66 @@ func (r *ProxmoxRuntime) Create(ctx context.Context, request CreateRequest) (Nod
 	if request.Storage != "" {
 		form.Set("storage", request.Storage)
 	}
+	if r.pool != "" {
+		form.Set("pool", r.pool)
+	}
 	path := "/nodes/" + url.PathEscape(r.node) + "/lxc/" + strconv.Itoa(request.TemplateVMID) + "/clone"
 	response, err := r.request(ctx, http.MethodPost, path, form)
 	if err != nil {
-		return Node{VMID: request.VMID, Generation: request.Generation, TaskID: request.TaskID, State: NodeUnknown}, ErrUnknown
+		return Node{VMID: request.VMID, Generation: request.Generation, TaskID: request.TaskID, State: NodeUnknown}, fmt.Errorf("%w: %v", ErrUnknown, err)
+	}
+	var envelope struct {
+		Data string `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+		_ = response.Body.Close()
+		return Node{VMID: request.VMID, Generation: request.Generation, TaskID: request.TaskID, State: NodeUnknown}, fmt.Errorf("%w: decode clone task: %v", ErrUnknown, err)
 	}
 	_ = response.Body.Close()
+	if envelope.Data == "" {
+		return Node{VMID: request.VMID, Generation: request.Generation, TaskID: request.TaskID, State: NodeUnknown}, fmt.Errorf("%w: clone response omitted task id", ErrUnknown)
+	}
+	if err := r.waitForTask(ctx, envelope.Data); err != nil {
+		return Node{VMID: request.VMID, Generation: request.Generation, TaskID: request.TaskID, State: NodeUnknown}, err
+	}
 	return Node{VMID: request.VMID, Generation: request.Generation, TaskID: request.TaskID, State: NodeCreating}, nil
+}
+
+func (r *ProxmoxRuntime) waitForTask(ctx context.Context, upid string) error {
+	waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		path := "/nodes/" + url.PathEscape(r.node) + "/tasks/" + url.PathEscape(upid) + "/status"
+		response, err := r.request(waitCtx, http.MethodGet, path, nil)
+		if err == nil {
+			var envelope struct {
+				Data struct {
+					Status     string `json:"status"`
+					ExitStatus string `json:"exitstatus"`
+				} `json:"data"`
+			}
+			decodeErr := json.NewDecoder(response.Body).Decode(&envelope)
+			_ = response.Body.Close()
+			if decodeErr != nil {
+				return fmt.Errorf("%w: decode task status: %v", ErrUnknown, decodeErr)
+			}
+			if envelope.Data.Status == "stopped" {
+				if envelope.Data.ExitStatus != "" && envelope.Data.ExitStatus != "OK" {
+					return fmt.Errorf("%w: clone task %s exited with %s", ErrUnknown, upid, envelope.Data.ExitStatus)
+				}
+				return nil
+			}
+		} else if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("%w: observe clone task %s: %v", ErrUnknown, upid, err)
+		}
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("%w: wait for clone task %s: %v", ErrUnknown, upid, waitCtx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func (r *ProxmoxRuntime) Observe(ctx context.Context, vmid int) (Node, error) {
@@ -195,12 +261,15 @@ func (r *ProxmoxRuntime) VerifyIdentity(ctx context.Context, node Node) error {
 	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
 		return fmt.Errorf("decode Proxmox identity: %w", err)
 	}
-	if envelope.Data.VMID != node.VMID || envelope.Data.Hostname != expectedHostname {
-		return ErrIdentityInvalid
+	if (envelope.Data.VMID != 0 && envelope.Data.VMID != node.VMID) || envelope.Data.Hostname != expectedHostname {
+		return fmt.Errorf("%w: identity fields mismatch", ErrIdentityInvalid)
 	}
 	metadata, err := DecodeMetadata(envelope.Data.Description)
-	if err != nil || ValidateWorkerMetadata(metadata, node.Generation, node.TaskID) != nil {
-		return ErrIdentityInvalid
+	if err != nil {
+		return fmt.Errorf("%w: metadata decode failed", ErrIdentityInvalid)
+	}
+	if err := ValidateWorkerMetadata(metadata, node.Generation, node.TaskID); err != nil {
+		return fmt.Errorf("%w: metadata validation failed", ErrIdentityInvalid)
 	}
 	return nil
 }
@@ -212,7 +281,7 @@ func (r *ProxmoxRuntime) action(ctx context.Context, method string, vmid int, su
 	path := "/nodes/" + url.PathEscape(r.node) + "/lxc/" + strconv.Itoa(vmid) + suffix
 	response, err := r.request(ctx, method, path, nil)
 	if err != nil {
-		return ErrUnknown
+		return fmt.Errorf("%w: %v", ErrUnknown, err)
 	}
 	return response.Body.Close()
 }
@@ -226,6 +295,16 @@ func (r *ProxmoxRuntime) Join(context.Context, int) error {
 }
 
 func (r *ProxmoxRuntime) Stop(ctx context.Context, vmid int) error {
+	if err := r.validate(vmid); err != nil {
+		return err
+	}
+	observed, err := r.Observe(ctx, vmid)
+	if err != nil {
+		return err
+	}
+	if observed.State == NodeStopped {
+		return nil
+	}
 	return r.action(ctx, http.MethodPost, vmid, "/status/stop")
 }
 

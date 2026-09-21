@@ -41,6 +41,10 @@ func TestDecodeAndValidateWorkerMetadata(t *testing.T) {
 	if err != nil || ValidateWorkerMetadata(decoded, "gen-1", "task-1") != nil {
 		t.Fatalf("decoded metadata = %+v, err = %v", decoded, err)
 	}
+	trailingNewline, err := DecodeMetadata(encoded + "\n")
+	if err != nil || ValidateWorkerMetadata(trailingNewline, "gen-1", "task-1") != nil {
+		t.Fatalf("metadata with trailing newline = %+v, err = %v", trailingNewline, err)
+	}
 	decoded["task"] = "other"
 	if !errors.Is(ValidateWorkerMetadata(decoded, "gen-1", "task-1"), ErrMetadataInvalid) {
 		t.Fatal("mismatched task metadata was accepted")

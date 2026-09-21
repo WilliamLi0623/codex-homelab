@@ -51,6 +51,7 @@ func DecodeMetadata(encoded string) (map[string]string, error) {
 	if strings.TrimSpace(encoded) == "" {
 		return nil, ErrMetadataInvalid
 	}
+	encoded = strings.TrimSuffix(encoded, "\n")
 	metadata := make(map[string]string)
 	for _, line := range strings.Split(encoded, "\n") {
 		key, value, ok := strings.Cut(line, "=")

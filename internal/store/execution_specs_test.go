@@ -72,3 +72,36 @@ func TestListPendingAttemptExecutionSpecsExcludesDurableCompletion(t *testing.T)
 		t.Fatalf("pending after completion = (%+v, %v)", pending, err)
 	}
 }
+
+func TestListPendingAttemptExecutionSpecsRequeuesIncompleteRelease(t *testing.T) {
+	s := openCapacityTestStore(t)
+	task, _, err := s.CreateTask(context.Background(), domain.NewTask("task", "owner/repo", "main", "objective", "release-retry-spec-request"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := s.StartAttempt(context.Background(), task.ID, "glm-5.3-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := AttemptExecutionSpec{TaskID: task.ID, AttemptID: attempt.ID, Branch: "refs/heads/codex/task/release-retry", ValidationCommand: []string{"go", "test"}}
+	if _, _, err := s.EnsureAttemptExecutionSpec(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordValidationResult(context.Background(), ValidationResult{ID: "completion-" + attempt.ID, AttemptID: attempt.ID, Command: "go test", State: "PASSED", CreatedAt: time.Now().UTC()}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.EnsureReleaseProgress(context.Background(), ReleaseProgressRequest{TaskID: task.ID, AttemptID: attempt.ID, VMID: 3010, Generation: "gen", KubeNode: "node"}); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := s.ListPendingAttemptExecutionSpecs(context.Background())
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending with incomplete release = (%+v, %v)", pending, err)
+	}
+	if err := s.UpdateReleaseProgress(context.Background(), task.ID, attempt.ID, ReleaseStepDone, ReleaseStateCompleted, ""); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = s.ListPendingAttemptExecutionSpecs(context.Background())
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("pending after release completion = (%+v, %v)", pending, err)
+	}
+}
