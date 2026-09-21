@@ -23,7 +23,6 @@ $script:Allowlist = @(
 )
 $script:Denylist = @(
   @{Id=100; Type="lxc"; Name="tailscale-alt"},
-  @{Id=110; Type="lxc"; Name="gpt-oss-cpu-bench"},
   @{Id=200; Type="lxc"; Name="grafana-monitor"}
 )
 
