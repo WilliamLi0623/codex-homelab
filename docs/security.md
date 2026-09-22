@@ -15,3 +15,13 @@ images, logs, and task worktrees.
 Every task has a clean worktree and attempt-specific `CODEX_HOME`. Windows is
 limited to `C:\WebCodexWorkspace`; it is administration and recovery, not
 heavy execution.
+
+## ChatGPT MCP app boundary
+
+The optional ChatGPT interface uses the private MCP gateway and Secure MCP
+Tunnel. The gateway has its own bearer token and must not receive Proxmox,
+Kubernetes, CCH, GitHub, or OpenAI credentials as tool arguments.
+
+The standalone gateway is intentionally fail-closed until it has an authenticated
+local Controller adapter for dispatch and continuation. It may not open a second
+K3s/Proxmox execution path or silently fall back to append-only `send_message`.

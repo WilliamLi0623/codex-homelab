@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "transport": {
+    "method": "POST",
+    "path": "/mcp",
+    "protocol": "jsonrpc-2.0",
+    "authentication": "Authorization: Bearer <MCP_GATEWAY_TOKEN>"
+  },
+  "tools": [
+    {
+      "name": "submit_task",
+      "required": ["repository", "base_ref", "objective", "idempotency_key"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "base_ref": {"type": "string", "minLength": 1},
+        "objective": {"type": "string", "minLength": 1},
+        "idempotency_key": {"type": "string", "minLength": 1}
+      }
+    },
+    {
+      "name": "start_attempt",
+      "required": ["task_id"],
+      "properties": {
+        "task_id": {"type": "string", "minLength": 1},
+        "profile": {"type": "string", "minLength": 1}
+      }
+    },
+    {
+      "name": "get_task",
+      "required": ["task_id"],
+      "properties": {"task_id": {"type": "string", "minLength": 1}}
+    },
+    {"name": "list_tasks", "required": [], "properties": {}},
+    {
+      "name": "send_message",
+      "required": ["task_id", "body"],
+      "properties": {
+        "task_id": {"type": "string", "minLength": 1},
+        "body": {"type": "string", "minLength": 1}
+      }
+    },
+    {
+      "name": "continue_task",
+      "required": ["task_id", "attempt_id", "body", "idempotency_key"],
+      "properties": {
+        "task_id": {"type": "string", "minLength": 1},
+        "attempt_id": {"type": "string", "minLength": 1},
+        "body": {"type": "string", "minLength": 1},
+        "idempotency_key": {"type": "string", "minLength": 1}
+      }
+    },
+    {
+      "name": "cancel_task",
+      "required": ["task_id"],
+      "properties": {"task_id": {"type": "string", "minLength": 1}}
+    },
+    {
+      "name": "retry_task",
+      "required": ["task_id"],
+      "properties": {"task_id": {"type": "string", "minLength": 1}}
+    },
+    {
+      "name": "get_task_events",
+      "required": ["task_id"],
+      "properties": {"task_id": {"type": "string", "minLength": 1}}
+    },
+    {
+      "name": "dispatch_task",
+      "required": ["task_id", "attempt_id", "prompt"],
+      "properties": {
+        "task_id": {"type": "string", "minLength": 1},
+        "attempt_id": {"type": "string", "minLength": 1},
+        "prompt": {"type": "string", "minLength": 1}
+      }
+    }
+  ],
+  "write_semantics": {
+    "idempotency": ["submit_task", "continue_task"],
+    "unknown_outcome": "never_automatic_replay",
+    "confirmation_required": ["submit_task", "start_attempt", "dispatch_task", "continue_task", "cancel_task", "retry_task"]
+  }
+}
