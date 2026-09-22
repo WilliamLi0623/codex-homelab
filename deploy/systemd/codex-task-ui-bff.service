@@ -9,6 +9,7 @@ User=codex-ui
 Group=codex-ui
 ExecStart=/usr/local/bin/codex-task-ui-bff
 EnvironmentFile=-/etc/codex/task-ui-bff.env
+ReadOnlyPaths=/var/lib/codex-task-ui
 UnsetEnvironment=PROXMOX_TOKEN KUBERNETES_TOKEN CCH_API_KEY CODEX_MODEL_SECRET_KEY GITHUB_TOKEN
 Restart=on-failure
 RestartSec=5s

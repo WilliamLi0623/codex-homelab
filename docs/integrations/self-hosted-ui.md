@@ -31,8 +31,9 @@ npm run dev
 ```
 
 The Vite development server proxies `/ui/api` to `http://127.0.0.1:8081`.
-Production deployment should serve the generated `ui/dist` directory as
-static files and run `codex-task-ui-bff.service` separately.
+Production deployment can set `TASK_UI_STATIC_DIR` so the BFF serves the
+generated `ui/dist` directory as static files, or use another private static
+file server. The BFF API remains separately authenticated.
 
 ## BFF configuration
 
@@ -41,9 +42,10 @@ precedence):
 
 ```text
 TASK_UI_LISTEN=127.0.0.1:8081
-TASK_UI_CONTROLLER_URL=http://127.0.0.1:8080
+TASK_UI_CONTROLLER_URL=http://127.0.0.1:18080
 TASK_UI_AUTH_TOKEN=<operator token>
 TASK_UI_CONTROLLER_TOKEN=<optional Controller service token>
+TASK_UI_STATIC_DIR=/var/lib/codex-task-ui
 ```
 
 `TASK_UI_AUTH_TOKEN` is required. The browser must not receive this token. A

@@ -23,6 +23,7 @@ type uiConfig struct {
 	ControllerURL          *url.URL
 	OperatorToken          string
 	ControllerServiceToken string
+	StaticDirectory        string
 }
 
 func main() {
@@ -30,8 +31,9 @@ func main() {
 	controller := flag.String("controller", "", "Controller URL")
 	operatorToken := flag.String("operator-token", "", "operator Bearer token")
 	serviceToken := flag.String("controller-token", "", "optional Controller service token")
+	staticDirectory := flag.String("static-dir", "", "optional static UI directory; defaults to TASK_UI_STATIC_DIR")
 	flag.Parse()
-	config, err := loadUIConfig(func(name string) string { return os.Getenv(name) }, *listen, *controller, *operatorToken, *serviceToken)
+	config, err := loadUIConfig(func(name string) string { return os.Getenv(name) }, *listen, *controller, *operatorToken, *serviceToken, *staticDirectory)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -42,7 +44,7 @@ func main() {
 	}
 }
 
-func loadUIConfig(getenv func(string) string, flagListen, flagController, flagOperatorToken, flagServiceToken string) (uiConfig, error) {
+func loadUIConfig(getenv func(string) string, flagListen, flagController, flagOperatorToken, flagServiceToken string, staticFlags ...string) (uiConfig, error) {
 	listen := strings.TrimSpace(flagListen)
 	if listen == "" {
 		listen = strings.TrimSpace(getenv("TASK_UI_LISTEN"))
@@ -73,7 +75,14 @@ func loadUIConfig(getenv func(string) string, flagListen, flagController, flagOp
 	if service == "" {
 		service = strings.TrimSpace(getenv("TASK_UI_CONTROLLER_TOKEN"))
 	}
-	return uiConfig{ListenAddress: listen, ControllerURL: controllerURL, OperatorToken: operator, ControllerServiceToken: service}, nil
+	staticDirectory := ""
+	if len(staticFlags) > 0 {
+		staticDirectory = strings.TrimSpace(staticFlags[0])
+	}
+	if staticDirectory == "" {
+		staticDirectory = strings.TrimSpace(getenv("TASK_UI_STATIC_DIR"))
+	}
+	return uiConfig{ListenAddress: listen, ControllerURL: controllerURL, OperatorToken: operator, ControllerServiceToken: service, StaticDirectory: staticDirectory}, nil
 }
 
 func validatePrivateAddress(address string) error {
@@ -90,6 +99,14 @@ func validatePrivateAddress(address string) error {
 
 func newUIHandler(config uiConfig) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if !strings.HasPrefix(request.URL.Path, "/ui/api") {
+			if config.StaticDirectory != "" && (request.Method == http.MethodGet || request.Method == http.MethodHead) {
+				http.FileServer(http.Dir(config.StaticDirectory)).ServeHTTP(writer, request)
+				return
+			}
+			writeUIError(writer, http.StatusNotFound, "UI route not found")
+			return
+		}
 		if !authorizedUIRequest(request, config.OperatorToken) {
 			writer.Header().Set("WWW-Authenticate", "Bearer")
 			writeUIError(writer, http.StatusUnauthorized, "UI authorization required")

@@ -63,7 +63,7 @@ a scheduler or a second task database. The default listener is loopback only:
 MCP_GATEWAY_LISTEN=127.0.0.1:8090
 MCP_GATEWAY_DATABASE=/var/lib/codex-controller/controller.sqlite
 MCP_GATEWAY_TOKEN=<operator-managed bearer token>
-MCP_GATEWAY_CONTROLLER_URL=http://127.0.0.1:8080
+MCP_GATEWAY_CONTROLLER_URL=http://127.0.0.1:18080
 MCP_GATEWAY_CONTROLLER_TOKEN=<optional Controller service token>
 ```
 
