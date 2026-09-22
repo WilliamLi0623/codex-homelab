@@ -45,3 +45,14 @@ go build -trimpath -ldflags "-s -w" -o codex-agentd ./cmd/agentd
 The Proxmox template gate remains open until the template contains both this
 entrypoint and the pinned Codex CLI/runtime. No model key or `CODEX_HOME`
 contents belong in the template.
+
+## Live storage and P22–P25 checkpoint
+
+The current control and special-runner system disks are on `local` SSD storage:
+LXC210 uses a 32G `local` rootfs and VM101 uses a 100G `local` system disk.
+The `pool` storage class is reserved for data/workloads that explicitly need
+the mechanical array; dynamic worker system rootfs remains on `local`.
+
+The live P22–P25 evidence, including the successful GLM Chat Completions
+terminal loop and release reconciliation, is recorded in
+`docs/migration/p22-p25-runtime-2026-09-22.md`.

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/executor/k3s"
@@ -42,6 +43,12 @@ func TestDispatchTaskOverHTTPUsesPersistedAttempt(t *testing.T) {
 	server.ServeHTTP(dispatch, httptest.NewRequest(http.MethodPost, "/v1/tasks/"+created.Task.ID+"/dispatch", bytes.NewBufferString(`{"attempt_id":"`+started.Attempt.ID+`","prompt":"run","validation_command":["go","test","./..."]}`)))
 	if dispatch.Code != http.StatusAccepted {
 		t.Fatalf("dispatch status=%d body=%s", dispatch.Code, dispatch.Body.String())
+	}
+	if len(dispatcher.requests) != 1 || dispatcher.requests[0].ModelProfile != "openai-primary" {
+		t.Fatalf("dispatch request model profile = %+v", dispatcher.requests)
+	}
+	if !strings.Contains(dispatcher.requests[0].Prompt, "Do not run git commit or git push") {
+		t.Fatalf("dispatch prompt lacks commit boundary: %q", dispatcher.requests[0].Prompt)
 	}
 	if _, err := base.store.GetAttemptExecutionSpec(context.Background(), created.Task.ID, started.Attempt.ID); err != nil {
 		t.Fatalf("execution spec missing: %v", err)

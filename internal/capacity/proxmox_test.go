@@ -57,6 +57,25 @@ func TestProxmoxRuntimeCloneUsesOnlyDynamicVMIDs(t *testing.T) {
 	}
 }
 
+func TestProxmoxRuntimeDoesNotMarkRejectedCloneAsUnknown(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api2/json/nodes/pve-node/lxc/3013/clone" {
+			t.Fatalf("clone path = %q", r.URL.Path)
+		}
+		http.Error(w, "permission denied", http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3999}, Client: server.Client()})
+	_, err := runtime.Create(context.Background(), CreateRequest{VMID: 3010, TemplateVMID: 3013, Generation: "gen-1", Hostname: "codex-3010"})
+	if !errors.Is(err, ErrRejected) {
+		t.Fatalf("Create() error = %v, want ErrRejected", err)
+	}
+	if errors.Is(err, ErrUnknown) {
+		t.Fatalf("Create() error = %v, must not be ErrUnknown", err)
+	}
+}
+
 func TestProxmoxRuntimeRejectsProtectedActionBeforeHTTP(t *testing.T) {
 	called := false
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))

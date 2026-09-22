@@ -51,7 +51,7 @@ func TestCommitConfiguredWorkspaceUsesSeparatedValidationAndNoPush(t *testing.T)
 	if err != nil || sha != "0123456789012345678901234567890123456789" {
 		t.Fatalf("commit = %q, %v", sha, err)
 	}
-	if runner.calls != 5 {
-		t.Fatalf("runner calls = %d, want validation plus four git operations", runner.calls)
+	if runner.calls != 6 {
+		t.Fatalf("runner calls = %d, want base lookup, validation, and four git operations", runner.calls)
 	}
 }

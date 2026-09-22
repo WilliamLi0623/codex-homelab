@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-var ErrJoinDelegated = errors.New("k3s join is delegated to the executor")
+var (
+	ErrJoinDelegated = errors.New("k3s join is delegated to the executor")
+	ErrRejected      = errors.New("proxmox operation rejected")
+)
 
 type ProxmoxConfig struct {
 	BaseURL string
@@ -110,6 +113,9 @@ func (r *ProxmoxRuntime) request(ctx context.Context, method, path string, form 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		defer response.Body.Close()
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		if response.StatusCode >= http.StatusBadRequest && response.StatusCode < http.StatusInternalServerError {
+			return nil, fmt.Errorf("%w: %s: %s", ErrRejected, response.Status, strings.TrimSpace(string(body)))
+		}
 		return nil, fmt.Errorf("proxmox %s %s returned %s: %s", method, path, response.Status, strings.TrimSpace(string(body)))
 	}
 	return response, nil
@@ -145,6 +151,9 @@ func (r *ProxmoxRuntime) Create(ctx context.Context, request CreateRequest) (Nod
 	path := "/nodes/" + url.PathEscape(r.node) + "/lxc/" + strconv.Itoa(request.TemplateVMID) + "/clone"
 	response, err := r.request(ctx, http.MethodPost, path, form)
 	if err != nil {
+		if errors.Is(err, ErrRejected) {
+			return Node{VMID: request.VMID, Generation: request.Generation, TaskID: request.TaskID, State: NodeStopped}, err
+		}
 		return Node{VMID: request.VMID, Generation: request.Generation, TaskID: request.TaskID, State: NodeUnknown}, fmt.Errorf("%w: %v", ErrUnknown, err)
 	}
 	var envelope struct {

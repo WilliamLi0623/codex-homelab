@@ -53,14 +53,30 @@ func Commit(ctx context.Context, workspace string, validation []string, message 
 	if strings.TrimRight(top, "\r\n") != workspace {
 		return "", fmt.Errorf("git workspace mismatch: got %q, want %q", strings.TrimSpace(top), workspace)
 	}
-	if _, err := run(runner, ctx, workspace, validation[0], validation[1:]...); err != nil {
-		return "", fmt.Errorf("validation failed: %w", err)
+	baseSHA, err := run(runner, ctx, workspace, "git", "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("read base commit SHA: %w", err)
 	}
-	if _, err := run(runner, ctx, workspace, "git", "add", "--all"); err != nil {
-		return "", fmt.Errorf("git add failed: %w", err)
+	baseSHA = strings.TrimSpace(baseSHA)
+	if !sha40.MatchString(baseSHA) {
+		return "", fmt.Errorf("invalid base commit SHA %q", baseSHA)
 	}
-	if _, err := run(runner, ctx, workspace, "git", "commit", "-m", message); err != nil {
-		return "", fmt.Errorf("git commit failed: %w", err)
+	output, err := run(runner, ctx, workspace, validation[0], validation[1:]...)
+	if err != nil {
+		return "", fmt.Errorf("validation failed: command=%s: %w; output=%q", strings.Join(validation, " "), err, summarizeCommandOutput(output))
+	}
+	if output, err := run(runner, ctx, workspace, "git", "add", "--all"); err != nil {
+		return "", fmt.Errorf("git add failed: %w; output=%q", err, summarizeCommandOutput(output))
+	}
+	if output, err := run(runner, ctx, workspace, "git", "commit", "-m", message); err != nil {
+		if isNothingToCommit(output) {
+			currentSHA, readErr := run(runner, ctx, workspace, "git", "rev-parse", "HEAD")
+			currentSHA = strings.TrimSpace(currentSHA)
+			if readErr == nil && currentSHA != baseSHA && sha40.MatchString(currentSHA) {
+				return currentSHA, nil
+			}
+		}
+		return "", fmt.Errorf("git commit failed: %w; output=%q", err, summarizeCommandOutput(output))
 	}
 	sha, err := run(runner, ctx, workspace, "git", "rev-parse", "HEAD")
 	if err != nil {
@@ -73,6 +89,20 @@ func Commit(ctx context.Context, workspace string, validation []string, message 
 	return sha, nil
 }
 
+func isNothingToCommit(output string) bool {
+	output = strings.ToLower(output)
+	return strings.Contains(output, "nothing to commit") || strings.Contains(output, "nothing added to commit")
+}
+
+const maxCommandOutput = 4096
+
+func summarizeCommandOutput(output string) string {
+	output = strings.TrimSpace(output)
+	if len(output) > maxCommandOutput {
+		return output[:maxCommandOutput] + "..."
+	}
+	return output
+}
 func run(runner Runner, ctx context.Context, dir, name string, args ...string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/WilliamLi0623/codex-homelab/internal/agentd"
 	"github.com/WilliamLi0623/codex-homelab/internal/git"
+	"github.com/WilliamLi0623/codex-homelab/internal/muse"
 	"github.com/WilliamLi0623/codex-homelab/internal/worker"
 	"github.com/WilliamLi0623/codex-homelab/internal/workspace"
 )
@@ -106,6 +108,9 @@ func (s *session) run(ctx context.Context, input request) (response, error) {
 }
 
 func (s *session) resultFor(ctx context.Context, thread string, events []agentd.Event) (response, error) {
+	if isToolLoopValues(s.environment) && !containsEvent(events, "muse.tool_call") {
+		return response{}, errors.New("tool-loop completed without terminal tool call")
+	}
 	commitSHA, err := worker.CommitConfiguredWorkspace(ctx, s.environment, s.commitRunner)
 	if err != nil {
 		return response{}, err
@@ -114,6 +119,15 @@ func (s *session) resultFor(ctx context.Context, thread string, events []agentd.
 		commitSHA = readCommitSHA(s.commitSHAFile)
 	}
 	return response{ThreadID: thread, Events: summarizeEvents(events), CommitSHA: commitSHA}, nil
+}
+
+func containsEvent(events []agentd.Event, method string) bool {
+	for _, event := range events {
+		if event.Method == method {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *session) lastResult() (response, bool) {
@@ -140,6 +154,96 @@ func (r clientRunner) CollectTurnEvents(ctx context.Context) ([]agentd.Event, er
 	return r.client.CollectTurnEvents(ctx)
 }
 
+type museRunner struct {
+	runner  *muse.Runner
+	thread  string
+	pending []agentd.Event
+}
+
+func (r *museRunner) StartNewTurn(ctx context.Context, prompt string) (string, []agentd.Event, error) {
+	result, err := r.runner.Run(ctx, prompt)
+	if err != nil {
+		return "", nil, err
+	}
+	r.thread = result.ResponseID
+	return r.thread, toAgentdEvents(result.Events), nil
+}
+
+func (r *museRunner) ResumeThread(_ context.Context, thread string) error {
+	if r.thread == "" || thread != r.thread {
+		return fmt.Errorf("Muse response thread %q is unavailable", thread)
+	}
+	return nil
+}
+
+func (r *museRunner) StartTurn(ctx context.Context, _ string, prompt string) (string, error) {
+	result, err := r.runner.Run(ctx, prompt)
+	if err != nil {
+		return "", err
+	}
+	r.thread = result.ResponseID
+	r.pending = toAgentdEvents(result.Events)
+	return result.ResponseID, nil
+}
+
+func (r *museRunner) CollectTurnEvents(_ context.Context) ([]agentd.Event, error) {
+	events := r.pending
+	r.pending = nil
+	return events, nil
+}
+
+func toAgentdEvents(events []muse.Event) []agentd.Event {
+	converted := make([]agentd.Event, 0, len(events))
+	for _, event := range events {
+		converted = append(converted, agentd.Event{Method: event.Method, Params: event.Params})
+	}
+	return converted
+}
+
+func newConfiguredRunner(environment []string) (runner, error) {
+	values := environmentValues(environment)
+	model := strings.TrimSpace(values["CODEX_MODEL"])
+	profile := strings.TrimSpace(values["CODEX_MODEL_PROFILE"])
+	loopModel := model
+	if loopModel != "muse-spark-1.3-contributor" && loopModel != "glm-5.3-flash" {
+		loopModel = profile
+	}
+	if loopModel != "muse-spark-1.3-contributor" && loopModel != "glm-5.3-flash" {
+		return nil, errors.New("tool-loop runner is not configured for this model profile")
+	}
+	workspace := strings.TrimSpace(values["CODEX_WORKSPACE"])
+	if workspace == "" {
+		return nil, errors.New("tool-loop runner requires CODEX_WORKSPACE")
+	}
+	if strings.TrimSpace(values["CODEX_OPENAI_BASE_URL"]) == "" || strings.TrimSpace(values["CODEX_API_KEY"]) == "" {
+		return nil, errors.New("tool-loop runner requires CODEX_OPENAI_BASE_URL and CODEX_API_KEY")
+	}
+	baseURL := values["CODEX_OPENAI_BASE_URL"]
+	var client muse.ResponsesClient
+	manualContinuation := false
+	switch values["CODEX_WIRE_API"] {
+	case "responses":
+		if loopModel != "muse-spark-1.3-contributor" {
+			return nil, errors.New("GLM requires CODEX_WIRE_API=chat-completions")
+		}
+		client = muse.NewHTTPClient(baseURL, values["CODEX_API_KEY"], nil)
+		manualContinuation = isCCHResponsesEndpoint(baseURL)
+	case "chat-completions":
+		client = muse.NewChatHTTPClient(baseURL, values["CODEX_API_KEY"], nil)
+		manualContinuation = true
+	default:
+		return nil, errors.New("tool-loop runner requires CODEX_WIRE_API=responses or chat-completions")
+	}
+	museLoop := muse.NewRunner(client, muse.NewTerminal(workspace), loopModel)
+	museLoop.ManualContinuation = manualContinuation
+	return &museRunner{runner: museLoop}, nil
+}
+
+func isCCHResponsesEndpoint(baseURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	return err == nil && strings.EqualFold(parsed.Hostname(), "cch-jp.zenkexi.com")
+}
+
 func main() {
 	codex := flag.String("codex", "codex", "Codex executable")
 	listen := flag.String("listen", "", "HTTP listen address")
@@ -153,15 +257,26 @@ func main() {
 	if err := prepareConfiguredWorkspace(ctx, environment, nil); err != nil {
 		fatal(err)
 	}
-	if err := ensureCodexConfig(environment); err != nil {
-		fatal(err)
+	var configuredRunner runner
+	var process *agentd.Process
+	var err error
+	if isToolLoopEnvironment(environment) {
+		configuredRunner, err = newConfiguredRunner(environment)
+		if err != nil {
+			fatal(err)
+		}
+	} else {
+		if err := ensureCodexConfig(environment); err != nil {
+			fatal(err)
+		}
+		process, err = agentd.StartCodexAppServer(ctx, *codex, environment)
+		if err != nil {
+			fatal(err)
+		}
+		defer func() { _ = process.Close() }()
+		configuredRunner = clientRunner{client: process.Client}
 	}
-	process, err := agentd.StartCodexAppServer(ctx, *codex, environment)
-	if err != nil {
-		fatal(err)
-	}
-	defer func() { _ = process.Close() }()
-	session := newSession(clientRunner{client: process.Client})
+	session := newSession(configuredRunner)
 	server := startHTTPServer(ctx, *listen, session)
 	if server != nil {
 		if raw := os.Getenv("CODEX_AGENTD_REQUEST"); raw != "" {
@@ -170,7 +285,7 @@ func main() {
 				fatal(errors.New("invalid CODEX_AGENTD_REQUEST"))
 			}
 			if _, err := session.run(ctx, input); err != nil {
-				fatal(errors.New("initial agentd request failed"))
+				fatal(fmt.Errorf("initial agentd request failed: %w", err))
 			}
 		}
 		defer func() { _ = server.Shutdown(context.Background()) }()
@@ -422,7 +537,7 @@ func prepareConfiguredWorkspace(ctx context.Context, environment []string, runne
 		return errors.New("agentd workspace configuration is incomplete")
 	}
 	if err := workspace.Prepare(ctx, repository, baseRef, workspacePath, values["CODEX_ATTEMPT_ID"], runner); err != nil {
-		return errors.New("agentd workspace preparation failed")
+		return fmt.Errorf("agentd workspace preparation failed: %w", err)
 	}
 	return nil
 }

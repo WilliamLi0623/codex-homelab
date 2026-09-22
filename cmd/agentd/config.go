@@ -15,12 +15,19 @@ import (
 func ensureCodexConfig(environment []string) error {
 	values := environmentValues(environment)
 	model := strings.TrimSpace(values["CODEX_MODEL"])
+	wireAPI := strings.TrimSpace(values["CODEX_WIRE_API"])
 	baseURL := strings.TrimSpace(values["CODEX_OPENAI_BASE_URL"])
-	if model == "" && baseURL == "" {
+	if model == "" && wireAPI == "" && baseURL == "" {
 		return nil
 	}
-	if model == "" || baseURL == "" {
-		return errors.New("CODEX_MODEL and CODEX_OPENAI_BASE_URL must be configured together")
+	if model == "" || wireAPI == "" || baseURL == "" {
+		return errors.New("CODEX_MODEL, CODEX_WIRE_API, and CODEX_OPENAI_BASE_URL must be configured together")
+	}
+	if wireAPI == "coding-agent" {
+		return errors.New("coding-agent protocol adapter is not implemented")
+	}
+	if wireAPI != "responses" {
+		return errors.New("unsupported CODEX_WIRE_API")
 	}
 	home := strings.TrimSpace(values["CODEX_HOME"])
 	attemptID := strings.TrimSpace(values["CODEX_ATTEMPT_ID"])
@@ -33,7 +40,7 @@ func ensureCodexConfig(environment []string) error {
 	content := "model = " + strconv.Quote(model) + "\n" +
 		"openai_base_url = " + strconv.Quote(strings.TrimRight(baseURL, "/")) + "\n" +
 		"approval_policy = \"never\"\n" +
-		"sandbox_mode = \"danger-full-access\"\n"
+		"sandbox_mode = \"workspace-write\"\n"
 	path := filepath.Join(home, "config.toml")
 	if existing, err := os.ReadFile(path); err == nil {
 		if string(existing) != content {
@@ -47,6 +54,20 @@ func ensureCodexConfig(environment []string) error {
 		return fmt.Errorf("write Codex config: %w", err)
 	}
 	return nil
+}
+
+func isToolLoopEnvironment(environment []string) bool {
+	return isToolLoopValues(environmentValues(environment))
+}
+
+func isToolLoopValues(values map[string]string) bool {
+	for _, key := range []string{"CODEX_MODEL", "CODEX_MODEL_PROFILE"} {
+		model := strings.TrimSpace(values[key])
+		if model == "muse-spark-1.3-contributor" || model == "glm-5.3-flash" {
+			return true
+		}
+	}
+	return false
 }
 
 func environmentValues(environment []string) map[string]string {

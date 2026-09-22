@@ -85,6 +85,19 @@ func TestSessionRunCommitsConfiguredWorkspaceAfterTurn(t *testing.T) {
 	}
 }
 
+func TestToolLoopRejectsCompletionWithoutTerminalUse(t *testing.T) {
+	workspacePath := filepath.Join(t.TempDir(), "attempt-1")
+	environment := []string{
+		"CODEX_MODEL=glm-5.3-flash",
+		"CODEX_WORKSPACE=" + workspacePath,
+		`CODEX_VALIDATION_COMMAND=["sh","-c","true"]`,
+	}
+	_, err := newSessionWithEnvironment(&fakeRunner{}, environment, commitRunner{workspace: workspacePath}).run(context.Background(), request{Prompt: "first"})
+	if err == nil || !strings.Contains(err.Error(), "terminal tool call") {
+		t.Fatalf("session.run() error = %v, want terminal tool call guard", err)
+	}
+}
+
 func TestDecodeRequestRequiresPrompt(t *testing.T) {
 	if _, err := decodeRequest(strings.NewReader(`{"prompt":""}`)); err == nil {
 		t.Fatal("empty prompt accepted")

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -16,12 +17,18 @@ import (
 	"github.com/WilliamLi0623/codex-homelab/internal/store"
 )
 
+const workerCommitBoundary = "\n\nExecution contract: use the terminal tool to perform and verify the requested changes. Do not run git commit or git push; the worker wrapper validates the workspace and creates the local commit."
+
 type Dispatcher interface {
 	Dispatch(context.Context, orchestrator.Request) (orchestrator.Dispatch, error)
 }
 
 type Completer interface {
 	Complete(context.Context, orchestrator.CompletionInput) (store.CompletionRecord, error)
+}
+
+type ReleaseReconciler interface {
+	ReconcileRelease(context.Context, orchestrator.Claim, string) error
 }
 
 type dispatchRequest struct {
@@ -47,6 +54,7 @@ type Server struct {
 	store      *store.Store
 	dispatcher Dispatcher
 	completer  Completer
+	releaser   ReleaseReconciler
 	mux        *http.ServeMux
 }
 
@@ -121,6 +129,13 @@ type reconcileAttemptRequest struct {
 	Outcome string `json:"outcome"`
 }
 
+type reconcileReleaseRequest struct {
+	VMID       int    `json:"vmid"`
+	Generation string `json:"generation"`
+	KubeNode   string `json:"kube_node"`
+	Proof      string `json:"proof"`
+}
+
 type startAttemptRequest struct {
 	Profile string `json:"profile"`
 }
@@ -134,7 +149,11 @@ func NewServerWithDispatcher(database *store.Store, dispatcher Dispatcher) *Serv
 }
 
 func NewServerWithDispatcherAndCompletion(database *store.Store, dispatcher Dispatcher, completer Completer) *Server {
-	server := &Server{store: database, dispatcher: dispatcher, completer: completer, mux: http.NewServeMux()}
+	return NewServerWithDispatcherCompletionAndRelease(database, dispatcher, completer, nil)
+}
+
+func NewServerWithDispatcherCompletionAndRelease(database *store.Store, dispatcher Dispatcher, completer Completer, releaser ReleaseReconciler) *Server {
+	server := &Server{store: database, dispatcher: dispatcher, completer: completer, releaser: releaser, mux: http.NewServeMux()}
 	server.mux.HandleFunc("GET /v1/health", server.health)
 	server.mux.HandleFunc("GET /v1/ready", server.ready)
 	server.mux.HandleFunc("GET /v1/status", server.status)
@@ -150,6 +169,7 @@ func NewServerWithDispatcherAndCompletion(database *store.Store, dispatcher Disp
 	server.mux.HandleFunc("POST /v1/tasks/{id}/attempts/{attemptID}/complete", server.completeAttempt)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/retry", server.retryTask)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/attempts/{attemptID}/reconcile", server.reconcileAttempt)
+	server.mux.HandleFunc("POST /v1/tasks/{id}/attempts/{attemptID}/release/reconcile", server.reconcileRelease)
 	return server
 }
 
@@ -161,11 +181,18 @@ func (s *Server) completeAttempt(writer http.ResponseWriter, request *http.Reque
 	var input completeRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 1<<20))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil || strings.TrimSpace(input.Branch) == "" || len(input.ValidationCommand) == 0 {
-		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "branch and validation_command are required"})
+	if err := decoder.Decode(&input); err != nil || len(input.ValidationCommand) == 0 {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "validation_command is required"})
 		return
 	}
-	record, err := s.completer.Complete(request.Context(), orchestrator.CompletionInput{TaskID: request.PathValue("id"), AttemptID: request.PathValue("attemptID"), Branch: input.Branch, ValidationCommand: input.ValidationCommand})
+	taskID := request.PathValue("id")
+	attemptID := request.PathValue("attemptID")
+	deterministicBranch := deterministicAttemptBranch(taskID, attemptID)
+	if supplied := strings.TrimSpace(input.Branch); supplied != "" && supplied != deterministicBranch {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "branch must match the deterministic attempt branch"})
+		return
+	}
+	record, err := s.completer.Complete(request.Context(), orchestrator.CompletionInput{TaskID: taskID, AttemptID: attemptID, Branch: deterministicBranch, ValidationCommand: input.ValidationCommand})
 	if errors.Is(err, orchestrator.ErrCompletionReleasePending) {
 		writeJSON(writer, http.StatusAccepted, map[string]any{"completion": record, "release_pending": true})
 		return
@@ -185,8 +212,8 @@ func (s *Server) dispatchTask(writer http.ResponseWriter, request *http.Request)
 	var input dispatchRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 1<<20))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil || strings.TrimSpace(input.AttemptID) == "" || strings.TrimSpace(input.Prompt) == "" {
-		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "attempt_id and prompt are required"})
+	if err := decoder.Decode(&input); err != nil || strings.TrimSpace(input.AttemptID) == "" || strings.TrimSpace(input.Prompt) == "" || len(input.ValidationCommand) == 0 {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "attempt_id, prompt, and validation_command are required"})
 		return
 	}
 	task, err := s.store.GetTask(request.Context(), request.PathValue("id"))
@@ -198,29 +225,29 @@ func (s *Server) dispatchTask(writer http.ResponseWriter, request *http.Request)
 		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "load task failed"})
 		return
 	}
-	if _, err := s.store.GetAttempt(request.Context(), task.ID, input.AttemptID); errors.Is(err, store.ErrAttemptNotFound) {
+	attempt, err := s.store.GetAttempt(request.Context(), task.ID, input.AttemptID)
+	if errors.Is(err, store.ErrAttemptNotFound) {
 		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "attempt not found for task"})
 		return
 	} else if err != nil {
 		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "load attempt failed"})
 		return
 	}
-	if len(input.ValidationCommand) > 0 {
-		if _, _, err := s.store.EnsureAttemptExecutionSpec(request.Context(), store.AttemptExecutionSpec{
-			TaskID: task.ID, AttemptID: input.AttemptID,
-			Branch:            deterministicAttemptBranch(task.ID, input.AttemptID),
-			ValidationCommand: input.ValidationCommand,
-		}); err != nil {
-			if errors.Is(err, store.ErrExecutionSpecConflict) {
-				writeJSON(writer, http.StatusConflict, map[string]string{"error": "attempt execution spec conflicts with prior dispatch"})
-				return
-			}
-			writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid execution spec"})
+	if _, _, err := s.store.EnsureAttemptExecutionSpec(request.Context(), store.AttemptExecutionSpec{
+		TaskID: task.ID, AttemptID: input.AttemptID,
+		Branch:            deterministicAttemptBranch(task.ID, input.AttemptID),
+		ValidationCommand: input.ValidationCommand,
+	}); err != nil {
+		if errors.Is(err, store.ErrExecutionSpecConflict) {
+			writeJSON(writer, http.StatusConflict, map[string]string{"error": "attempt execution spec conflicts with prior dispatch"})
 			return
 		}
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid execution spec"})
+		return
 	}
-	dispatch, err := s.dispatcher.Dispatch(request.Context(), orchestrator.Request{TaskID: task.ID, AttemptID: input.AttemptID, Prompt: input.Prompt, Repository: task.Repository, BaseRef: task.BaseRef, WorkspacePath: "/workspace/" + input.AttemptID, ValidationCommand: input.ValidationCommand})
+	dispatch, err := s.dispatcher.Dispatch(request.Context(), orchestrator.Request{TaskID: task.ID, AttemptID: input.AttemptID, ModelProfile: attempt.ModelProfile, Prompt: strings.TrimSpace(input.Prompt) + workerCommitBoundary, Repository: task.Repository, BaseRef: task.BaseRef, WorkspacePath: "/workspace/" + input.AttemptID, ValidationCommand: input.ValidationCommand})
 	if err != nil {
+		log.Printf("task dispatch failed task=%s attempt=%s: %v", task.ID, input.AttemptID, err)
 		writeJSON(writer, http.StatusConflict, map[string]string{"error": "task dispatch failed"})
 		return
 	}
@@ -253,6 +280,54 @@ func (s *Server) reconcileAttempt(writer http.ResponseWriter, request *http.Requ
 		return
 	}
 	writeJSON(writer, http.StatusOK, attemptResponse{ID: attempt.ID, Number: attempt.Number, ModelProfile: attempt.ModelProfile, State: string(attempt.State)})
+}
+
+func (s *Server) reconcileRelease(writer http.ResponseWriter, request *http.Request) {
+	if s.releaser == nil {
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]string{"error": "release reconciler is not configured"})
+		return
+	}
+	var input reconcileReleaseRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil || input.VMID < 3000 || input.VMID > 3999 || strings.TrimSpace(input.Generation) == "" || strings.TrimSpace(input.KubeNode) == "" || strings.TrimSpace(input.Proof) == "" || len(input.Proof) > 2048 {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "vmid, generation, kube_node, and proof are required and valid"})
+		return
+	}
+	taskID := request.PathValue("id")
+	attemptID := request.PathValue("attemptID")
+	stored, err := s.store.GetCapacityClaim(request.Context(), taskID, attemptID)
+	if errors.Is(err, store.ErrCapacityClaimNotFound) {
+		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "capacity claim not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "load capacity claim failed"})
+		return
+	}
+	if stored.VMID != input.VMID || stored.Generation != input.Generation {
+		writeJSON(writer, http.StatusConflict, map[string]string{"error": "release identity does not match durable capacity claim"})
+		return
+	}
+	progress, err := s.store.GetReleaseProgress(request.Context(), taskID, attemptID)
+	if errors.Is(err, store.ErrReleaseProgressNotFound) {
+		writeJSON(writer, http.StatusConflict, map[string]string{"error": "release progress is not ready for reconciliation"})
+		return
+	}
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "load release progress failed"})
+		return
+	}
+	if progress.State != store.ReleaseStateUnknown || progress.VMID != input.VMID || progress.Generation != input.Generation || progress.KubeNode != input.KubeNode {
+		writeJSON(writer, http.StatusConflict, map[string]string{"error": "release identity or state does not match durable release progress"})
+		return
+	}
+	claim := orchestrator.Claim{ID: stored.ID, VMID: stored.VMID, TaskID: stored.TaskID, AttemptID: stored.AttemptID, Generation: stored.Generation, KubeNode: progress.KubeNode}
+	if err := s.releaser.ReconcileRelease(request.Context(), claim, strings.TrimSpace(input.Proof)); err != nil {
+		writeJSON(writer, http.StatusConflict, map[string]string{"error": "release cannot be reconciled"})
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]string{"status": "reconciled"})
 }
 
 func (s *Server) startAttempt(writer http.ResponseWriter, request *http.Request) {
