@@ -1,5 +1,9 @@
 controller:
   listen: 127.0.0.1:8080
+mcp_gateway:
+  listen: 127.0.0.1:8090
+  database: /var/lib/codex-controller/controller.sqlite
+  token_env: MCP_GATEWAY_TOKEN
 execution:
   default_class: dedicated-lxc
   warm_ready: 1
