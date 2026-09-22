@@ -63,6 +63,8 @@ a scheduler or a second task database. The default listener is loopback only:
 MCP_GATEWAY_LISTEN=127.0.0.1:8090
 MCP_GATEWAY_DATABASE=/var/lib/codex-controller/controller.sqlite
 MCP_GATEWAY_TOKEN=<operator-managed bearer token>
+MCP_GATEWAY_CONTROLLER_URL=http://127.0.0.1:8080
+MCP_GATEWAY_CONTROLLER_TOKEN=<optional Controller service token>
 ```
 
 The token is supplied through `/etc/codex/mcp-gateway.env` with restrictive file
@@ -74,10 +76,9 @@ model-secret environment variables. Keep the database path within the unit's
 
 The transport currently supports MCP `initialize`, `tools/list`, and
 `tools/call` over bounded JSON-RPC HTTP. Read/write persistence tools operate on
-the authoritative Controller SQLite state. `dispatch_task` remains fail-closed
-when the standalone gateway has no in-process dispatcher; dispatch must continue
-through the Controller API until an authenticated local Controller adapter is
-added. This prevents a second scheduler from being introduced accidentally.
+the authoritative Controller SQLite state. With `MCP_GATEWAY_CONTROLLER_URL`,
+dispatch and continuation are forwarded to the existing Controller HTTP API;
+without it they remain fail-closed. The gateway never adds a second scheduler.
 
 The live P22–P25 evidence, including the successful GLM Chat Completions
 terminal loop and release reconciliation, is recorded in

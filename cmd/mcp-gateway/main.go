@@ -19,18 +19,22 @@ import (
 const defaultListenAddress = "127.0.0.1:8090"
 
 type gatewayConfig struct {
-	ListenAddress string
-	DatabasePath  string
-	AuthToken     string
+	ListenAddress   string
+	DatabasePath    string
+	AuthToken       string
+	ControllerURL   string
+	ControllerToken string
 }
 
 func main() {
 	listenAddress := flag.String("listen", "", "private HTTP listen address; defaults to MCP_GATEWAY_LISTEN or loopback")
 	databasePath := flag.String("database", "", "Controller SQLite path; defaults to MCP_GATEWAY_DATABASE")
 	authToken := flag.String("token", "", "Bearer token; defaults to MCP_GATEWAY_TOKEN")
+	controllerURL := flag.String("controller", "", "optional Controller URL; defaults to MCP_GATEWAY_CONTROLLER_URL")
+	controllerToken := flag.String("controller-token", "", "optional Controller Bearer token; defaults to MCP_GATEWAY_CONTROLLER_TOKEN")
 	flag.Parse()
 
-	config, err := loadGatewayConfig(func(name string) string { return os.Getenv(name) }, *listenAddress, *databasePath, *authToken)
+	config, err := loadGatewayConfig(func(name string) string { return os.Getenv(name) }, *listenAddress, *databasePath, *authToken, *controllerURL, *controllerToken)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -55,7 +59,7 @@ func main() {
 	}
 }
 
-func loadGatewayConfig(getenv func(string) string, flagListen, flagDatabase, flagToken string) (gatewayConfig, error) {
+func loadGatewayConfig(getenv func(string) string, flagListen, flagDatabase, flagToken string, controllerFlags ...string) (gatewayConfig, error) {
 	listenAddress := strings.TrimSpace(flagListen)
 	if listenAddress == "" {
 		listenAddress = strings.TrimSpace(getenv("MCP_GATEWAY_LISTEN"))
@@ -81,7 +85,22 @@ func loadGatewayConfig(getenv func(string) string, flagListen, flagDatabase, fla
 	if authToken == "" {
 		return gatewayConfig{}, fmt.Errorf("MCP_GATEWAY_TOKEN is required")
 	}
-	return gatewayConfig{ListenAddress: listenAddress, DatabasePath: databasePath, AuthToken: authToken}, nil
+	var flagController, flagControllerToken string
+	if len(controllerFlags) > 0 {
+		flagController = controllerFlags[0]
+	}
+	if len(controllerFlags) > 1 {
+		flagControllerToken = controllerFlags[1]
+	}
+	controllerURL := strings.TrimSpace(flagController)
+	if controllerURL == "" {
+		controllerURL = strings.TrimSpace(getenv("MCP_GATEWAY_CONTROLLER_URL"))
+	}
+	controllerToken := strings.TrimSpace(flagControllerToken)
+	if controllerToken == "" {
+		controllerToken = strings.TrimSpace(getenv("MCP_GATEWAY_CONTROLLER_TOKEN"))
+	}
+	return gatewayConfig{ListenAddress: listenAddress, DatabasePath: databasePath, AuthToken: authToken, ControllerURL: controllerURL, ControllerToken: controllerToken}, nil
 }
 
 func validatePrivateListenAddress(address string) error {
@@ -102,7 +121,16 @@ func newHandler(config gatewayConfig) (http.Handler, func(), error) {
 		return nil, nil, fmt.Errorf("open controller store: %w", err)
 	}
 	auth := bearerAuthenticator{token: config.AuthToken}
-	transport := mcp.NewTransport(mcp.NewServer(database), auth)
+	server := mcp.NewServer(database)
+	if config.ControllerURL != "" {
+		client, err := mcp.NewControllerClient(config.ControllerURL, config.ControllerToken, database)
+		if err != nil {
+			_ = database.Close()
+			return nil, nil, fmt.Errorf("configure Controller client: %w", err)
+		}
+		server = mcp.NewServerWithDispatcherAndMessageSender(database, client, client)
+	}
+	transport := mcp.NewTransport(server, auth)
 	return transport, func() {
 		if err := database.Close(); err != nil {
 			log.Printf("close controller store: %v", err)

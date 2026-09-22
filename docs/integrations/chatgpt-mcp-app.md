@@ -15,11 +15,14 @@ ChatGPT custom MCP app
 
 1. Install and configure `codex-mcp-gateway` on the private Controller host.
 2. Keep `MCP_GATEWAY_DATABASE` pointed at the authoritative Controller database.
-3. Generate a separate high-entropy `MCP_GATEWAY_TOKEN`; never reuse a Proxmox,
+3. Set `MCP_GATEWAY_CONTROLLER_URL` to the existing private Controller URL
+   when write-through dispatch/continuation is required. Optionally set
+   `MCP_GATEWAY_CONTROLLER_TOKEN` if the Controller requires service auth.
+4. Generate a separate high-entropy `MCP_GATEWAY_TOKEN`; never reuse a Proxmox,
    Kubernetes, CCH, GitHub, or OpenAI credential.
-4. Keep the gateway on loopback and use an outbound Secure MCP Tunnel when
+5. Keep the gateway on loopback and use an outbound Secure MCP Tunnel when
    ChatGPT must reach it. Do not publish port 8090 directly.
-5. Verify that the ChatGPT workspace/account has Developer Mode and custom MCP
+6. Verify that the ChatGPT workspace/account has Developer Mode and custom MCP
    app support. Plan availability and write-action permissions are account and
    workspace policy, not something this repository can grant.
 
@@ -63,12 +66,12 @@ active attempt ID and a message idempotency key. A repeated key returns the
 existing delivery record and never resends the message. A transport failure is
 reported as `UNKNOWN`; it is not automatically replayed.
 
-The standalone gateway currently has no in-process executor or dispatcher. It
-therefore fails closed for `dispatch_task` and `continue_task` until an
-authenticated local Controller adapter is installed. This is intentional: the
-gateway must not create a second scheduler or send a continuation through a
-second database path. The authoritative dispatch/continuation endpoints remain
-the Controller HTTP service until that adapter is completed.
+When `MCP_GATEWAY_CONTROLLER_URL` is configured, the gateway uses an authenticated
+HTTP adapter to call the existing Controller dispatch and continuation endpoints.
+The adapter owns no scheduler, task state, or execution handles; the Controller
+remains authoritative. If the URL is omitted, `dispatch_task` and
+`continue_task` fail closed. This preserves the safe read-only gateway mode for
+installations that have not yet connected it to the live Controller.
 
 ## Confirmation and recovery rules
 

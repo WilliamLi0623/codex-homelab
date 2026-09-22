@@ -22,6 +22,7 @@ The optional ChatGPT interface uses the private MCP gateway and Secure MCP
 Tunnel. The gateway has its own bearer token and must not receive Proxmox,
 Kubernetes, CCH, GitHub, or OpenAI credentials as tool arguments.
 
-The standalone gateway is intentionally fail-closed until it has an authenticated
-local Controller adapter for dispatch and continuation. It may not open a second
-K3s/Proxmox execution path or silently fall back to append-only `send_message`.
+The gateway is read-only for dispatch/continuation unless an authenticated
+`MCP_GATEWAY_CONTROLLER_URL` adapter is configured. That adapter forwards to the
+existing Controller HTTP API; it may not open a second K3s/Proxmox execution
+path or silently fall back to append-only `send_message`.
