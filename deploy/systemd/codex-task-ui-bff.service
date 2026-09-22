@@ -1,6 +1,6 @@
 [Unit]
 Description=Codex private task UI backend-for-frontend
-After=network-online.target codex-controller.service
+After=network-online.target codex-controller-v3.service
 Wants=network-online.target
 
 [Service]
