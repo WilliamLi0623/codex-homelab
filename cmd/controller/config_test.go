@@ -55,3 +55,82 @@ func setControllerEnvironment(t *testing.T) {
 	t.Setenv("KUBERNETES_WORKER_IMAGE", "registry.example/worker:latest")
 	t.Setenv("KUBERNETES_SERVICE_ACCOUNT", "codex-worker")
 }
+
+func TestLoadEnvironmentConfigRejectsCodingAgentMetadata(t *testing.T) {
+	setControllerEnvironment(t)
+	t.Setenv("CODEX_MODEL", "glm-5.3-flash")
+	t.Setenv("CODEX_WIRE_API", "coding-agent")
+	t.Setenv("CODEX_OPENAI_BASE_URL", "https://cch.example/v1")
+	t.Setenv("CODEX_MODEL_SECRET_NAME", "codex-model-gateway")
+	t.Setenv("CODEX_MODEL_SECRET_KEY", "api-key")
+	if _, err := loadEnvironmentConfig(); err == nil {
+		t.Fatal("legacy coding-agent metadata was accepted")
+	}
+}
+
+func TestLoadEnvironmentConfigRejectsGLMResponsesMetadata(t *testing.T) {
+	setControllerEnvironment(t)
+	t.Setenv("CODEX_MODEL", "glm-5.3-flash")
+	t.Setenv("CODEX_WIRE_API", "responses")
+	t.Setenv("CODEX_OPENAI_BASE_URL", "https://cch.example/v1")
+	t.Setenv("CODEX_MODEL_SECRET_NAME", "codex-model-gateway")
+	if _, err := loadEnvironmentConfig(); err == nil {
+		t.Fatal("GLM Responses metadata was accepted")
+	}
+}
+
+func TestLoadEnvironmentConfigAcceptsChatCompletionsMetadata(t *testing.T) {
+	setControllerEnvironment(t)
+	t.Setenv("CODEX_MODEL", "glm-5.3-flash")
+	t.Setenv("CODEX_WIRE_API", "chat-completions")
+	t.Setenv("CODEX_OPENAI_BASE_URL", "https://cch.example/v1")
+	t.Setenv("CODEX_MODEL_SECRET_NAME", "codex-model-gateway")
+	t.Setenv("CODEX_MODEL_SECRET_KEY", "api-key")
+	cfg, err := loadEnvironmentConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Kubernetes.Model != "glm-5.3-flash" || cfg.Kubernetes.WireAPI != "chat-completions" {
+		t.Fatalf("Kubernetes provider config = %+v", cfg.Kubernetes)
+	}
+	if cfg.Kubernetes.ReasoningEffort != "max" {
+		t.Fatalf("reasoning effort = %q, want max", cfg.Kubernetes.ReasoningEffort)
+	}
+}
+
+func TestLoadEnvironmentConfigRejectsWrongGLMReasoningEffort(t *testing.T) {
+	setControllerEnvironment(t)
+	t.Setenv("CODEX_MODEL", "glm-5.3-flash")
+	t.Setenv("CODEX_WIRE_API", "chat-completions")
+	t.Setenv("CODEX_OPENAI_BASE_URL", "https://cch.example/v1")
+	t.Setenv("CODEX_MODEL_SECRET_NAME", "codex-model-gateway")
+	t.Setenv("CODEX_MODEL_REASONING_EFFORT", "xhigh")
+	if _, err := loadEnvironmentConfig(); err == nil || !strings.Contains(err.Error(), "REASONING_EFFORT") {
+		t.Fatalf("loadEnvironmentConfig() = %v; want reasoning effort validation", err)
+	}
+}
+
+func TestLoadEnvironmentConfigLoadsKueueResources(t *testing.T) {
+	setControllerEnvironment(t)
+	t.Setenv("KUEUE_QUEUE_NAME", "default")
+	t.Setenv("KUBERNETES_CPU_REQUEST", "500m")
+	t.Setenv("KUBERNETES_MEMORY_REQUEST", "512Mi")
+	t.Setenv("KUBERNETES_CPU_LIMIT", "1")
+	t.Setenv("KUBERNETES_MEMORY_LIMIT", "1Gi")
+	cfg, err := loadEnvironmentConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Kubernetes.QueueName != "default" || cfg.Kubernetes.CPURequest != "500m" || cfg.Kubernetes.MemoryRequest != "512Mi" || cfg.Kubernetes.CPULimit != "1" || cfg.Kubernetes.MemoryLimit != "1Gi" {
+		t.Fatalf("Kubernetes Kueue config = %+v", cfg.Kubernetes)
+	}
+}
+
+func TestLoadEnvironmentConfigRejectsPartialKueueResources(t *testing.T) {
+	setControllerEnvironment(t)
+	t.Setenv("KUEUE_QUEUE_NAME", "default")
+	t.Setenv("KUBERNETES_CPU_REQUEST", "500m")
+	if _, err := loadEnvironmentConfig(); err == nil {
+		t.Fatal("partial Kueue resource config was accepted")
+	}
+}

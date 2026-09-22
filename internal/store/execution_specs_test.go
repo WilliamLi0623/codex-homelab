@@ -105,3 +105,28 @@ func TestListPendingAttemptExecutionSpecsRequeuesIncompleteRelease(t *testing.T)
 		t.Fatalf("pending after release completion = (%+v, %v)", pending, err)
 	}
 }
+
+func TestListPendingAttemptExecutionSpecsExcludesCancelledAttempt(t *testing.T) {
+	s := openCapacityTestStore(t)
+	task, _, err := s.CreateTask(context.Background(), domain.NewTask("task-cancelled", "owner/repo", "main", "objective", "cancelled-spec-request"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := s.StartAttempt(context.Background(), task.ID, "glm-5.3-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.EnsureAttemptExecutionSpec(context.Background(), AttemptExecutionSpec{TaskID: task.ID, AttemptID: attempt.ID, Branch: "refs/heads/codex/task/cancelled", ValidationCommand: []string{"true"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("UPDATE task_attempts SET state = ? WHERE id = ?", domain.AttemptCancelled, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := s.ListPendingAttemptExecutionSpecs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending cancelled attempt = %+v", pending)
+	}
+}

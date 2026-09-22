@@ -219,6 +219,10 @@ func newConfiguredRunner(environment []string) (runner, error) {
 		return nil, errors.New("tool-loop runner requires CODEX_OPENAI_BASE_URL and CODEX_API_KEY")
 	}
 	baseURL := values["CODEX_OPENAI_BASE_URL"]
+	reasoningEffort, err := configuredReasoningEffort(loopModel, values["CODEX_MODEL_REASONING_EFFORT"])
+	if err != nil {
+		return nil, err
+	}
 	var client muse.ResponsesClient
 	manualContinuation := false
 	switch values["CODEX_WIRE_API"] {
@@ -235,8 +239,27 @@ func newConfiguredRunner(environment []string) (runner, error) {
 		return nil, errors.New("tool-loop runner requires CODEX_WIRE_API=responses or chat-completions")
 	}
 	museLoop := muse.NewRunner(client, muse.NewTerminal(workspace), loopModel)
+	museLoop.ReasoningEffort = reasoningEffort
 	museLoop.ManualContinuation = manualContinuation
 	return &museRunner{runner: museLoop}, nil
+}
+
+func configuredReasoningEffort(model, configured string) (string, error) {
+	want := map[string]string{
+		"glm-5.3-flash":              "max",
+		"muse-spark-1.3-contributor": "xhigh",
+	}[model]
+	if want == "" {
+		return strings.TrimSpace(configured), nil
+	}
+	configured = strings.TrimSpace(configured)
+	if configured == "" {
+		return want, nil
+	}
+	if configured != want {
+		return "", fmt.Errorf("model %q requires reasoning effort %q", model, want)
+	}
+	return configured, nil
 }
 
 func isCCHResponsesEndpoint(baseURL string) bool {

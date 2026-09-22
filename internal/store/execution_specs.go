@@ -106,13 +106,15 @@ func (s *Store) GetAttemptExecutionSpec(ctx context.Context, taskID, attemptID s
 func (s *Store) ListPendingAttemptExecutionSpecs(ctx context.Context) ([]AttemptExecutionSpec, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT s.id, s.task_id, s.attempt_id, s.branch, s.validation_command_json, s.created_at, s.updated_at
 FROM attempt_execution_specs s
-WHERE NOT EXISTS (SELECT 1 FROM validation_results v WHERE v.id = 'completion-' || s.attempt_id)
+JOIN task_attempts a ON a.task_id = s.task_id AND a.id = s.attempt_id
+WHERE a.state NOT IN ('CANCELLED', 'PROVIDER_FAILED', 'EXECUTION_FAILED', 'VALIDATION_FAILED', 'COMPLETED', 'UNKNOWN')
+AND (NOT EXISTS (SELECT 1 FROM validation_results v WHERE v.id = 'completion-' || s.attempt_id)
    OR EXISTS (
        SELECT 1 FROM release_progress rp
        WHERE rp.task_id = s.task_id
          AND rp.attempt_id = s.attempt_id
          AND NOT (rp.step = 'DONE' AND rp.state = 'COMPLETED')
-   )
+   ))
 ORDER BY s.created_at, s.id`)
 	if err != nil {
 		return nil, fmt.Errorf("list pending execution specs: %w", err)

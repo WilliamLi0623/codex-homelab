@@ -52,6 +52,28 @@ func TestChatHTTPClientBridgesToolCallToResponses(t *testing.T) {
 	}
 }
 
+func TestChatHTTPClientEncodesExplicitReasoningEffort(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request.ReasoningEffort != "max" {
+			t.Fatalf("reasoning_effort = %q, want max", request.ReasoningEffort)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chat-reasoning","choices":[{"finish_reason":"stop","message":{"content":"done"}}]}`))
+	}))
+	defer server.Close()
+
+	_, err := NewChatHTTPClient(server.URL, "test-key", server.Client()).CreateResponse(context.Background(), Request{
+		Model: "glm-5.3-flash", ReasoningEffort: "max", Input: []InputItem{{Role: "user", Text: "run"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestChatHTTPClientUsesExplicitHTTP2ByDefault(t *testing.T) {
 	client := NewChatHTTPClient("https://cch.example/v1", "test-key", nil)
 	if _, ok := client.HTTP.Transport.(*http2.Transport); !ok {

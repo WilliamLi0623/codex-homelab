@@ -27,6 +27,7 @@ type Runner struct {
 	Client             ResponsesClient
 	Terminal           *Terminal
 	Model              string
+	ReasoningEffort    string
 	MaxTurns           int
 	ManualContinuation bool
 }
@@ -53,10 +54,12 @@ func (r *Runner) Run(ctx context.Context, prompt string) (RunResult, error) {
 		maxTurns = 8
 	}
 	request := Request{
-		Model: r.Model,
-		Input: []InputItem{{Role: "user", Text: prompt}},
-		Tools: []Tool{terminalTool()},
-		Store: false,
+		Model:           r.Model,
+		Input:           []InputItem{{Role: "user", Text: prompt}},
+		Tools:           []Tool{terminalTool()},
+		Store:           false,
+		Reasoning:       reasoningConfig(r.ReasoningEffort),
+		ReasoningEffort: r.ReasoningEffort,
 	}
 	history := append([]InputItem(nil), request.Input...)
 	result := RunResult{}
@@ -107,12 +110,19 @@ func (r *Runner) Run(ctx context.Context, prompt string) (RunResult, error) {
 				history = append(history, InputItem{Type: "function_call", CallID: call.CallID, Name: call.Name, Arguments: call.Arguments})
 			}
 			history = append(history, outputs...)
-			request = Request{Model: r.Model, Input: history, Tools: []Tool{terminalTool()}, Store: false}
+			request = Request{Model: r.Model, Input: history, Tools: []Tool{terminalTool()}, Store: false, Reasoning: reasoningConfig(r.ReasoningEffort), ReasoningEffort: r.ReasoningEffort}
 			continue
 		}
-		request = Request{Model: r.Model, Input: outputs, PreviousResponseID: response.ID, Tools: []Tool{terminalTool()}, Store: false}
+		request = Request{Model: r.Model, Input: outputs, PreviousResponseID: response.ID, Tools: []Tool{terminalTool()}, Store: false, Reasoning: reasoningConfig(r.ReasoningEffort), ReasoningEffort: r.ReasoningEffort}
 	}
 	return RunResult{}, fmt.Errorf("Muse Responses turn limit reached: %d", maxTurns)
+}
+
+func reasoningConfig(effort string) *Reasoning {
+	if strings.TrimSpace(effort) == "" {
+		return nil
+	}
+	return &Reasoning{Effort: effort}
 }
 
 func terminalTool() Tool {

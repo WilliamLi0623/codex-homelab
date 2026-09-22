@@ -34,6 +34,7 @@ func TestRunnerExecutesTerminalToolAndContinuesResponse(t *testing.T) {
 		messageResponse("resp-2", "created marker"),
 	}}
 	runner := NewRunner(client, NewTerminal(workspace), "muse-spark-1.3-contributor")
+	runner.ReasoningEffort = "xhigh"
 
 	result, err := runner.Run(context.Background(), "create the marker")
 	if err != nil {
@@ -44,6 +45,9 @@ func TestRunnerExecutesTerminalToolAndContinuesResponse(t *testing.T) {
 	}
 	if len(client.requests) != 2 || client.requests[1].PreviousResponseID != "resp-1" {
 		t.Fatalf("requests = %+v", client.requests)
+	}
+	if client.requests[0].Reasoning == nil || client.requests[0].Reasoning.Effort != "xhigh" || client.requests[1].Reasoning == nil || client.requests[1].Reasoning.Effort != "xhigh" {
+		t.Fatalf("reasoning = %+v / %+v", client.requests[0].Reasoning, client.requests[1].Reasoning)
 	}
 	if len(client.requests[1].Input) != 1 || client.requests[1].Input[0].Type != "function_call_output" || !strings.Contains(client.requests[1].Input[0].Output, `"exit_code":0`) {
 		t.Fatalf("tool output request = %+v", client.requests[1].Input)
@@ -62,6 +66,7 @@ func TestRunnerCanContinueWithFullInputHistory(t *testing.T) {
 	}}
 	runner := NewRunner(client, NewTerminal(workspace), "muse-spark-1.3-contributor")
 	runner.ManualContinuation = true
+	runner.ReasoningEffort = "xhigh"
 
 	if _, err := runner.Run(context.Background(), "create the marker"); err != nil {
 		t.Fatal(err)

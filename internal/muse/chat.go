@@ -14,11 +14,12 @@ import (
 )
 
 type chatRequest struct {
-	Model      string        `json:"model"`
-	Messages   []chatMessage `json:"messages"`
-	Tools      []chatTool    `json:"tools,omitempty"`
-	ToolChoice string        `json:"tool_choice,omitempty"`
-	Stream     bool          `json:"stream"`
+	Model           string        `json:"model"`
+	Messages        []chatMessage `json:"messages"`
+	Tools           []chatTool    `json:"tools,omitempty"`
+	ToolChoice      string        `json:"tool_choice,omitempty"`
+	ReasoningEffort string        `json:"reasoning_effort,omitempty"`
+	Stream          bool          `json:"stream"`
 }
 
 type chatMessage struct {
@@ -84,11 +85,12 @@ func (c *ChatHTTPClient) CreateResponse(ctx context.Context, request Request) (R
 		return Response{}, errors.New("Muse Chat API key is required")
 	}
 	chat := chatRequest{
-		Model:      request.Model,
-		Messages:   inputToChatMessages(request.Input),
-		Tools:      toolsToChatTools(request.Tools),
-		ToolChoice: toolChoiceForRequest(request),
-		Stream:     false,
+		Model:           request.Model,
+		Messages:        inputToChatMessages(request.Input),
+		Tools:           toolsToChatTools(request.Tools),
+		ToolChoice:      toolChoiceForRequest(request),
+		ReasoningEffort: request.ReasoningEffort,
+		Stream:          false,
 	}
 	body, err := json.Marshal(chat)
 	if err != nil {

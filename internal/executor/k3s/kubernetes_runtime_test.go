@@ -93,6 +93,31 @@ func TestKubernetesRuntimeCreateJobIsDeterministicAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestKubernetesRuntimePropagatesReasoningEffort(t *testing.T) {
+	var manifest map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&manifest); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"metadata":{"name":"job"}}`))
+	}))
+	defer server.Close()
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "default", Token: "secret", WorkerImage: "worker:latest", ServiceAccount: "sa", Model: "glm-5.3-flash", ModelProfile: "glm-5.3-flash", WireAPI: "chat-completions", ReasoningEffort: "max", HTTPClient: server.Client()})
+	if _, err := r.CreateJob(context.Background(), JobRequest{TaskID: "task-reasoning", AttemptID: "attempt-reasoning", ModelProfile: "glm-5.3-flash"}); err != nil {
+		t.Fatal(err)
+	}
+	spec := manifest["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	container := spec["containers"].([]any)[0].(map[string]any)
+	if !containsEnv(container["env"].([]any), "CODEX_MODEL_REASONING_EFFORT", "max") {
+		t.Fatalf("env = %v", container["env"])
+	}
+}
+
 func TestKubernetesRuntimeRejectsUnconfiguredModelProfile(t *testing.T) {
 	r := NewKubernetesRuntime(KubernetesConfig{
 		BaseURL: "http://127.0.0.1", Namespace: "default", Token: "secret",

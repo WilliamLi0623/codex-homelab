@@ -8,10 +8,11 @@ import (
 
 func TestResponsesRequestEncodesMuseTerminalTool(t *testing.T) {
 	req := Request{
-		Model: "muse-spark-1.3-contributor",
-		Input: []InputItem{{Role: "user", Text: "create the marker"}},
-		Tools: []Tool{{Type: "function", Name: "terminal", Description: "run in workspace", Parameters: map[string]any{"type": "object"}}},
-		Store: false,
+		Model:     "muse-spark-1.3-contributor",
+		Input:     []InputItem{{Role: "user", Text: "create the marker"}},
+		Tools:     []Tool{{Type: "function", Name: "terminal", Description: "run in workspace", Parameters: map[string]any{"type": "object"}}},
+		Store:     false,
+		Reasoning: &Reasoning{Effort: "xhigh"},
 	}
 	data, err := json.Marshal(req)
 	if err != nil {
@@ -23,6 +24,10 @@ func TestResponsesRequestEncodesMuseTerminalTool(t *testing.T) {
 	}
 	if got["model"] != req.Model || got["store"] != false {
 		t.Fatalf("request metadata = %#v", got)
+	}
+	reasoning, ok := got["reasoning"].(map[string]any)
+	if !ok || reasoning["effort"] != "xhigh" {
+		t.Fatalf("reasoning = %#v", got["reasoning"])
 	}
 	tools, ok := got["tools"].([]any)
 	if !ok || len(tools) != 1 || tools[0].(map[string]any)["name"] != "terminal" {

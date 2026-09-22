@@ -13,6 +13,12 @@ type Request struct {
 	PreviousResponseID string      `json:"previous_response_id,omitempty"`
 	Tools              []Tool      `json:"tools,omitempty"`
 	Store              bool        `json:"store"`
+	Reasoning          *Reasoning  `json:"reasoning,omitempty"`
+	ReasoningEffort    string      `json:"-"`
+}
+
+type Reasoning struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 type InputItem struct {

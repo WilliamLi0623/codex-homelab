@@ -30,6 +30,7 @@ type KubernetesConfig struct {
 	Model             string
 	ModelProfile      string
 	WireAPI           string
+	ReasoningEffort   string
 	OpenAIBaseURL     string
 	ModelSecretName   string
 	ModelSecretKey    string
@@ -165,6 +166,9 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 	}
 	if r.config.WireAPI != "" {
 		env = append(env, map[string]string{"name": "CODEX_WIRE_API", "value": r.config.WireAPI})
+	}
+	if r.config.ReasoningEffort != "" {
+		env = append(env, map[string]string{"name": "CODEX_MODEL_REASONING_EFFORT", "value": r.config.ReasoningEffort})
 	}
 	if r.config.OpenAIBaseURL != "" {
 		env = append(env, map[string]string{"name": "CODEX_OPENAI_BASE_URL", "value": r.config.OpenAIBaseURL})
