@@ -1,0 +1,30 @@
+[Unit]
+Description=Codex private task UI backend-for-frontend
+After=network-online.target codex-controller.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=codex-ui
+Group=codex-ui
+ExecStart=/usr/local/bin/codex-task-ui-bff
+EnvironmentFile=-/etc/codex/task-ui-bff.env
+UnsetEnvironment=PROXMOX_TOKEN KUBERNETES_TOKEN CCH_API_KEY CODEX_MODEL_SECRET_KEY GITHUB_TOKEN
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

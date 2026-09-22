@@ -21,3 +21,9 @@ coverage.out
 
 # Local linked worktrees
 .worktrees/
+
+# Self-hosted UI local dependencies and build metadata
+ui/node_modules/
+ui/.npm-cache/
+ui/dist/
+ui/tsconfig.tsbuildinfo
