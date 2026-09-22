@@ -21,9 +21,10 @@ import (
 )
 
 var (
-	ErrInvalidArguments      = errors.New("invalid tool arguments")
-	ErrUnknownTool           = errors.New("unknown tool")
-	ErrDispatcherUnavailable = errors.New("dispatcher unavailable")
+	ErrInvalidArguments        = errors.New("invalid tool arguments")
+	ErrUnknownTool             = errors.New("unknown tool")
+	ErrDispatcherUnavailable   = errors.New("dispatcher unavailable")
+	ErrContinuationUnavailable = errors.New("continuation sender unavailable")
 )
 
 type Tool struct {
@@ -80,6 +81,15 @@ type SendMessageResult struct {
 	Message Message `json:"message"`
 }
 
+type ContinueTaskResult struct {
+	ID             string `json:"id"`
+	TaskID         string `json:"task_id"`
+	AttemptID      string `json:"attempt_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+	State          string `json:"state"`
+	ErrorSummary   string `json:"error_summary,omitempty"`
+}
+
 type CancelTaskResult struct {
 	Task Task `json:"task"`
 }
@@ -106,15 +116,24 @@ type Dispatcher interface {
 	Dispatch(context.Context, orchestrator.Request) (orchestrator.Dispatch, error)
 }
 
+type AttemptMessageSender interface {
+	SendMessageForAttempt(context.Context, string, string) error
+}
+
 type Server struct {
-	store      *store.Store
-	dispatcher Dispatcher
+	store         *store.Store
+	dispatcher    Dispatcher
+	messageSender AttemptMessageSender
 }
 
 func NewServer(database *store.Store) *Server { return NewServerWithDispatcher(database, nil) }
 
 func NewServerWithDispatcher(database *store.Store, dispatcher Dispatcher) *Server {
 	return &Server{store: database, dispatcher: dispatcher}
+}
+
+func NewServerWithDispatcherAndMessageSender(database *store.Store, dispatcher Dispatcher, messageSender AttemptMessageSender) *Server {
+	return &Server{store: database, dispatcher: dispatcher, messageSender: messageSender}
 }
 
 func (s *Server) Tools() []Tool {
@@ -128,6 +147,9 @@ func (s *Server) Tools() []Tool {
 		tool("list_tasks", "List Controller tasks in creation order.", objectSchema(nil, map[string]any{})),
 		tool("send_message", "Append a user follow-up message to an existing task.", objectSchema(
 			[]string{"task_id", "body"}, map[string]any{"task_id": stringSchema(), "body": stringSchema()},
+		)),
+		tool("continue_task", "Deliver an idempotent follow-up to the existing active worker.", objectSchema(
+			[]string{"task_id", "attempt_id", "body", "idempotency_key"}, map[string]any{"task_id": stringSchema(), "attempt_id": stringSchema(), "body": stringSchema(), "idempotency_key": stringSchema()},
 		)),
 		tool("cancel_task", "Persist cancellation intent for a task.", taskIDSchema()),
 		tool("retry_task", "Create a new append-only attempt. The Controller rejects unresolved UNKNOWN outcomes.", taskIDSchema()),
@@ -212,6 +234,23 @@ func (s *Server) CallTool(ctx context.Context, name string, arguments json.RawMe
 			return nil, err
 		}
 		return SendMessageResult{Message: Message{ID: message.ID, TaskID: message.TaskID, Role: message.Role, CreatedAt: message.CreatedAt.Format(time.RFC3339Nano)}}, nil
+
+	case "continue_task":
+		var input continueTaskArguments
+		if err := decodeArguments(arguments, &input); err != nil {
+			return nil, err
+		}
+		if empty(input.TaskID, input.AttemptID, input.Body, input.IdempotencyKey) {
+			return nil, fmt.Errorf("%w: task_id, attempt_id, body, and idempotency_key are required", ErrInvalidArguments)
+		}
+		if s.messageSender == nil {
+			return nil, ErrContinuationUnavailable
+		}
+		continuation, _, err := s.store.DeliverContinuation(ctx, input.TaskID, input.AttemptID, input.IdempotencyKey, input.Body, s.messageSender.SendMessageForAttempt)
+		if err != nil && !errors.Is(err, store.ErrExecutionHandleNotFound) && !errors.Is(err, store.ErrContinuationDeliveryUnknown) {
+			return nil, err
+		}
+		return ContinueTaskResult{ID: continuation.ID, TaskID: continuation.TaskID, AttemptID: continuation.AttemptID, IdempotencyKey: continuation.IdempotencyKey, State: continuation.State, ErrorSummary: continuation.ErrorSummary}, nil
 
 	case "cancel_task":
 		var input taskArguments
@@ -312,6 +351,13 @@ type dispatchTaskArguments struct {
 type sendMessageArguments struct {
 	TaskID string `json:"task_id"`
 	Body   string `json:"body"`
+}
+
+type continueTaskArguments struct {
+	TaskID         string `json:"task_id"`
+	AttemptID      string `json:"attempt_id"`
+	Body           string `json:"body"`
+	IdempotencyKey string `json:"idempotency_key"`
 }
 
 func decodeArguments(arguments json.RawMessage, destination any) error {

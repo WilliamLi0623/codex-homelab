@@ -209,6 +209,8 @@ func toolErrorText(err error) string {
 		return "unknown tool"
 	case errors.Is(err, ErrDispatcherUnavailable):
 		return "dispatcher unavailable"
+	case errors.Is(err, ErrContinuationUnavailable), errors.Is(err, store.ErrContinuationSenderUnavailable):
+		return "continuation sender unavailable"
 	case errors.Is(err, store.ErrTaskNotFound):
 		return "task not found"
 	case errors.Is(err, store.ErrAttemptNotFound):

@@ -9,9 +9,10 @@ import (
 )
 
 var (
-	ErrContinuationConflict        = errors.New("task continuation idempotency conflict")
-	ErrContinuationNotFound        = errors.New("task continuation not found")
-	ErrContinuationDeliveryUnknown = errors.New("task continuation delivery outcome is unknown")
+	ErrContinuationConflict          = errors.New("task continuation idempotency conflict")
+	ErrContinuationNotFound          = errors.New("task continuation not found")
+	ErrContinuationDeliveryUnknown   = errors.New("task continuation delivery outcome is unknown")
+	ErrContinuationSenderUnavailable = errors.New("task continuation sender unavailable")
 )
 
 const (
@@ -137,4 +138,40 @@ func (s *Store) UpdateContinuationState(ctx context.Context, id, state, errorSum
 		return ErrContinuationNotFound
 	}
 	return nil
+}
+
+// DeliverContinuation persists a continuation before invoking the external
+// worker. It returns the existing record without invoking sender when the
+// idempotency key was already accepted. Any sender error other than a missing
+// execution handle is conservatively recorded as UNKNOWN because a request
+// may have reached the worker before the transport failed.
+func (s *Store) DeliverContinuation(ctx context.Context, taskID, attemptID, idempotencyKey, body string, sender func(context.Context, string, string) error) (TaskContinuation, bool, error) {
+	if sender == nil {
+		return TaskContinuation{}, false, ErrContinuationSenderUnavailable
+	}
+	continuation, created, err := s.StartContinuation(ctx, taskID, attemptID, idempotencyKey, body)
+	if err != nil || !created {
+		return continuation, created, err
+	}
+	if err := sender(ctx, attemptID, body); err != nil {
+		if errors.Is(err, ErrExecutionHandleNotFound) {
+			continuation.State = ContinuationRejected
+			continuation.ErrorSummary = "execution handle not found"
+			if updateErr := s.UpdateContinuationState(ctx, continuation.ID, continuation.State, continuation.ErrorSummary); updateErr != nil {
+				return continuation, created, fmt.Errorf("persist continuation rejection: %w", updateErr)
+			}
+			return continuation, created, err
+		}
+		continuation.State = ContinuationUnknown
+		continuation.ErrorSummary = "delivery outcome unknown"
+		if updateErr := s.UpdateContinuationState(ctx, continuation.ID, continuation.State, continuation.ErrorSummary); updateErr != nil {
+			return continuation, created, fmt.Errorf("persist continuation uncertainty: %w", updateErr)
+		}
+		return continuation, created, fmt.Errorf("%w: %v", ErrContinuationDeliveryUnknown, err)
+	}
+	continuation.State = ContinuationDelivered
+	if err := s.UpdateContinuationState(ctx, continuation.ID, continuation.State, ""); err != nil {
+		return continuation, created, fmt.Errorf("persist continuation delivery: %w", err)
+	}
+	return continuation, created, nil
 }

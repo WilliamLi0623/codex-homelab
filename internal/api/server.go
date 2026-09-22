@@ -423,7 +423,7 @@ func (s *Server) continueTask(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 
-	continuation, created, err := s.store.StartContinuation(request.Context(), request.PathValue("id"), strings.TrimSpace(input.AttemptID), strings.TrimSpace(input.IdempotencyKey), input.Body)
+	continuation, created, err := s.store.DeliverContinuation(request.Context(), request.PathValue("id"), strings.TrimSpace(input.AttemptID), strings.TrimSpace(input.IdempotencyKey), input.Body, s.messageSender.SendMessageForAttempt)
 	if errors.Is(err, store.ErrTaskNotFound) {
 		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "task not found"})
 		return
@@ -436,37 +436,19 @@ func (s *Server) continueTask(writer http.ResponseWriter, request *http.Request)
 		writeJSON(writer, http.StatusConflict, map[string]string{"error": "idempotency key conflicts with prior continuation"})
 		return
 	}
-	if err != nil {
-		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "start continuation failed"})
-		return
-	}
-	if !created {
+	if !created && err == nil {
 		writeJSON(writer, http.StatusAccepted, toContinuationResponse(continuation))
 		return
 	}
-
-	if err := s.messageSender.SendMessageForAttempt(request.Context(), continuation.AttemptID, continuation.Body); err != nil {
+	if err != nil {
 		if errors.Is(err, store.ErrExecutionHandleNotFound) {
-			continuation.State = store.ContinuationRejected
-			continuation.ErrorSummary = "execution handle not found"
-			if updateErr := s.store.UpdateContinuationState(request.Context(), continuation.ID, continuation.State, continuation.ErrorSummary); updateErr != nil {
-				writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "persist continuation rejection failed"})
-				return
-			}
 			writeJSON(writer, http.StatusConflict, toContinuationResponse(continuation))
 			return
 		}
-		continuation.State = store.ContinuationUnknown
-		continuation.ErrorSummary = "delivery outcome unknown"
-		if updateErr := s.store.UpdateContinuationState(request.Context(), continuation.ID, continuation.State, continuation.ErrorSummary); updateErr != nil {
-			writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "persist continuation uncertainty failed"})
+		if errors.Is(err, store.ErrContinuationDeliveryUnknown) {
+			writeJSON(writer, http.StatusAccepted, toContinuationResponse(continuation))
 			return
 		}
-		writeJSON(writer, http.StatusAccepted, toContinuationResponse(continuation))
-		return
-	}
-	continuation.State = store.ContinuationDelivered
-	if err := s.store.UpdateContinuationState(request.Context(), continuation.ID, continuation.State, ""); err != nil {
 		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "persist continuation delivery failed"})
 		return
 	}
