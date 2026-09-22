@@ -58,6 +58,17 @@ func (o *ReleaseOperations) RemoveNode(ctx context.Context, node capacity.Node) 
 	if err := o.validate(); err != nil {
 		return err
 	}
+	// A live k3s agent can immediately re-register the Node after the API
+	// accepts its deletion. Verify the exact Proxmox identity and stop the
+	// worker before deleting the Kubernetes Node. Stop is idempotent, and the
+	// later STOP checkpoint remains as a durable compatibility/reverification
+	// step for existing release progress.
+	if err := o.proxmox.VerifyIdentity(ctx, node); err != nil {
+		return err
+	}
+	if err := o.proxmox.Stop(ctx, node.VMID); err != nil {
+		return err
+	}
 	return o.k3s.RemoveNode(ctx, node.KubeNode)
 }
 func (o *ReleaseOperations) VerifyNodeRemoved(ctx context.Context, node capacity.Node) error {

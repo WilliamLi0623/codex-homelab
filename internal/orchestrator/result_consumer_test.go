@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/domain"
@@ -23,9 +24,28 @@ func (c *resultCollector) CollectResult(context.Context, string) (k3s.Result, er
 	return c.result, nil
 }
 
+type cancellableResultCollector struct {
+	result k3s.Result
+	calls  int
+	events *[]string
+	err    error
+}
+
+func (c *cancellableResultCollector) CollectResult(context.Context, string) (k3s.Result, error) {
+	c.calls++
+	*c.events = append(*c.events, "collect")
+	return c.result, nil
+}
+
+func (c *cancellableResultCollector) Cancel(context.Context, string) error {
+	*c.events = append(*c.events, "cancel")
+	return c.err
+}
+
 type releaseCapacity struct {
-	calls int
-	err   error
+	calls  int
+	err    error
+	events *[]string
 }
 
 type observingResults struct {
@@ -41,11 +61,27 @@ func (o observingResults) Observe(context.Context, string) (k3s.Job, error) { re
 func TestResultConsumerObserveAndCompleteRequiresSucceededJob(t *testing.T) {
 	database, task, attempt := resultConsumerFixture(t)
 	input := CompletionInput{TaskID: task.ID, AttemptID: attempt.ID, Branch: "refs/heads/task-1", ValidationCommand: []string{"go", "test"}}
-	for _, state := range []k3s.JobState{k3s.JobPending, k3s.JobRunning} {
-		consumer := NewResultConsumer(database, observingResults{job: k3s.Job{AttemptID: attempt.ID, State: state}}, &releaseCapacity{})
-		if _, _, err := consumer.ObserveAndComplete(context.Background(), input); !errors.Is(err, ErrCompletionNotReady) {
-			t.Fatalf("state %s error = %v", state, err)
-		}
+	consumer := NewResultConsumer(database, observingResults{job: k3s.Job{AttemptID: attempt.ID, State: k3s.JobPending}}, &releaseCapacity{})
+	if _, _, err := consumer.ObserveAndComplete(context.Background(), input); !errors.Is(err, ErrCompletionNotReady) {
+		t.Fatalf("pending error = %v", err)
+	}
+	consumer = NewResultConsumer(database, observingResults{job: k3s.Job{AttemptID: attempt.ID, State: k3s.JobRunning}}, &releaseCapacity{})
+	if _, _, err := consumer.ObserveAndComplete(context.Background(), input); !errors.Is(err, ErrCompletionNotReady) {
+		t.Fatalf("running without result error = %v", err)
+	}
+}
+
+func TestResultConsumerCompletesRunningJobWhenResultIsReady(t *testing.T) {
+	database, task, attempt := resultConsumerFixture(t)
+	input := CompletionInput{TaskID: task.ID, AttemptID: attempt.ID, Branch: "refs/heads/task-1", ValidationCommand: []string{"go", "test"}}
+	releaser := &releaseCapacity{}
+	consumer := NewResultConsumer(database, observingResults{result: k3s.Result{CommitSHA: resultTestCommitSHA}, job: k3s.Job{AttemptID: attempt.ID, State: k3s.JobRunning}}, releaser)
+	_, completion, err := consumer.ObserveAndComplete(context.Background(), input)
+	if err != nil {
+		t.Fatalf("running ready result error = %v", err)
+	}
+	if completion.CommitSHA != resultTestCommitSHA || releaser.calls != 1 {
+		t.Fatalf("completion=%+v release calls=%d", completion, releaser.calls)
 	}
 }
 
@@ -65,14 +101,18 @@ func TestResultConsumerObserveAndCompleteStoredRequiresPersistedSpec(t *testing.
 
 func (c *releaseCapacity) Create(context.Context, ClaimRequest) (Claim, error) { return Claim{}, nil }
 func (c *releaseCapacity) Release(context.Context, Claim) error {
+	if c.events != nil {
+		*c.events = append(*c.events, "release")
+	}
 	c.calls++
 	return c.err
 }
 
 func TestResultConsumerPersistsCompletionBeforeReleasingCapacity(t *testing.T) {
 	database, task, attempt := resultConsumerFixture(t)
-	collector := &resultCollector{result: k3s.Result{CommitSHA: resultTestCommitSHA}}
-	releaser := &releaseCapacity{}
+	events := []string{}
+	collector := &cancellableResultCollector{result: k3s.Result{CommitSHA: resultTestCommitSHA}, events: &events}
+	releaser := &releaseCapacity{events: &events}
 	consumer := NewResultConsumer(database, collector, releaser)
 
 	got, err := consumer.Complete(context.Background(), CompletionInput{TaskID: task.ID, AttemptID: attempt.ID, Branch: "refs/heads/task-1", ValidationCommand: []string{"go", "test", "./..."}})
@@ -80,10 +120,32 @@ func TestResultConsumerPersistsCompletionBeforeReleasingCapacity(t *testing.T) {
 		t.Fatalf("Complete() error = %v", err)
 	}
 	if got.CommitSHA != resultTestCommitSHA || collector.calls != 1 || releaser.calls != 1 {
-		t.Fatalf("completion=%+v collector=%d release=%d", got, collector.calls, releaser.calls)
+		t.Fatalf("completion=%+v release=%d events=%v", got, releaser.calls, events)
+	}
+	if want := []string{"collect", "cancel", "release"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events=%v, want %v", events, want)
 	}
 	if _, err := database.GetValidationResult(context.Background(), got.ID); err != nil {
 		t.Fatalf("validation result missing: %v", err)
+	}
+}
+
+func TestResultConsumerFailsClosedWhenCancellingExecutionFails(t *testing.T) {
+	database, task, attempt := resultConsumerFixture(t)
+	events := []string{}
+	collector := &cancellableResultCollector{result: k3s.Result{CommitSHA: resultTestCommitSHA}, events: &events, err: errors.New("cancel failed")}
+	releaser := &releaseCapacity{events: &events}
+	consumer := NewResultConsumer(database, collector, releaser)
+
+	_, err := consumer.Complete(context.Background(), CompletionInput{TaskID: task.ID, AttemptID: attempt.ID, Branch: "refs/heads/task-1", ValidationCommand: []string{"go", "test"}})
+	if !errors.Is(err, ErrCompletionReleasePending) {
+		t.Fatalf("Complete() error = %v, want release pending", err)
+	}
+	if releaser.calls != 0 {
+		t.Fatalf("release calls = %d, want 0", releaser.calls)
+	}
+	if want := []string{"collect", "cancel"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events=%v, want %v", events, want)
 	}
 }
 

@@ -23,6 +23,21 @@ historical capacity ledger entry and no false release-completed record was
 created. Pending execution-spec enumeration now excludes terminal attempts so
 cancelled work cannot be re-observed after restart.
 
+## Release race fix
+
+The release boundary now quiesces the exact worker before deleting its K3s
+Node. At the `REMOVE_NODE` operation, Controller first re-validates the
+Proxmox identity and performs the idempotent VM/LXC stop, then issues the K3s
+Node deletion and waits for the existing `VERIFY_NODE_REMOVED` checkpoint.
+This preserves the persisted release-step names and restart compatibility
+while preventing a still-running k3s agent from re-registering the Node.
+
+The successful result path also cancels the corresponding K3s Job before
+capacity release. If cancellation has an unknown or failed outcome, the
+completion remains durable but capacity release stops with
+`completion is durable but capacity release is pending`; reconciliation must
+retry the cancellation/release boundary instead of risking a recreated Pod.
+
 ## Explicit reasoning routing
 
 The routing contract is now explicit and fail-closed:
@@ -44,10 +59,7 @@ was backed up before editing. The global OpenAI configuration remains on
 ## Verification
 
 - targeted Muse, K3s runtime, agentd, Controller, and store tests passed;
-- Controller-only rerun passed after a full-suite Windows temporary-file-lock
-  failure;
-- full suite passed for all packages except one flaky
-  `cmd/controller` cleanup race, then the isolated rerun passed;
+- full `go test ./... -count=1` passed after the release-race changes;
 - updated Linux Controller binary was installed in LXC210 and `/v1/ready`
   returned HTTP 200;
 - live CC Hub probes at the end of this update returned HTTP 503 `error code:

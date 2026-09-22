@@ -25,6 +25,10 @@ type ResultCollector interface {
 	CollectResult(context.Context, string) (k3s.Result, error)
 }
 
+type executionCanceller interface {
+	Cancel(context.Context, string) error
+}
+
 type ResultObserver interface {
 	Observe(context.Context, string) (k3s.Job, error)
 }
@@ -51,9 +55,11 @@ func NewResultConsumer(database *store.Store, results ResultCollector, capacity 
 	return consumer
 }
 
-// ObserveAndComplete is the background-observer boundary. Observation alone
-// never implies a successful commit: only SUCCEEDED jobs proceed to Complete,
-// which still requires the worker result protocol and commit SHA.
+// ObserveAndComplete is the background-observer boundary. A worker keeps its
+// HTTP result endpoint alive after the initial turn, so a complete result can
+// legitimately become available while the Kubernetes Job is still Running.
+// In that case the durable result protocol and commit SHA, rather than the Job
+// phase alone, authorize Complete.
 func (c *ResultConsumer) ObserveAndComplete(ctx context.Context, input CompletionInput) (k3s.Job, store.CompletionRecord, error) {
 	if c == nil || c.observer == nil || input.AttemptID == "" {
 		return k3s.Job{}, store.CompletionRecord{}, ErrObservationUnavailable
@@ -63,8 +69,14 @@ func (c *ResultConsumer) ObserveAndComplete(ctx context.Context, input Completio
 		return k3s.Job{}, store.CompletionRecord{}, err
 	}
 	switch job.State {
-	case k3s.JobPending, k3s.JobRunning:
+	case k3s.JobPending:
 		return job, store.CompletionRecord{}, ErrCompletionNotReady
+	case k3s.JobRunning:
+		completion, err := c.Complete(ctx, input)
+		if errors.Is(err, ErrCompletionResultMissing) || errors.Is(err, k3s.ErrWorkerNotReady) {
+			return job, store.CompletionRecord{}, ErrCompletionNotReady
+		}
+		return job, completion, err
 	case k3s.JobFailed:
 		return job, store.CompletionRecord{}, ErrWorkerFailed
 	case k3s.JobCancelled:
@@ -117,11 +129,15 @@ func (c *ResultConsumer) Complete(ctx context.Context, input CompletionInput) (s
 	if err != nil && !errors.Is(err, store.ErrValidationResultNotFound) {
 		return store.CompletionRecord{}, err
 	}
+	var handle store.ExecutionHandle
+	handleLoaded := false
 	if errors.Is(err, store.ErrValidationResultNotFound) {
-		handle, handleErr := c.store.GetExecutionHandle(ctx, input.AttemptID)
+		var handleErr error
+		handle, handleErr = c.store.GetExecutionHandle(ctx, input.AttemptID)
 		if handleErr != nil {
 			return store.CompletionRecord{}, fmt.Errorf("load execution handle: %w", handleErr)
 		}
+		handleLoaded = true
 		if handle.State == string(k3s.HandleUnknown) {
 			return store.CompletionRecord{}, k3s.ErrUnknownUnresolved
 		}
@@ -135,6 +151,21 @@ func (c *ResultConsumer) Complete(ctx context.Context, input CompletionInput) (s
 		completion, err = c.store.RecordAttemptCompletion(ctx, store.CompletionRecord{ID: completionID, TaskID: input.TaskID, AttemptID: input.AttemptID, Command: command, ValidationState: "PASSED", Branch: input.Branch, CommitSHA: result.CommitSHA})
 		if err != nil {
 			return store.CompletionRecord{}, fmt.Errorf("record completion: %w", err)
+		}
+	}
+	if !handleLoaded {
+		var handleErr error
+		handle, handleErr = c.store.GetExecutionHandle(ctx, input.AttemptID)
+		if handleErr != nil {
+			return completion, fmt.Errorf("load execution handle: %w", handleErr)
+		}
+		if handle.State == string(k3s.HandleUnknown) {
+			return completion, k3s.ErrUnknownUnresolved
+		}
+	}
+	if canceller, ok := c.results.(executionCanceller); ok {
+		if err := canceller.Cancel(ctx, handle.ExternalID); err != nil {
+			return completion, fmt.Errorf("%w: cancel execution: %v", ErrCompletionReleasePending, err)
 		}
 	}
 	if err := c.store.FinalizeAttemptSuccess(ctx, input.TaskID, input.AttemptID); err != nil {

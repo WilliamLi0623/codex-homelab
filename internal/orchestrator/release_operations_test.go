@@ -46,8 +46,21 @@ func TestReleaseOperationsComposesK3sAndProxmoxBoundaries(t *testing.T) {
 	if !reflect.DeepEqual(k3s.calls, []string{"cordon", "drain", "remove-node", "verify-node-removed"}) {
 		t.Fatalf("K3s calls = %v", k3s.calls)
 	}
-	if !reflect.DeepEqual(proxmox.calls, []string{"verify-identity", "stop", "observe", "destroy"}) {
+	if !reflect.DeepEqual(proxmox.calls, []string{"verify-identity", "stop", "verify-identity", "stop", "observe", "destroy"}) {
 		t.Fatalf("Proxmox calls = %v", proxmox.calls)
+	}
+}
+
+func TestReleaseOperationsQuiescesBeforeNodeDeletion(t *testing.T) {
+	k3s := &releaseK3sFake{}
+	proxmox := &releaseProxmoxFake{state: capacity.NodeRunning}
+	operations := NewReleaseOperations(k3s, proxmox)
+	node := capacity.Node{VMID: 3010, Generation: "gen-1", TaskID: "task-1", KubeNode: "codex-node", State: capacity.NodeStopped}
+	if err := operations.RemoveNode(context.Background(), node); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(proxmox.calls, []string{"verify-identity", "stop"}) || !reflect.DeepEqual(k3s.calls, []string{"remove-node"}) {
+		t.Fatalf("proxmox=%v k3s=%v; want identity, stop, then remove-node", proxmox.calls, k3s.calls)
 	}
 }
 
