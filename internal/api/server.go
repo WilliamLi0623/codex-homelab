@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -163,6 +164,7 @@ func NewServerWithDispatcherCompletionAndRelease(database *store.Store, dispatch
 	server.mux.HandleFunc("POST /v1/tasks/{id}/messages", server.appendMessage)
 	server.mux.HandleFunc("GET /v1/tasks/{id}/messages", server.listMessages)
 	server.mux.HandleFunc("GET /v1/tasks/{id}/events", server.listEvents)
+	server.mux.HandleFunc("GET /v1/tasks/{id}/events/stream", server.streamEvents)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/cancel", server.cancelTask)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/attempts", server.startAttempt)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/dispatch", server.dispatchTask)
@@ -419,9 +421,13 @@ func (s *Server) listMessages(writer http.ResponseWriter, request *http.Request)
 }
 
 func (s *Server) listEvents(writer http.ResponseWriter, request *http.Request) {
-	events, err := s.store.ListTaskEvents(request.Context(), request.PathValue("id"))
+	events, err := s.store.ListTaskEventsAfter(request.Context(), request.PathValue("id"), request.URL.Query().Get("after"))
 	if errors.Is(err, store.ErrTaskNotFound) {
 		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+	if errors.Is(err, store.ErrTaskEventCursorNotFound) {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "event cursor not found"})
 		return
 	}
 	if err != nil {
@@ -433,6 +439,85 @@ func (s *Server) listEvents(writer http.ResponseWriter, request *http.Request) {
 		response.Events = append(response.Events, eventResponse{ID: event.ID, Type: event.Type, CreatedAt: event.CreatedAt.Format(time.RFC3339Nano)})
 	}
 	writeJSON(writer, http.StatusOK, response)
+}
+
+func (s *Server) streamEvents(writer http.ResponseWriter, request *http.Request) {
+	if _, err := s.store.GetTask(request.Context(), request.PathValue("id")); errors.Is(err, store.ErrTaskNotFound) {
+		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	} else if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "load task failed"})
+		return
+	}
+	writer.Header().Set("Content-Type", "text/event-stream")
+	writer.Header().Set("Cache-Control", "no-cache")
+	writer.Header().Set("Connection", "keep-alive")
+	flusher, ok := writer.(http.Flusher)
+	if !ok {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "event stream is not supported"})
+		return
+	}
+
+	after := request.URL.Query().Get("after")
+	if after == "" {
+		after = request.Header.Get("Last-Event-ID")
+	}
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		events, err := s.store.ListTaskEventsAfter(request.Context(), request.PathValue("id"), after)
+		if errors.Is(err, store.ErrTaskEventCursorNotFound) {
+			writeSSEError(writer, "event cursor not found")
+			return
+		}
+		if err != nil {
+			writeSSEError(writer, "list task events failed")
+			return
+		}
+		for _, event := range events {
+			if err := writeSSEEvent(writer, eventResponse{ID: event.ID, Type: event.Type, CreatedAt: event.CreatedAt.Format(time.RFC3339Nano)}); err != nil {
+				return
+			}
+			after = event.ID
+			if isTerminalEvent(event.Type) {
+				return
+			}
+		}
+		select {
+		case <-request.Context().Done():
+			return
+		case <-ticker.C:
+		}
+		flusher.Flush()
+	}
+}
+
+func writeSSEEvent(writer http.ResponseWriter, event eventResponse) error {
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(writer, "id: %s\nevent: %s\ndata: %s\n\n", event.ID, event.Type, encoded); err != nil {
+		return err
+	}
+	if flusher, ok := writer.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return nil
+}
+
+func writeSSEError(writer http.ResponseWriter, message string) {
+	_ = writeSSEEvent(writer, eventResponse{Type: "controller.error", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
+	log.Printf("event stream error: %s", message)
+}
+
+func isTerminalEvent(eventType string) bool {
+	switch eventType {
+	case "task.succeeded", "task.failed", "task.blocked", "task.cancelled", "attempt.COMPLETED", "attempt.PROVIDER_FAILED", "attempt.EXECUTION_FAILED", "attempt.VALIDATION_FAILED", "attempt.CANCELLED":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) listTasks(writer http.ResponseWriter, request *http.Request) {

@@ -6,9 +6,12 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
+
+var ErrTaskEventCursorNotFound = errors.New("task event cursor not found")
 
 type TaskMessage struct {
 	ID        string
@@ -87,10 +90,28 @@ func (s *Store) AppendUserMessage(ctx context.Context, taskID, body string) (Tas
 }
 
 func (s *Store) ListTaskEvents(ctx context.Context, taskID string) ([]TaskEvent, error) {
+	return s.ListTaskEventsAfter(ctx, taskID, "")
+}
+
+func (s *Store) ListTaskEventsAfter(ctx context.Context, taskID, afterID string) ([]TaskEvent, error) {
 	if _, err := s.GetTask(ctx, taskID); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT id, task_id, event_type, payload_json, created_at FROM task_events WHERE task_id = ? ORDER BY created_at, id", taskID)
+	query := "SELECT id, task_id, event_type, payload_json, created_at FROM task_events WHERE task_id = ? ORDER BY created_at, id"
+	args := []any{taskID}
+	if afterID != "" {
+		var cursorCreatedAt string
+		err := s.db.QueryRowContext(ctx, "SELECT created_at FROM task_events WHERE task_id = ? AND id = ?", taskID, afterID).Scan(&cursorCreatedAt)
+		if err == sql.ErrNoRows {
+			return nil, ErrTaskEventCursorNotFound
+		}
+		if err != nil {
+			return nil, fmt.Errorf("load task event cursor: %w", err)
+		}
+		query = "SELECT id, task_id, event_type, payload_json, created_at FROM task_events WHERE task_id = ? AND (created_at > ? OR (created_at = ? AND id > ?)) ORDER BY created_at, id"
+		args = []any{taskID, cursorCreatedAt, cursorCreatedAt, afterID}
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list task events: %w", err)
 	}
