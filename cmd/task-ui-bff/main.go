@@ -129,6 +129,9 @@ func allowlistedControllerPath(method, path string) (string, bool) {
 	if len(parts) == 1 && method == http.MethodGet {
 		return "/v1/tasks/" + parts[0], true
 	}
+	if len(parts) == 2 && parts[1] == "attempts" && method == http.MethodGet {
+		return "/v1/tasks/" + parts[0] + "/attempts", true
+	}
 	if len(parts) == 2 && parts[1] == "messages" && (method == http.MethodGet || method == http.MethodPost) {
 		return "/v1/tasks/" + parts[0] + "/messages", true
 	}

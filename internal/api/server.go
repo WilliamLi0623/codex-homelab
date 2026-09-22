@@ -146,6 +146,10 @@ type retryTaskResponse struct {
 	Attempt attemptResponse `json:"attempt"`
 }
 
+type listAttemptsResponse struct {
+	Attempts []attemptResponse `json:"attempts"`
+}
+
 type reconcileAttemptRequest struct {
 	Outcome string `json:"outcome"`
 }
@@ -185,6 +189,7 @@ func NewServerWithDispatcherCompletionReleaseAndMessageSender(database *store.St
 	server.mux.HandleFunc("POST /v1/tasks", server.createTask)
 	server.mux.HandleFunc("GET /v1/tasks", server.listTasks)
 	server.mux.HandleFunc("GET /v1/tasks/{id}", server.getTask)
+	server.mux.HandleFunc("GET /v1/tasks/{id}/attempts", server.listAttempts)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/messages", server.appendMessage)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/turns", server.continueTask)
 	server.mux.HandleFunc("GET /v1/tasks/{id}/messages", server.listMessages)
@@ -497,6 +502,23 @@ func (s *Server) listMessages(writer http.ResponseWriter, request *http.Request)
 	response := listMessagesResponse{Messages: make([]messageResponse, 0, len(messages))}
 	for _, message := range messages {
 		response.Messages = append(response.Messages, messageResponse{ID: message.ID, Role: message.Role, Body: message.Body, CreatedAt: message.CreatedAt.Format(time.RFC3339Nano)})
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
+func (s *Server) listAttempts(writer http.ResponseWriter, request *http.Request) {
+	attempts, err := s.store.ListAttempts(request.Context(), request.PathValue("id"))
+	if errors.Is(err, store.ErrTaskNotFound) {
+		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "list attempts failed"})
+		return
+	}
+	response := listAttemptsResponse{Attempts: make([]attemptResponse, 0, len(attempts))}
+	for _, attempt := range attempts {
+		response.Attempts = append(response.Attempts, attemptResponse{ID: attempt.ID, Number: attempt.Number, ModelProfile: attempt.ModelProfile, State: string(attempt.State)})
 	}
 	writeJSON(writer, http.StatusOK, response)
 }

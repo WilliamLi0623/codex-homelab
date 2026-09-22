@@ -1,6 +1,7 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { ControllerError, createTask, listTasks } from "./api/controller";
 import type { Task } from "./types";
+import TaskDetail from "./components/TaskDetail";
 
 const initialForm = { repository: "", base_ref: "main", objective: "", profile: "openai-primary" };
 
@@ -40,8 +41,6 @@ export default function App() {
     };
   }, []);
 
-  const selected = useMemo(() => tasks.find((task) => task.id === selectedID), [selectedID, tasks]);
-
   async function submitTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setCreating(true);
@@ -58,6 +57,10 @@ export default function App() {
     } finally {
       setCreating(false);
     }
+  }
+
+  function updateTask(updated: Task) {
+    setTasks((current) => current.map((task) => task.id === updated.id ? updated : task));
   }
 
   return (
@@ -100,11 +103,7 @@ export default function App() {
             {!loading && tasks.length > 0 && <ul className="task-list" role="list">{tasks.map((task) => <li key={task.id}><button type="button" className={task.id === selectedID ? "task-row is-selected" : "task-row"} onClick={() => setSelectedID(task.id)}><span className="task-row-main"><strong>{task.objective}</strong><span>{task.repository} · {task.base_ref}</span></span><span className={`state state-${task.state.toLowerCase()}`}>{stateLabel(task.state)}</span></button></li>)}</ul>}
           </div>
 
-          <aside className="task-detail-panel" aria-labelledby="detail-title">
-            <div className="section-heading"><div><p className="eyebrow">Selected task</p><h2 id="detail-title">{selected ? selected.objective : "No task selected"}</h2></div></div>
-            {selected ? <dl className="detail-list"><div><dt>State</dt><dd><span className={`state state-${selected.state.toLowerCase()}`}>{stateLabel(selected.state)}</span></dd></div><div><dt>Repository</dt><dd>{selected.repository}</dd></div><div><dt>Base ref</dt><dd>{selected.base_ref}</dd></div><div><dt>Execution</dt><dd>{selected.execution_class}</dd></div><div><dt>Task ID</dt><dd className="mono">{selected.id}</dd></div></dl> : <p className="state-message">Select a task to inspect its event timeline and continuation controls.</p>}
-            <p className="panel-footnote">Event timeline and guarded operations arrive in the next UI slice.</p>
-          </aside>
+          {selectedID ? <TaskDetail taskID={selectedID} onTaskChanged={updateTask} /> : <aside className="task-detail-panel"><p className="state-message">Select a task to inspect its event timeline and continuation controls.</p></aside>}
         </section>
 
         <section id="new-task" className="new-task-section" aria-labelledby="new-task-title">

@@ -1,4 +1,4 @@
-import type { CreateTaskInput, Task, TaskEvent } from "../types";
+import type { ContinuationResult, CreateTaskInput, Task, TaskAttempt, TaskEvent, TaskMessage } from "../types";
 
 const API_ROOT = "/ui/api";
 
@@ -55,10 +55,44 @@ export async function getTask(taskID: string): Promise<Task> {
   const response = await requestJSON<{ task: Task }>(`/tasks/${encodeURIComponent(taskID)}`);
   return response.task;
 }
+
+export async function getTaskAttempts(taskID: string): Promise<TaskAttempt[]> {
+  const response = await requestJSON<{ attempts: TaskAttempt[] }>(`/tasks/${encodeURIComponent(taskID)}/attempts`);
+  return response.attempts;
+}
+
+export async function getTaskMessages(taskID: string): Promise<TaskMessage[]> {
+  const response = await requestJSON<{ messages: TaskMessage[] }>(`/tasks/${encodeURIComponent(taskID)}/messages`);
+  return response.messages;
+}
+
 export async function getTaskEvents(taskID: string, after?: string): Promise<TaskEvent[]> {
   const query = after ? `?after=${encodeURIComponent(after)}` : "";
   const response = await requestJSON<{ events: TaskEvent[] }>(`/tasks/${encodeURIComponent(taskID)}/events${query}`);
   return response.events;
+}
+
+export async function startTaskAttempt(taskID: string, profile: string): Promise<{ task: Task; attempt: TaskAttempt }> {
+  return requestJSON<{ task: Task; attempt: TaskAttempt }>(`/tasks/${encodeURIComponent(taskID)}/attempts`, {
+    method: "POST",
+    body: JSON.stringify({ profile }),
+  });
+}
+
+export async function continueTask(taskID: string, attemptID: string, body: string, idempotencyKey: string): Promise<ContinuationResult> {
+  return requestJSON<ContinuationResult>(`/tasks/${encodeURIComponent(taskID)}/turns`, {
+    method: "POST",
+    body: JSON.stringify({ attempt_id: attemptID, body, idempotency_key: idempotencyKey }),
+  });
+}
+
+export async function cancelTask(taskID: string): Promise<Task> {
+  const response = await requestJSON<{ task: Task }>(`/tasks/${encodeURIComponent(taskID)}/cancel`, { method: "POST" });
+  return response.task;
+}
+
+export async function retryTask(taskID: string): Promise<{ task: Task; attempt: TaskAttempt }> {
+  return requestJSON<{ task: Task; attempt: TaskAttempt }>(`/tasks/${encodeURIComponent(taskID)}/retry`, { method: "POST" });
 }
 
 export async function createTask(input: CreateTaskInput): Promise<Task> {

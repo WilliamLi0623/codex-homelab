@@ -27,6 +27,29 @@ export interface TaskEvent {
   created_at: string;
 }
 
+export interface TaskAttempt {
+  id: string;
+  number: number;
+  model_profile: string;
+  state: string;
+}
+
+export interface TaskMessage {
+  id: string;
+  role: string;
+  body: string;
+  created_at: string;
+}
+
+export interface ContinuationResult {
+  id: string;
+  task_id: string;
+  attempt_id: string;
+  idempotency_key: string;
+  state: string;
+  error_summary?: string;
+}
+
 export interface CreateTaskInput {
   repository: string;
   base_ref: string;
