@@ -43,6 +43,8 @@ const (
 type JobRequest struct {
 	TaskID            string
 	AttemptID         string
+	ModelProfile      string
+	NodeName          string
 	Prompt            string
 	Repository        string
 	BaseRef           string
@@ -141,6 +143,25 @@ func (e *Executor) Reconcile(ctx context.Context, attemptID string) (Job, error)
 func (e *Executor) SendMessage(ctx context.Context, jobID, message string) error {
 	return e.mutate(ctx, jobID, func() error { return e.runtime.SendMessage(ctx, jobID, message) })
 }
+
+// SendMessageForAttempt resolves the durable execution handle before sending a
+// continuation. A message POST has an ambiguous outcome when the runtime
+// fails after accepting the request, so every runtime failure is surfaced as
+// an unknown delivery rather than being retried by the controller.
+func (e *Executor) SendMessageForAttempt(ctx context.Context, attemptID, message string) error {
+	handle, err := e.handle(ctx, attemptID)
+	if err != nil {
+		if errors.Is(err, store.ErrExecutionHandleNotFound) {
+			return err
+		}
+		return fmt.Errorf("%w: %v", store.ErrContinuationDeliveryUnknown, err)
+	}
+	if err := e.SendMessage(ctx, handle.ExternalID, message); err != nil {
+		return fmt.Errorf("%w: %v", store.ErrContinuationDeliveryUnknown, err)
+	}
+	return nil
+}
+
 func (e *Executor) Cancel(ctx context.Context, jobID string) error {
 	return e.mutate(ctx, jobID, func() error { return e.runtime.Cancel(ctx, jobID) })
 }

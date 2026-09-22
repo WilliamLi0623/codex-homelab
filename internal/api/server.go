@@ -32,6 +32,10 @@ type ReleaseReconciler interface {
 	ReconcileRelease(context.Context, orchestrator.Claim, string) error
 }
 
+type AttemptMessageSender interface {
+	SendMessageForAttempt(context.Context, string, string) error
+}
+
 type dispatchRequest struct {
 	AttemptID         string   `json:"attempt_id"`
 	Prompt            string   `json:"prompt"`
@@ -52,11 +56,12 @@ type dispatchResponse struct {
 	State     string `json:"state"`
 }
 type Server struct {
-	store      *store.Store
-	dispatcher Dispatcher
-	completer  Completer
-	releaser   ReleaseReconciler
-	mux        *http.ServeMux
+	store         *store.Store
+	dispatcher    Dispatcher
+	completer     Completer
+	releaser      ReleaseReconciler
+	messageSender AttemptMessageSender
+	mux           *http.ServeMux
 }
 
 type createTaskRequest struct {
@@ -91,6 +96,21 @@ type statusResponse struct {
 
 type messageRequest struct {
 	Body string `json:"body"`
+}
+
+type continuationRequest struct {
+	AttemptID      string `json:"attempt_id"`
+	Body           string `json:"body"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+type continuationResponse struct {
+	ID             string `json:"id"`
+	TaskID         string `json:"task_id"`
+	AttemptID      string `json:"attempt_id"`
+	IdempotencyKey string `json:"idempotency_key"`
+	State          string `json:"state"`
+	ErrorSummary   string `json:"error_summary,omitempty"`
 }
 
 type eventResponse struct {
@@ -154,7 +174,11 @@ func NewServerWithDispatcherAndCompletion(database *store.Store, dispatcher Disp
 }
 
 func NewServerWithDispatcherCompletionAndRelease(database *store.Store, dispatcher Dispatcher, completer Completer, releaser ReleaseReconciler) *Server {
-	server := &Server{store: database, dispatcher: dispatcher, completer: completer, releaser: releaser, mux: http.NewServeMux()}
+	return NewServerWithDispatcherCompletionReleaseAndMessageSender(database, dispatcher, completer, releaser, nil)
+}
+
+func NewServerWithDispatcherCompletionReleaseAndMessageSender(database *store.Store, dispatcher Dispatcher, completer Completer, releaser ReleaseReconciler, messageSender AttemptMessageSender) *Server {
+	server := &Server{store: database, dispatcher: dispatcher, completer: completer, releaser: releaser, messageSender: messageSender, mux: http.NewServeMux()}
 	server.mux.HandleFunc("GET /v1/health", server.health)
 	server.mux.HandleFunc("GET /v1/ready", server.ready)
 	server.mux.HandleFunc("GET /v1/status", server.status)
@@ -162,6 +186,7 @@ func NewServerWithDispatcherCompletionAndRelease(database *store.Store, dispatch
 	server.mux.HandleFunc("GET /v1/tasks", server.listTasks)
 	server.mux.HandleFunc("GET /v1/tasks/{id}", server.getTask)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/messages", server.appendMessage)
+	server.mux.HandleFunc("POST /v1/tasks/{id}/turns", server.continueTask)
 	server.mux.HandleFunc("GET /v1/tasks/{id}/messages", server.listMessages)
 	server.mux.HandleFunc("GET /v1/tasks/{id}/events", server.listEvents)
 	server.mux.HandleFunc("GET /v1/tasks/{id}/events/stream", server.streamEvents)
@@ -383,6 +408,80 @@ func (s *Server) cancelTask(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writeJSON(writer, http.StatusOK, createTaskResponse{Task: toTaskResponse(task)})
+}
+
+func (s *Server) continueTask(writer http.ResponseWriter, request *http.Request) {
+	if s.messageSender == nil {
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]string{"error": "attempt message sender is not configured"})
+		return
+	}
+	var input continuationRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil || strings.TrimSpace(input.AttemptID) == "" || strings.TrimSpace(input.Body) == "" || strings.TrimSpace(input.IdempotencyKey) == "" {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "attempt_id, body, and idempotency_key are required"})
+		return
+	}
+
+	continuation, created, err := s.store.StartContinuation(request.Context(), request.PathValue("id"), strings.TrimSpace(input.AttemptID), strings.TrimSpace(input.IdempotencyKey), input.Body)
+	if errors.Is(err, store.ErrTaskNotFound) {
+		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+	if errors.Is(err, store.ErrAttemptNotFound) {
+		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "attempt not found for task"})
+		return
+	}
+	if errors.Is(err, store.ErrContinuationConflict) {
+		writeJSON(writer, http.StatusConflict, map[string]string{"error": "idempotency key conflicts with prior continuation"})
+		return
+	}
+	if err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "start continuation failed"})
+		return
+	}
+	if !created {
+		writeJSON(writer, http.StatusAccepted, toContinuationResponse(continuation))
+		return
+	}
+
+	if err := s.messageSender.SendMessageForAttempt(request.Context(), continuation.AttemptID, continuation.Body); err != nil {
+		if errors.Is(err, store.ErrExecutionHandleNotFound) {
+			continuation.State = store.ContinuationRejected
+			continuation.ErrorSummary = "execution handle not found"
+			if updateErr := s.store.UpdateContinuationState(request.Context(), continuation.ID, continuation.State, continuation.ErrorSummary); updateErr != nil {
+				writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "persist continuation rejection failed"})
+				return
+			}
+			writeJSON(writer, http.StatusConflict, toContinuationResponse(continuation))
+			return
+		}
+		continuation.State = store.ContinuationUnknown
+		continuation.ErrorSummary = "delivery outcome unknown"
+		if updateErr := s.store.UpdateContinuationState(request.Context(), continuation.ID, continuation.State, continuation.ErrorSummary); updateErr != nil {
+			writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "persist continuation uncertainty failed"})
+			return
+		}
+		writeJSON(writer, http.StatusAccepted, toContinuationResponse(continuation))
+		return
+	}
+	continuation.State = store.ContinuationDelivered
+	if err := s.store.UpdateContinuationState(request.Context(), continuation.ID, continuation.State, ""); err != nil {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "persist continuation delivery failed"})
+		return
+	}
+	writeJSON(writer, http.StatusAccepted, toContinuationResponse(continuation))
+}
+
+func toContinuationResponse(continuation store.TaskContinuation) continuationResponse {
+	return continuationResponse{
+		ID:             continuation.ID,
+		TaskID:         continuation.TaskID,
+		AttemptID:      continuation.AttemptID,
+		IdempotencyKey: continuation.IdempotencyKey,
+		State:          continuation.State,
+		ErrorSummary:   continuation.ErrorSummary,
+	}
 }
 
 func (s *Server) appendMessage(writer http.ResponseWriter, request *http.Request) {

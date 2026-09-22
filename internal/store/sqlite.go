@@ -124,4 +124,6 @@ var schemaMigrations = []schemaMigration{{Version: 1, Statements: []string{
 	"CREATE TABLE IF NOT EXISTS release_progress (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, attempt_id TEXT NOT NULL, vmid INTEGER NOT NULL, generation TEXT NOT NULL, kube_node TEXT NOT NULL, step TEXT NOT NULL, state TEXT NOT NULL, error_summary TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(task_id, attempt_id))",
 }}, {Version: 4, Statements: []string{
 	"CREATE TABLE IF NOT EXISTS attempt_execution_specs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, attempt_id TEXT NOT NULL UNIQUE, branch TEXT NOT NULL, validation_command_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+}}, {Version: 5, Statements: []string{
+	"CREATE TABLE IF NOT EXISTS task_continuations (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, attempt_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, body TEXT NOT NULL, state TEXT NOT NULL, error_summary TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(task_id, attempt_id, idempotency_key))",
 }}}

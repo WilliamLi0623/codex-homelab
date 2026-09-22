@@ -38,7 +38,9 @@ func newHandler(databasePath string) (http.Handler, func(), error) {
 }
 
 func newHandlerFromEnvironment(databasePath string) (http.Handler, func(), error) {
-	database, err := store.Open(databasePath)
+	// 3004/3005/3013 are template containers and 3006 is the dedicated
+	// P13 probe worker; never allocate any of them dynamically.
+	database, err := store.OpenWithCapacityConfig(databasePath, store.CapacityConfig{ReservedVMIDs: []int{3004, 3005, 3006, 3013}})
 	if err != nil {
 		return nil, nil, fmt.Errorf("open controller store: %w", err)
 	}
@@ -61,13 +63,14 @@ func newHandlerFromEnvironment(databasePath string) (http.Handler, func(), error
 
 	proxmoxRuntime := capacity.NewProxmoxRuntime(config.Proxmox)
 	manager := capacity.NewManager(proxmoxRuntime, capacity.VMIDRange{Min: controllerVMIDMin, Max: controllerVMIDMax})
-	capacityAdapter := orchestrator.NewCapacityAdapterWithConfig(database, manager, config.CapacityConfig)
 	kubernetesRuntime := k3s.NewKubernetesRuntime(config.Kubernetes)
+	config.CapacityConfig.ReleaseOperations = orchestrator.NewReleaseOperations(kubernetesRuntime, proxmoxRuntime)
+	capacityAdapter := orchestrator.NewCapacityAdapterWithConfig(database, manager, config.CapacityConfig)
 	executor := k3s.New(kubernetesRuntime, database)
 	dispatcher := orchestrator.New(capacityAdapter, executor)
 	completer := orchestrator.NewResultConsumer(database, executor, capacityAdapter)
 	observationDone = startObservationLoop(runtimeContext, orchestrator.NewObservationLoop(database, completer))
-	return api.NewServerWithDispatcherAndCompletion(database, dispatcher, completer), closeStore, nil
+	return api.NewServerWithDispatcherCompletionReleaseAndMessageSender(database, dispatcher, completer, capacityAdapter, executor), closeStore, nil
 }
 
 func startObservationLoop(ctx context.Context, loop *orchestrator.ObservationLoop) <-chan struct{} {

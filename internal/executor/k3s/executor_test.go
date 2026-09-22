@@ -13,6 +13,7 @@ type fakeRuntime struct {
 	jobs      map[string]Job
 	results   map[string]Result
 	createErr error
+	sendErr   error
 	messages  []string
 	cancelled []string
 }
@@ -32,7 +33,7 @@ func (f *fakeRuntime) CreateJob(_ context.Context, r JobRequest) (Job, error) {
 func (f *fakeRuntime) Observe(_ context.Context, id string) (Job, error) { return f.jobs[id], nil }
 func (f *fakeRuntime) SendMessage(_ context.Context, id, msg string) error {
 	f.messages = append(f.messages, id+":"+msg)
-	return nil
+	return f.sendErr
 }
 func (f *fakeRuntime) Cancel(_ context.Context, id string) error {
 	f.cancelled = append(f.cancelled, id)
@@ -152,5 +153,36 @@ func TestUnknownMutationIsRejected(t *testing.T) {
 	e := New(&fakeRuntime{}, h)
 	if err := e.SendMessage(context.Background(), "job-1", "retry"); !errors.Is(err, ErrUnknownUnresolved) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestSendMessageForAttemptUsesExecutionHandle(t *testing.T) {
+	r := &fakeRuntime{}
+	e := New(r, &fakeHandles{})
+	if _, err := e.CreateJob(context.Background(), JobRequest{TaskID: "task-1", AttemptID: "attempt-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.SendMessageForAttempt(context.Background(), "attempt-1", "continue"); err != nil {
+		t.Fatalf("SendMessageForAttempt() error = %v", err)
+	}
+	if len(r.messages) != 1 || r.messages[0] != "job-1:continue" {
+		t.Fatalf("messages = %v, want one message for job-1", r.messages)
+	}
+}
+
+func TestSendMessageForAttemptDoesNotReplayUnknownDelivery(t *testing.T) {
+	r := &fakeRuntime{sendErr: ErrUnknown}
+	e := New(r, &fakeHandles{})
+	if _, err := e.CreateJob(context.Background(), JobRequest{TaskID: "task-1", AttemptID: "attempt-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.SendMessageForAttempt(context.Background(), "attempt-1", "continue"); !errors.Is(err, store.ErrContinuationDeliveryUnknown) {
+		t.Fatalf("SendMessageForAttempt() error = %v, want unknown delivery", err)
+	}
+	if err := e.SendMessageForAttempt(context.Background(), "attempt-1", "continue"); !errors.Is(err, store.ErrContinuationDeliveryUnknown) {
+		t.Fatalf("replayed SendMessageForAttempt() error = %v, want unknown delivery", err)
+	}
+	if len(r.messages) != 1 {
+		t.Fatalf("messages = %v, want one attempted delivery", r.messages)
 	}
 }
