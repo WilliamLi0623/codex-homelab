@@ -1,7 +1,7 @@
 # P28 secret and isolation audit — 2026-09-23
 
-P28 source tests and two live cross-task probes passed. The phase remains open
-until the updated Controller is deployed and the two stopped worker containers
+P28 source tests and two live cross-task probes passed. The updated Controller
+is deployed. The phase remains open until the two stopped worker containers
 are safely reconciled and released. No worker was destroyed during this audit.
 
 ## Secret scan
@@ -49,17 +49,26 @@ attempt Job/Pods during the persisted `DRAIN` release step. It waits for their
 absence before proceeding. `VerifyStopped` now polls Proxmox with a bounded
 timeout and fails closed if identity checks or status observation fail.
 
-The source changes have not yet been deployed to LXC210. The two live probes
-therefore validate the existing runtime's cross-task workspace isolation, not
-the newly added runtime identity and cleanup checks.
+The live probes ran before the new runtime identity and cleanup checks were
+deployed, so they prove cross-task workspace isolation but not those new checks.
+Commit `ef9caa4` is now running on LXC210. The active binary SHA256 is
+`05c746a8d3f6ca71f479970dfae57629e13e2bd6160ddda32ac30e62f2b91a27`. The prior
+binary is backed up as
+`/usr/local/bin/codex-controller-v3.pre-p28-identity-20260923` with SHA256
+`c4ded51f577cb2a609db4b8b8ac72a11699b9208a33e72c921196ba5b48e2fae`. The
+service is active and `/v1/ready` returns `ready`.
 
 Verification:
 
 ```text
 go test ./...                                      PASS
+go vet ./...                                       PASS
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/controller  PASS
 go test -race ./internal/executor/k3s ...          NOT RUN: cgo is disabled in this Go environment
 ```
 
-The P28 gate requires deployment of the audited Controller build, explicit
-reconciliation of the two release records, and verification that each worker
-Job/Pod, Node, LXC, and claim is absent after release.
+The P28 gate now requires explicit authorization to reconcile and destroy
+these exact stopped task workers, then verification that each worker Job/Pod,
+Node, LXC, and capacity claim is absent after release. Their task/generation
+metadata and Proxmox stopped state have been read-only verified; no other VMID
+is in scope.
