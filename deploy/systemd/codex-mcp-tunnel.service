@@ -1,0 +1,22 @@
+[Unit]
+Description=OpenAI Secure MCP Tunnel for Codex Homelab
+After=network-online.target codex-mcp-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+UMask=0077
+EnvironmentFile=/etc/codex/tunnel-client.env
+ExecStart=/usr/local/bin/tunnel-client run --profile codex-homelab-mcp --profile-dir /etc/codex/tunnel-client
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run /var/lib/tunnel-client
+
+[Install]
+WantedBy=multi-user.target

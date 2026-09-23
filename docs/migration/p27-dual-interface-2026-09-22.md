@@ -308,3 +308,55 @@ previous binary is backed up at
 Historical claims from earlier runs, including previously UNKNOWN/CREATING
 rows, were not broadly deleted and remain a separate explicit reconciliation
 scope.
+
+## 2026-09-23 historical-claim cleanup and Secure MCP Tunnel runtime
+
+The explicitly approved cleanup was performed from an exact preview. The preview
+contained 14 historical `CLAIMED`/`CREATING` rows for VMIDs
+`3001,3002,3003,3007,3008,3009,3010,3015,3016,3017,3018,3019,3020,3021`.
+A SQLite backup was created before deletion at:
+
+```text
+/var/lib/codex-controller/controller.sqlite.pre-delete-claimed-creating-20260923
+```
+
+Only the three stopped dynamic containers with no matching active K3s Job, Pod,
+or Node were destroyed: LXC3015, LXC3018, and LXC3020. The other 11 historical
+ledger rows were deleted from the SQLite claim table after the exact VMID check.
+The post-check found zero rows for all 14 target VMIDs, four unrelated
+`UNKNOWN` rows remained untouched, and the base templates were preserved.
+
+The OpenAI Secure MCP Tunnel client v0.0.14 is installed in LXC210 and managed
+by `codex-mcp-tunnel.service`. It uses the root-only environment file
+`/etc/codex/tunnel-client.env`, the tracked profile
+`deploy/tunnel-client/codex-homelab-mcp.yaml`, and the tracked unit
+`deploy/systemd/codex-mcp-tunnel.service`. The tunnel client and MCP Gateway
+both bind locally; the tunnel is outbound-only and no API key is stored in this
+repository, logs, fixtures, or ChatGPT prompts.
+
+Runtime evidence:
+
+```text
+codex-mcp-tunnel.service: active/enabled
+healthz: HTTP 200 on 127.0.0.1:8091
+readyz: HTTP 200 on 127.0.0.1:8091
+MCP initialize: protocol 2025-06-18, server codex-controller v3
+tunnel: tunnel_6ab230aeb7c88191b5d2cd83ff57783f
+```
+
+The existing installed ChatGPT App `Codex Homelab Controller LXC210 v2` was
+used for a read-only smoke test and returned 20 tasks. Tunnel-client logs
+recorded ChatGPT discovery traffic and a subsequent RPC request on the same
+tunnel ID, proving the ChatGPT-to-tunnel-to-MCP path. Creating a new duplicate
+App from the ChatGPT Plugins UI was attempted twice and both attempts failed
+with the platform's generic `Error creating connector` message; this is an
+external ChatGPT connector-creation blocker, not a local tunnel or gateway
+failure. The existing App remains usable.
+
+The gateway now returns an explicit HTTP 404 for OAuth discovery paths because
+this private MCP endpoint intentionally does not advertise OAuth/DCR. This
+lets tunnel-client classify the endpoint as a non-OAuth MCP target while the
+authenticated MCP session continues to initialize normally.
+
+OpenAI's reference for the tunnel association and runtime model is
+[Secure MCP tunnels](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels).

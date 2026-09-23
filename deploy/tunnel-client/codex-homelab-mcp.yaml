@@ -1,0 +1,18 @@
+config_version: 1
+control_plane:
+  base_url: "https://api.openai.com"
+  tunnel_id: "tunnel_6ab230aeb7c88191b5d2cd83ff57783f"
+  api_key: "env:CONTROL_PLANE_API_KEY"
+health:
+  listen_addr: "127.0.0.1:8091"
+admin_ui:
+  open_browser: false
+log:
+  level: info
+  format: json
+mcp:
+  server_urls:
+    - channel: main
+      url: "http://127.0.0.1:8090/mcp"
+  extra_headers:
+    Authorization: "env:MCP_GATEWAY_AUTH"

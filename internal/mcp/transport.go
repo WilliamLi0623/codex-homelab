@@ -100,6 +100,13 @@ type toolContent struct {
 }
 
 func (t *Transport) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	if request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/.well-known/oauth-") {
+		// This gateway intentionally does not implement OAuth/DCR. Returning a
+		// real 404 lets tunnel-client classify it as a plain MCP target instead
+		// of treating the transport's generic 405 as malformed metadata.
+		writer.WriteHeader(http.StatusNotFound)
+		return
+	}
 	if request.Method != http.MethodPost {
 		writer.Header().Set("Allow", http.MethodPost)
 		writeHTTPError(writer, http.StatusMethodNotAllowed, "MCP transport requires POST")

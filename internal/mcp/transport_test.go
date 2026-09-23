@@ -149,6 +149,16 @@ func TestTransportRejectsMalformedJSONAndMissingAuth(t *testing.T) {
 	}
 }
 
+func TestTransportReturnsNotFoundForOAuthDiscovery(t *testing.T) {
+	transport := newTestTransport(t, tokenAuthenticator{token: "secret"})
+	request := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource/mcp", nil)
+	recorder := httptest.NewRecorder()
+	transport.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("OAuth discovery status = %d, want 404", recorder.Code)
+	}
+}
+
 func newTestTransport(t *testing.T, auth Authenticator) *Transport {
 	t.Helper()
 	database, err := store.Open(filepath.Join(t.TempDir(), "controller.sqlite"))
