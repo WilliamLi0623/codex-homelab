@@ -367,3 +367,20 @@ authenticated MCP session continues to initialize normally.
 
 OpenAI's reference for the tunnel association and runtime model is
 [Secure MCP tunnels](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels).
+
+## 2026-09-23 self-hosted UI reachability check
+
+The PVE host's Tailscale daemon is active, but `tailscale serve status`
+reports `No serve config`. LXC210's BFF remains bound to
+`127.0.0.1:8081`; Tailscale is not installed/running in that LXC. A local
+request to the BFF serves the UI shell with HTTP 200, while an unauthenticated
+`/ui/api/tasks` request returns HTTP 401 as designed.
+
+The BFF accepts a bearer token on API requests, but the static UI does not
+contain that token. The documented browser path therefore still needs a
+private reverse proxy that authenticates the operator and injects the BFF
+credential, or an equivalent identity-aware integration. No UI task was
+submitted during this reachability check. Browser interaction and visual
+probes remain `UNKNOWN` because a browser-authenticated session cannot yet be
+established; the loopback-only BFF and absence of a Tailnet Serve route were
+left unchanged.
