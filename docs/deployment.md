@@ -42,9 +42,14 @@ $env:CGO_ENABLED = "0"
 go build -trimpath -ldflags "-s -w" -o codex-agentd ./cmd/agentd
 ```
 
-The Proxmox template gate remains open until the template contains both this
-entrypoint and the pinned Codex CLI/runtime. No model key or `CODEX_HOME`
-contents belong in the template.
+The P27 worker-image gate is verified for LXC3900 and the GLM Chat adapter.
+The stopped template's K3s/containerd image store contains
+`localhost/codex-worker:agentd-glm-chat-ua-b88eb21e`; a Controller-dispatched
+task on this image passed validation, produced a local commit, and released
+its dedicated LXC. The image includes the updated `codex-agentd` and pinned
+Codex runtime. This does not prove that templates LXC3901 or LXC3902 contain
+the same cached image, or close the broader P25 provider and failure matrix.
+No model key or `CODEX_HOME` contents belong in the template.
 
 Worker-template migration targets are LXC3900–3902. LXC3004, LXC3005,
 LXC3013, and LXC3090 remain preserved as legacy/rollback resources until the

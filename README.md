@@ -22,10 +22,10 @@ The command is read-only. It prints `PLAN_VERSION=v3-final` followed by P0 throu
 
 - **Normal tasks:** `dedicated-lxc` is the default. One active task receives one disposable LXC in VMID range 3000–3899; privileged worker templates are reserved in 3900–3902.
 - **Special tasks:** `vm-special` uses VM101 only for incompatible, dangerous, or recovery work. Normal tasks must not route there.
-- **Models:** OpenAI/Codex is primary; Muse Spark 1.3 Contributor is the full-coding fallback; GLM-5.3 Flash is the coding-agent-only low-cost worker and remains fail-closed until its adapter is implemented.
+- **Models:** OpenAI/Codex remains the primary route. GLM-5.3 Flash now uses the coding-agent User-Agent through the GLM Chat Completions adapter; the updated worker image completed a Controller-dispatched task. This does not establish the full Responses/tool-use, OpenAI regression, or failure-injection matrix. Muse Spark remains the configured full-coding fallback; verify its live provider path before relying on it.
 - **Secrets:** Runtime model credentials are never committed, embedded in an LXC template, or mounted from Proxmox into a task.
 
-Read [architecture](docs/architecture.md) for responsibility boundaries, [deployment](docs/deployment.md) for staged gates, and [security](docs/security.md) for non-negotiable isolation rules.
+Read [architecture](docs/architecture.md) for responsibility boundaries, [deployment](docs/deployment.md) for staged gates, [operations](docs/operations.md) for task workflows, and [security](docs/security.md) for isolation rules.
 
 ## License
 

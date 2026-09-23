@@ -12,6 +12,21 @@ references, validation, publication, and cleanup.
 VM101 and WebCodex remain diagnostics and recovery paths. They are not the
 normal task queue, task database, autoscaler, or model router.
 
+## Verified runtime checkpoint
+
+The active Controller is LXC210. Its configured worker image is
+`localhost/codex-worker:agentd-glm-chat-ua-b88eb21e`. A GLM-5.3 Flash task on
+that image passed Controller validation, created a local commit, and completed
+the guarded worker-release lifecycle. The coding-agent User-Agent is
+`codex_cli_rs/<version> (<OS> <version>; <arch>) <terminal>`.
+
+This checkpoint verifies one GLM Chat Completions worker task. It does not
+prove the OpenAI direct regression matrix, Muse Responses/tool-use, or all P25
+failure-injection and isolation cases. P28 secret/isolation evidence is in
+[`p28-secret-isolation-audit-2026-09-23.md`](migration/p28-secret-isolation-audit-2026-09-23.md);
+P29 release checks are recorded in
+[`p29-release-ci-2026-09-23.md`](migration/p29-release-ci-2026-09-23.md).
+
 ## Sending a task
 
 The operator sends a task to the Controller on LXC210. The Controller is the

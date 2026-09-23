@@ -81,3 +81,50 @@ resource observed.
 
 P27 scale-out/scale-in acceptance is now demonstrated for two simultaneous
 tasks. P28's secret/isolation audit and later phase gates remain open.
+
+## 2026-09-23 updated GLM worker image and Controller-dispatched proof
+
+The Muse Chat adapter now identifies itself to CC Hub as a coding agent using
+the `codex_cli_rs/<version> (<OS> <version>; <arch>) <terminal>` User-Agent.
+The updated `codex-agentd` was built and tested on the remote Linux host, then
+packaged over the verified P27 worker image without changing that earlier
+image:
+
+```text
+worker image: localhost/codex-worker:agentd-glm-chat-ua-b88eb21e
+archive:      /var/tmp/codex-worker-agentd-glm-chat-ua-b88eb21e.docker.tar
+archive SHA:  91982ed4bce766e459804c53b145eff4628577224b2b9827053611139d9cc10a
+agentd SHA:   b88eb21e038737b11885d8a50f64b0049eee434510d0d89e0690e72cd4f707a2
+```
+
+The archive was imported into the stopped LXC3900 template's K3s/containerd
+image store. LXC3900 was restored to its original stopped template state,
+including its original DHCP configuration and protected K3s agent environment.
+The Controller's worker-image setting was backed up and changed to the new
+immutable tag; the service restarted and its readiness probe returned HTTP 200.
+
+A Controller-dispatched GLM 5.3 Flash task then ran on the new image:
+
+```text
+task:       task-7f827972c54bb6a8ec4b8e211d4c1b8c (SUCCEEDED)
+attempt:    attempt-b0975cd8b1ef88c6055d18084a27b656 (COMPLETED)
+VMID:       3001
+validation: PASSED — codexua_probe.txt contains GLM_CONTROLLER_IMAGE_UA_OK
+branch:     refs/heads/codex/task-7f827972c54bb6a8ec4b8e211d4c1b8c/attempt-b0975cd8b1ef88c6055d18084a27b656
+commit:     e3283c44be8cc5daf4f2e0c19968b38913236bd2 (local; not pushed)
+release:    DONE / COMPLETED; capacity claim reclaimed
+```
+
+The first automatic release reconciliation encountered a Kubernetes HTTP 409
+while draining. After checking the exact task/attempt/VMID identity and that
+the task Job/Pod were absent, the guarded Controller reconciliation endpoint
+was used. Final read-only checks confirmed the task succeeded, the attempt
+completed, the capacity claim was absent, LXC3001 and its PVE config were
+absent, and its K3s Node was absent. No manual `pct destroy` was used. The
+earlier VMID 3002 `UNKNOWN` claim and unrelated stale Nodes remain untouched.
+
+This closes the updated-image availability and one-task Controller E2E gates
+for the tested GLM Chat adapter path. P28 has since passed separately, as
+recorded in `p28-secret-isolation-audit-2026-09-23.md`. This image test does
+not close the OpenAI direct regression matrix, Muse Responses/tool-use, or the
+broader P25 failure-injection matrix.

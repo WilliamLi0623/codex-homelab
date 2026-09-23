@@ -47,13 +47,14 @@ func TestCommitValidatesThenStagesAndCommits(t *testing.T) {
 }
 
 func TestCommitValidationFailureDoesNotCommit(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "repo")
 	runner := &fakeRunner{fn: func(_ context.Context, _ string, name string, args ...string) (string, error) {
 		if name == "git" && args[0] == "rev-parse" {
-			return `C:\repo` + "\n", nil
+			return workspace + "\n", nil
 		}
 		return "", errors.New("validation failed")
 	}}
-	_, err := Commit(context.Background(), `C:\repo`, []string{"check"}, "msg", runner)
+	_, err := Commit(context.Background(), workspace, []string{"check"}, "msg", runner)
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
@@ -65,7 +66,7 @@ func TestCommitValidationFailureDoesNotCommit(t *testing.T) {
 }
 
 func TestCommitValidationFailureIncludesCommandAndOutput(t *testing.T) {
-	workspace := `C:\repo`
+	workspace := filepath.Join(t.TempDir(), "repo")
 	runner := &fakeRunner{fn: func(_ context.Context, _ string, name string, args ...string) (string, error) {
 		if name == "git" && args[0] == "rev-parse" && args[1] == "--show-toplevel" {
 			return workspace + "\n", nil
@@ -89,7 +90,7 @@ func TestCommitValidationFailureIncludesCommandAndOutput(t *testing.T) {
 }
 
 func TestCommitFailureIncludesGitOutput(t *testing.T) {
-	workspace := `C:\repo`
+	workspace := filepath.Join(t.TempDir(), "repo")
 	runner := &fakeRunner{fn: func(_ context.Context, _ string, name string, args ...string) (string, error) {
 		if name == "git" && args[0] == "rev-parse" && args[1] == "--show-toplevel" {
 			return workspace + "\n", nil
@@ -110,7 +111,7 @@ func TestCommitFailureIncludesGitOutput(t *testing.T) {
 }
 
 func TestCommitAcceptsAgentCommitAfterValidation(t *testing.T) {
-	workspace := `C:\repo`
+	workspace := filepath.Join(t.TempDir(), "repo")
 	baseSHA := "1111111111111111111111111111111111111111"
 	agentSHA := "2222222222222222222222222222222222222222"
 	commitReads := 0
@@ -153,18 +154,20 @@ func TestCommitRejectsWorkspaceAndValidation(t *testing.T) {
 }
 
 func TestCommitRejectsWorkspaceMismatchAndBadSHA(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "repo")
+	otherWorkspace := filepath.Join(t.TempDir(), "other")
 	runner := &fakeRunner{fn: func(_ context.Context, _ string, name string, args ...string) (string, error) {
 		if name == "git" && args[1] == "--show-toplevel" {
-			return `C:\other` + "\n", nil
+			return otherWorkspace + "\n", nil
 		}
 		return "", nil
 	}}
-	_, err := Commit(context.Background(), `C:\repo`, []string{"check"}, "msg", runner)
+	_, err := Commit(context.Background(), workspace, []string{"check"}, "msg", runner)
 	if err == nil {
 		t.Fatal("expected workspace mismatch")
 	}
 
-	workspace := filepath.Join(t.TempDir(), "repo")
+	workspace = filepath.Join(t.TempDir(), "repo")
 	runner = &fakeRunner{fn: func(_ context.Context, _ string, name string, args ...string) (string, error) {
 		if name == "git" && args[1] == "--show-toplevel" {
 			return workspace, nil
@@ -181,16 +184,17 @@ func TestCommitRejectsWorkspaceMismatchAndBadSHA(t *testing.T) {
 }
 
 func TestCommitValidationTimeoutAndCommandFailure(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "repo")
 	runner := &fakeRunner{fn: func(ctx context.Context, _ string, name string, args ...string) (string, error) {
 		if name == "git" && args[1] == "--show-toplevel" {
-			return `C:\repo`, nil
+			return workspace, nil
 		}
 		<-ctx.Done()
 		return "", ctx.Err()
 	}}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
-	_, err := Commit(ctx, `C:\repo`, []string{"check"}, "msg", runner)
+	_, err := Commit(ctx, workspace, []string{"check"}, "msg", runner)
 	if err == nil {
 		t.Fatal("expected timeout")
 	}
@@ -198,7 +202,7 @@ func TestCommitValidationTimeoutAndCommandFailure(t *testing.T) {
 	runner = &fakeRunner{fn: func(_ context.Context, _ string, _ string, _ ...string) (string, error) {
 		return "", errors.New("command failed")
 	}}
-	_, err = Commit(context.Background(), `C:\repo`, []string{"check"}, "msg", runner)
+	_, err = Commit(context.Background(), workspace, []string{"check"}, "msg", runner)
 	if err == nil {
 		t.Fatal("expected command failure")
 	}
