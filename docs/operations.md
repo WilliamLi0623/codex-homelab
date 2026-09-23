@@ -21,8 +21,21 @@ the guarded worker-release lifecycle. The coding-agent User-Agent is
 `codex_cli_rs/<version> (<OS> <version>; <arch>) <terminal>`.
 
 This checkpoint verifies one GLM Chat Completions worker task. It does not
-prove the OpenAI direct regression matrix, Muse Responses/tool-use, or all P25
-failure-injection and isolation cases. P28 secret/isolation evidence is in
+prove the OpenAI direct regression matrix or all P25 failure-injection and
+isolation cases. A separate remote Linux test verified Codex CLI 0.155.0 →
+Muse Responses → one file tool workflow, three dependent terminal calls, and
+two independent commands in one turn; details and limits are in
+[`p26-responses-provider-probe-2026-09-22.md`](migration/p26-responses-provider-probe-2026-09-22.md).
+This is not yet a Controller-dispatched Muse task.
+
+The active Controller remains statically configured for
+`glm-5.3-flash` / `chat-completions` / `max`. K3s passes an attempt's model
+profile separately but does not derive model, wire protocol, base URL, or
+reasoning effort from it; mismatched profiles are rejected by the worker.
+Therefore attempt-level OpenAI ↔ Muse routing is not currently proven and must
+not be inferred from the standalone Codex CLI test.
+
+P28 secret/isolation evidence is in
 [`p28-secret-isolation-audit-2026-09-23.md`](migration/p28-secret-isolation-audit-2026-09-23.md);
 P29 release checks are recorded in
 [`p29-release-ci-2026-09-23.md`](migration/p29-release-ci-2026-09-23.md).
