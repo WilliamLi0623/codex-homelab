@@ -22,7 +22,7 @@ This document records sanitized evidence for the fixed role-routing implementati
 All CC Hub probes below ran remotely on the Linux `proxmox-pve` host with the
 required coding-agent User-Agent format:
 `codex_cli_rs/0.156.1 (Linux 7.0.14-14-pve; x86_64) bash/5.2`. Credentials
-were read from the existing protected `/root/cch_jp_key`; they were not
+were read from the existing protected secret source; they were not
 printed or persisted in fixtures.
 
 - `/v1/models` returned HTTP 200 and advertised `glm-5.3-flash`,
@@ -82,7 +82,8 @@ its regression test are included. A heartbeat implementation emits
 `response.in_progress` every 500 ms while the Chat stream is idle; an
 integration test verifies it reaches the client while upstream remains open.
 
-A real three-command turn then executed `pwd`, read `/etc/hostname`, and read
+Historical status, superseded by the 2026-09-24 Linux bridge E2E checkpoint
+below: a real three-command turn executed `pwd`, read `/etc/hostname`, and read
 `/etc/os-release` as three separate `command_execution` items, each exit 0,
 and returned the correct OS summary. However Codex emitted six reconnect
 warnings during that turn. The three commands appeared exactly once each in
@@ -98,19 +99,35 @@ CLI override. CC Hub Chat Completions cannot execute hosted Responses tools,
 so this avoids sending an unsupported `web_search` tool during the protocol
 probe. No saved Codex configuration was changed.
 
-## Gate
+## Gate — authoritative status as of 2026-09-24
 
-Quota signal schema and live read: **verified**.
-Provider/model switch metadata on a disposable thread: **verified**.
-Remote GLM and DeepSeek Chat tool-call/result continuation: **verified**.
-Bridge Responses text stream and one function-call continuation: **verified by direct HTTP smoke test**.
-Codex text through the bridge: **verified (`BRIDGE_OK`, `turn.completed`, 0 retries)**.
-Actual Codex command execution through the bridge: **verified for one command (`pwd` returned `/root`, exit 0, `turn.completed`, 0 retries) with explicit `supports_websockets=false`**.
-Three sequential real Codex tool calls: **functionally completed in one turn, each executed once in this test; six reconnect warnings mean the clean-stream and general no-duplicate gate is still not passed**.
-Clean stream/retry safety: **not passed for multi-tool turns; simple text and one-command probes passed with 0 retries using explicit HTTP/SSE configuration**.
-Same-thread OpenAI↔GLM routing: **pending**.
-Subagent effective provider/model/effort: **pending**.
-Automatic fallback enablement: **disabled until actual Codex continuation, quota coordinator live transport, and subagent routing pass**.
+| Gate | Status | Boundary / evidence |
+| --- | --- | --- |
+| Quota schema and local live read | **Verified for local CLI 0.156.1** | LXC3006 CLI 0.155.0 does not expose `account/rateLimits/read`; remote quota transport remains pending on a supported CLI. |
+| Provider-selection schema contract | **Verified** | `thread/resume` accepts `modelProvider` and `model`; this does not prove runtime switching or history continuity. |
+| Remote GLM and DeepSeek Chat tool-call/result continuation | **Verified** | Upstream Chat Completions continuation only. |
+| Bridge Responses text/SSE lifecycle and function-call continuation | **Verified** | Linux E2E ended in `response.completed`; direct bridge and Codex text/function probes passed. |
+| Actual Codex terminal call | **Verified** | `pwd` returned `/root`, exit 0, and `turn.completed`. |
+| Three sequential Codex calls | **Verified for this E2E** | Three calls ran once each in one turn; all successful turns had zero reconnect/retry warning lines. |
+| Two parallel independent Codex calls | **Verified for this E2E** | Both completed in one turn with distinct call IDs. |
+| File creation and reread | **Verified for this E2E** | `marker.txt` round-tripped exact contents. |
+| Disposable coding task and independent test rerun | **Verified for this E2E** | The one-line parity fix passed an independent `python3 -m unittest -v` rerun and `git diff --check`. |
+| Same-thread OpenAI↔GLM routing | **Pending** | A disposable same-ID `thread/resume` and follow-up turn must prove provider selection and history continuity. |
+| Effective subagent provider/model/effort metadata | **Pending** | Runtime route metadata is not yet authoritative. |
+| Authoritative quota App Server live transport | **Pending** | The coordinator must use a CLI supporting the RPC; fallback stays disabled. |
+| Coordinator deployment/transition recovery | **Pending** | Not deployed or enabled. |
+| Production P25 isolation/failure matrices | **Pending** | Full production E2E remains open. |
+| Automatic fallback enablement | **Disabled** | Remains disabled until the pending gates above pass. |
+
+Local Codex config was backed up to
+`%USERPROFILE%\.codex\config.toml.pre-p27-routing-20260924.bak`; only
+`agents.default_subagent_reasoning_effort` changed from `medium` to `high`.
+The main route remains `gpt-6-luna` / `high` on the existing `openai`
+provider, and `default_subagent_model` remains `gpt-6-luna`. The backup hash
+matched the source before editing, and `codex --strict-config doctor --json`
+exited 0 afterward. This affects newly created subagents only; no process was
+restarted. Effective runtime metadata and fallback provider selection remain
+pending, so this config edit does not enable automatic fallback.
 
 ## Implementation checkpoint
 
@@ -169,7 +186,8 @@ and published, while an unknown/read-error observation leaves the Controller
 untouched. Regression tests first reproduced the prior restart republish gap,
 then passed after the fix.
 
-The latest Linux bridge runs passed exact text `BRIDGE_OK` and one real Codex
+Historical status, superseded by the 2026-09-24 Linux bridge E2E checkpoint
+below: the latest Linux bridge runs passed exact text `BRIDGE_OK` and one real Codex
 `command_execution` for `pwd`, which returned `/root` with exit 0 and
 `turn.completed`, each with zero retries when the ephemeral provider set
 `supports_websockets=false`. A three-command turn also completed successfully
@@ -243,7 +261,9 @@ The first app-server launch from the restricted shell could not initialize SQLit
   passed; `go vet ./...` passed; `git diff --check` and
   `git diff --cached --check` passed. UI verification passed:
   `npm run test -- --run` (3 files / 10 tests) and `npm run build`.
-- These are source/unit/build gates only. No saved local or remote Codex
+- The following earlier E2E summary is historical and superseded by the
+  2026-09-24 Linux bridge E2E checkpoint below. These are source/unit/build
+  gates only. No saved local or remote Codex
   configuration was changed; no Controller, bridge service, coordinator, or
   worker image was deployed. Live App Server quota transport, dynamic
   same-thread OpenAI↔GLM routing, effective subagent provider/effort, clean

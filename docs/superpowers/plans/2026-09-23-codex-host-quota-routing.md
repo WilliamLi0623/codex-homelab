@@ -43,8 +43,8 @@
 - Probe `thread/resume` with `modelProvider`, `model`, and effort on a disposable completed thread; do not alter the user's current thread.
 - Probe how role-specific subagent configuration selects a provider, including `agents.default_subagent_model`, `agents.default_subagent_reasoning_effort`, and any supported role `config_file` overlay.
 
-- [ ] Generate schema into a unique temporary directory and locate `account/rateLimits/read`, `ThreadResumeParams`, `ThreadSettingsUpdateParams`, and subagent configuration fields.
-- [ ] Read account limits through the running Codex app-server; redact account identifiers, reset-credit IDs, and all credentials from captured evidence.
+- [x] Generate schema into a unique temporary directory and locate `account/rateLimits/read`, `ThreadResumeParams`, and `ThreadSettingsUpdateParams`.
+- [x] Read account limits through the running Codex app-server; redact account identifiers, reset-credit IDs, and all credentials from captured evidence.
 - [ ] Create a disposable no-side-effect thread, resume it with the same thread ID and the fallback provider/model/effort, and verify the conversation marker is retained and the next turn reports the requested provider/model.
 - [ ] Create one disposable subagent in each configured mode and verify its effective provider/model/effort from runtime metadata, not merely TOML parsing.
 - [ ] Record whether a running thread can safely continue after an exhausted turn, whether only a completed turn can be resumed, and whether new subagents observe changed role defaults.
@@ -75,12 +75,12 @@ Expected: schema contains structured account quota fields and the exact thread/s
 - The adapter supports standard function tools and tool-result continuation, preserves exact call IDs, and emits Responses SSE with stable response/item IDs and a terminal `response.completed` only after successful upstream completion.
 - The adapter rejects unknown model slugs and unsupported tool shapes explicitly; it is not a scheduler or model router.
 
-- [ ] Write unit tests first for text conversion, tool definition conversion, `function_call_output` history conversion, fragmented tool-call assembly, Unicode arguments, and failed upstream responses.
-- [ ] Run `go test ./internal/responsesbridge` and confirm the new protocol tests fail before implementation.
-- [ ] Implement the parser, Chat request encoder, stream decoder, tool conversion, error mapping, and SSE event encoder as separate components.
-- [ ] Add bounded request size, upstream timeout, maximum active SSE streams, cancellation propagation, secret-safe structured diagnostics, and explicit no-retry behavior after any usable stream output.
-- [ ] Add fixtures for text stream, one function call, continuation, multiple calls, 400/401/429/503, malformed SSE, stream interruption, and long Unicode tool arguments; never store API keys or prompts.
-- [ ] Verify the service binds to `127.0.0.1`, health responds, and a deliberate provider failure does not emit `response.completed`.
+- [x] Write unit tests first for text conversion, tool definition conversion, `function_call_output` history conversion, fragmented tool-call assembly, Unicode arguments, and failed upstream responses.
+- [x] Run `go test ./internal/responsesbridge` and confirm the new protocol tests fail before implementation.
+- [x] Implement the parser, Chat request encoder, stream decoder, tool conversion, error mapping, and SSE event encoder as separate components.
+- [x] Add bounded request size, upstream timeout, maximum active SSE streams, cancellation propagation, secret-safe structured diagnostics, and explicit no-retry behavior after any usable stream output.
+- [x] Add fixtures for text stream, one function call, continuation, multiple calls, 400/401/429/503, malformed SSE, stream interruption, and long Unicode tool arguments; never store API keys or prompts.
+- [x] Verify the service binds to `127.0.0.1`, health responds, and a deliberate provider failure does not emit `response.completed`.
 
 Run: `go test ./internal/responsesbridge -count=1`
 
@@ -102,11 +102,11 @@ Expected: all mocked protocol fixtures pass; no public listener, secret-bearing 
 - `ClassifyQuota(snapshot)` returns `normal`, `quota_fallback`, or `unknown`. Only explicit exhausted-state fields produce `quota_fallback`; `unknown` preserves the current state.
 - `ModeSink.Set(ctx, mode, observedAt, generation)` sends the state to the authenticated Controller endpoint defined in the worker plan; generation is a persisted monotonic host-side counter incremented on each authoritative transition. It sends no prompt, thread history, account ID, or provider secret.
 
-- [ ] Add table-driven tests proving explicit exhausted signals select fallback; true recovery selects normal; missing fields, transient query errors, HTTP 429/503, auth errors, and percentages below 100% do not guess a transition.
-- [ ] Add mocked app-server RPC tests for JSON-RPC framing, timeout, cancellation, malformed response, and credential-redacted errors.
-- [ ] Implement bounded polling with one in-flight read, cancellation on shutdown, and transition-only updates; avoid continuous state writes when the state is unchanged.
-- [ ] Implement an idempotent authenticated mode update using the worker plan's request contract, persist the monotonic transition generation across coordinator restarts, and reject stale observations/generations at the receiving Controller.
-- [ ] Verify that monitor restart reads current authoritative state before publishing and does not default an unavailable read to normal or fallback.
+- [x] Add table-driven tests proving explicit exhausted signals select fallback; true recovery selects normal; missing fields, transient query errors, HTTP 429/503, auth errors, and percentages below 100% do not guess a transition.
+- [x] Add mocked app-server RPC tests for JSON-RPC framing, timeout, cancellation, malformed response, and credential-redacted errors.
+- [x] Implement bounded polling with one in-flight read, cancellation on shutdown, and transition-only updates; avoid continuous state writes when the state is unchanged.
+- [x] Implement an idempotent authenticated mode update using the worker plan's request contract, persist the monotonic transition generation across coordinator restarts, and reject stale observations/generations at the receiving Controller.
+- [x] Verify that monitor restart reads current authoritative state before publishing and does not default an unavailable read to normal or fallback.
 
 Run: `go test ./internal/codexrouting -count=1`
 
@@ -124,9 +124,9 @@ Expected: state transitions are deterministic and only authoritative; no secrets
 - Fallback main route is `muse-spark-1.3-contributor` through the existing CC Hub Responses provider with `xhigh`.
 - Fallback subagent route is `glm-5.3-flash` through the loopback Responses bridge with `max`.
 
-- [ ] Back up the current user-level TOML to a timestamped sibling file before editing.
+- [x] Back up the current user-level TOML to a timestamped sibling file before editing.
 - [ ] Parse the current TOML and perform a minimal structured merge that changes only model/effort/role-default/provider entries needed by the accepted runtime probe.
-- [ ] Parse the updated file with Python `tomllib` and run `codex --strict-config doctor --json`; verify unrelated provider IDs and MCP server IDs are unchanged.
+- [x] Parse the updated file with Python `tomllib` and run `codex --strict-config doctor --json`; verify unrelated provider IDs and MCP server IDs are unchanged.
 - [ ] Verify normal main/subagent runtime metadata and fallback main/subagent provider/model/effort in disposable turns.
 - [ ] Verify the bridge credential path resolves from the existing secret source without printing or copying its value.
 - [ ] Preserve a documented rollback command that restores the timestamped backup; do not restart Codex automatically.
