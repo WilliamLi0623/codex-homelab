@@ -61,9 +61,13 @@ minimum shared-group access needed for the authoritative SQLite database.
 - all three systemd services active after installation;
 - no external listener was added; both new interfaces bind loopback only.
 
-## Not yet production-accepted
+## Not yet production-accepted at the 2026-09-22 checkpoint
 
-- Secure MCP Tunnel has not yet been connected to a ChatGPT workspace;
+The following items were open at this checkpoint. The Secure MCP Tunnel item
+was closed by the 2026-09-23 runtime evidence below; the remaining items are
+still intentionally open.
+
+- Secure MCP Tunnel had not yet been connected to a ChatGPT workspace;
 - no live side-effecting MCP dispatch or continuation was issued during the
   deployment smoke test;
 - no external HTTPS/Tailscale static UI proxy has been configured;
@@ -267,12 +271,12 @@ historical SQLite claim row remains `CLAIMED` for audit safety and was not
 manually deleted; reclaiming historical rows is a separate capacity-ledger
 change and is not silently folded into this checkpoint.
 
-The Secure MCP Tunnel is still not connected to a ChatGPT workspace, so the
-MCP proof above is a private in-LXC authenticated client proof, not a claim of
-ChatGPT custom-app acceptance. Browser visual smoke and cross-surface UI task
-creation/continuation/reconnect acceptance also remain open because the BFF is
-intentionally loopback-only. No public listener was added to bypass that
-boundary.
+At this checkpoint the Secure MCP Tunnel was still not connected to a ChatGPT
+workspace, so the MCP proof above was a private in-LXC authenticated client
+proof. The later runtime evidence below supersedes that statement. Browser
+visual smoke and cross-surface UI task creation/continuation/reconnect
+acceptance also remain open because the BFF is intentionally loopback-only. No
+public listener was added to bypass that boundary.
 
 ## 2026-09-23 capacity-claim reclaim live proof
 
