@@ -52,6 +52,11 @@ function Get-LxcStatus([int]$Id) {
   return $m.Groups[1].Value
 }
 
+function Test-LxcTemplate([int]$Id) {
+  $text = (Invoke-Pve "pct config $Id") -join "`n"
+  return $text -match '(?m)^template:\s*1\s*$'
+}
+
 function Backup-LxcConfig([int]$Id) {
   Invoke-Pve "cp -a /etc/pve/lxc/$Id.conf '$BackupRoot/lxc-$Id.conf'" | Out-Null
 }
@@ -71,10 +76,15 @@ function Invoke-LxcInjection([int]$Id, [string]$Stamp) {
   }
   Backup-LxcConfig $Id
   $startedByUs = $false
+  $templateCleared = $false
   $keyPath = "/root/.ssh/.codex-homelab-key-$Stamp"
   try {
     if ($status -eq "stopped") {
       if (!$StartStopped) { throw "LXC $Id is stopped; pass -StartStopped to modify it" }
+      if (Test-LxcTemplate $Id) {
+        Invoke-Pve "pct set $Id --template 0" | Out-Null
+        $templateCleared = $true
+      }
       Invoke-Pve "pct start $Id" | Out-Null
       $startedByUs = $true
       Start-Sleep -Seconds 3
@@ -107,6 +117,7 @@ printf 'KEY_HASH=%s COUNT=%s MODE=%s\n' "$key_hash" "$count" "$mode"
     Write-Output (($text | Select-String -Pattern 'KEY_HASH=.*').ToString().Trim())
   } finally {
     if ($startedByUs) { Invoke-Pve "pct stop $Id" -AllowFailure | Out-Null }
+    if ($templateCleared) { Invoke-Pve "pct set $Id --template 1" -AllowFailure | Out-Null }
   }
 }
 
