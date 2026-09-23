@@ -15,7 +15,7 @@ There is one policy with two automatically selected runtime states:
 
 | State | Codex main session / orchestrator | Codex subagents | Proxmox/K3s task worker |
 | --- | --- | --- | --- |
-| Normal | OpenAI `gpt-6-sol`, reasoning `medium` | OpenAI `gpt-6-luna`, reasoning `high` | OpenAI `gpt-6-luna`, reasoning `high` |
+| Normal | OpenAI `gpt-6-luna`, reasoning `high` | OpenAI `gpt-6-luna`, reasoning `high` | OpenAI `gpt-6-luna`, reasoning `high` |
 | Codex account quota exhausted | CC Hub Muse `muse-spark-1.3-contributor`, reasoning `xhigh`, Responses | CC Hub GLM `glm-5.3-flash`, reasoning `max`, Chat Completions | CC Hub GLM `glm-5.3-flash`, reasoning `max`, Chat Completions |
 
 The normal OpenAI provider path remains the existing direct OpenAI path. The fallback provider uses the existing CC Hub credential injection; no key is stored in this repository, profile metadata, attempt record, Job manifest, or diagnostics.
@@ -60,7 +60,7 @@ When a fresh authoritative status reports that the exhausted quota window has re
 - Confirmed quota exhaustion selects Spark for new main/orchestrator work and GLM for new subagent/task-worker work.
 - A transient 429/503 or any non-quota failure is reported using its original failure class and leaves routing state unchanged.
 - If Spark or GLM is unavailable, fail closed with a provider failure; do not silently route to an unknown model or replay side-effecting work.
-- When quota recovery is confirmed, new work returns to OpenAI Sol/Luna. Existing attempts retain their frozen route.
+- When quota recovery is confirmed, new work returns to OpenAI Luna for all roles. Existing attempts retain their frozen route.
 - Bridge/adapter failures must never be reported as successful task completion.
 
 ## Security and compatibility invariants
@@ -73,7 +73,7 @@ When a fresh authoritative status reports that the exhausted quota window has re
 
 ## Acceptance criteria
 
-1. Local Codex reports `gpt-6-sol/medium` for the main session and `gpt-6-luna/high` for newly spawned subagents in normal mode.
+1. Local Codex reports `gpt-6-luna/high` for the main session and newly spawned subagents in normal mode.
 2. Each reachable remote Codex host reports the same normal role mapping, or is explicitly reported as inaccessible/unconfigured.
 3. Verified quota exhaustion switches only new work to Muse Spark `xhigh` for the main role and GLM `max` for worker roles.
 4. Temporary 429, 503 overload, provider/network outage, auth, and invalid-request failures do not switch quota state.
@@ -85,4 +85,4 @@ When a fresh authoritative status reports that the exhausted quota window has re
 
 ## Known implementation gate
 
-The local Codex CLI is `0.156.1`; its current user config selects Luna/high for the main model and Luna/medium for subagents. A live quota-status read showed the account was not exhausted at inspection time. The repository has no production call site for `internal/modelrouter`, and SSH inspection of the configured `codex-worker` host did not return usable remote configuration. Therefore runtime hot-switch support, reliable quota-event shape, and remote-host configuration must be verified before enabling automatic fallback. These are acceptance gates, not permission to replace them with generic status-code heuristics.
+The local Codex CLI is `0.156.1`; its current user config selects Luna/high for the main model and Luna/medium for subagents. The target normal state is Luna/high for both. A live quota-status read showed the account was not exhausted at inspection time. The repository has no production call site for `internal/modelrouter`, and SSH inspection of the configured `codex-worker` host did not return usable remote configuration. Therefore runtime hot-switch support, reliable quota-event shape, and remote-host configuration must be verified before enabling automatic fallback. These are acceptance gates, not permission to replace them with generic status-code heuristics.
