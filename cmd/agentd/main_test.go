@@ -56,6 +56,20 @@ func TestSessionRunJSONLCommitSHAIsIncludedOnlyWhenValid(t *testing.T) {
 	}
 }
 
+func TestParseCodexVersion(t *testing.T) {
+	for _, output := range []string{"codex-cli 0.156.1", "codex 0.155.0\n", "0.156.1"} {
+		got, err := parseCodexVersion(output)
+		if err != nil || got == "" {
+			t.Fatalf("parseCodexVersion(%q) = %q, %v", output, got, err)
+		}
+	}
+	for _, output := range []string{"", "Codex version latest", "0.156"} {
+		if got, err := parseCodexVersion(output); err == nil || got != "" {
+			t.Fatalf("parseCodexVersion(%q) = %q, %v; want error", output, got, err)
+		}
+	}
+}
+
 type commitRunner struct{ workspace string }
 
 func (r commitRunner) Run(_ context.Context, _ string, name string, args ...string) (string, error) {

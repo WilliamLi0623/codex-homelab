@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/domain"
+	"github.com/WilliamLi0623/codex-homelab/internal/modelrouter"
 	"github.com/WilliamLi0623/codex-homelab/internal/orchestrator"
 	"github.com/WilliamLi0623/codex-homelab/internal/store"
 )
@@ -56,12 +58,15 @@ type dispatchResponse struct {
 	State     string `json:"state"`
 }
 type Server struct {
-	store         *store.Store
-	dispatcher    Dispatcher
-	completer     Completer
-	releaser      ReleaseReconciler
-	messageSender AttemptMessageSender
-	mux           *http.ServeMux
+	store             *store.Store
+	dispatcher        Dispatcher
+	completer         Completer
+	releaser          ReleaseReconciler
+	messageSender     AttemptMessageSender
+	routingStateToken string
+	routeConfig       modelrouter.RouteConfig
+	requireRoute      bool
+	mux               *http.ServeMux
 }
 
 type createTaskRequest struct {
@@ -69,6 +74,7 @@ type createTaskRequest struct {
 	BaseRef        string `json:"base_ref"`
 	Objective      string `json:"objective"`
 	Profile        string `json:"profile"`
+	ModelProfile   string `json:"model_profile"`
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
@@ -162,7 +168,14 @@ type reconcileReleaseRequest struct {
 }
 
 type startAttemptRequest struct {
-	Profile string `json:"profile"`
+	Profile      string `json:"profile"`
+	ModelProfile string `json:"model_profile"`
+}
+
+type routingStateRequest struct {
+	Mode       string `json:"mode"`
+	ObservedAt string `json:"observed_at"`
+	Generation int64  `json:"generation"`
 }
 
 func NewServer(database *store.Store) *Server {
@@ -182,7 +195,19 @@ func NewServerWithDispatcherCompletionAndRelease(database *store.Store, dispatch
 }
 
 func NewServerWithDispatcherCompletionReleaseAndMessageSender(database *store.Store, dispatcher Dispatcher, completer Completer, releaser ReleaseReconciler, messageSender AttemptMessageSender) *Server {
-	server := &Server{store: database, dispatcher: dispatcher, completer: completer, releaser: releaser, messageSender: messageSender, mux: http.NewServeMux()}
+	return NewServerWithRoutingStateToken(database, dispatcher, completer, releaser, messageSender, "")
+}
+
+// NewServerWithRoutingStateToken enables the private quota-state endpoint only
+// when a dedicated bearer token is configured.
+func NewServerWithRoutingStateToken(database *store.Store, dispatcher Dispatcher, completer Completer, releaser ReleaseReconciler, messageSender AttemptMessageSender, routingStateToken string) *Server {
+	return NewServerWithRoutingStateAndRoutes(database, dispatcher, completer, releaser, messageSender, routingStateToken, modelrouter.RouteConfig{}, false)
+}
+
+// NewServerWithRoutingStateAndRoutes enables authoritative mode publication
+// and requires every new/retried attempt to receive a validated route snapshot.
+func NewServerWithRoutingStateAndRoutes(database *store.Store, dispatcher Dispatcher, completer Completer, releaser ReleaseReconciler, messageSender AttemptMessageSender, routingStateToken string, routeConfig modelrouter.RouteConfig, requireRoute bool) *Server {
+	server := &Server{store: database, dispatcher: dispatcher, completer: completer, releaser: releaser, messageSender: messageSender, routingStateToken: routingStateToken, routeConfig: routeConfig, requireRoute: requireRoute, mux: http.NewServeMux()}
 	server.mux.HandleFunc("GET /v1/health", server.health)
 	server.mux.HandleFunc("GET /v1/ready", server.ready)
 	server.mux.HandleFunc("GET /v1/status", server.status)
@@ -202,6 +227,9 @@ func NewServerWithDispatcherCompletionReleaseAndMessageSender(database *store.St
 	server.mux.HandleFunc("POST /v1/tasks/{id}/retry", server.retryTask)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/attempts/{attemptID}/reconcile", server.reconcileAttempt)
 	server.mux.HandleFunc("POST /v1/tasks/{id}/attempts/{attemptID}/release/reconcile", server.reconcileRelease)
+	if routingStateToken != "" {
+		server.mux.HandleFunc("POST /internal/v1/routing-state", server.setRoutingState)
+	}
 	return server
 }
 
@@ -236,6 +264,64 @@ func (s *Server) completeAttempt(writer http.ResponseWriter, request *http.Reque
 	writeJSON(writer, http.StatusOK, map[string]any{"completion": record})
 }
 
+func (s *Server) setRoutingState(writer http.ResponseWriter, request *http.Request) {
+	if !authorizedRoutingStateRequest(request, s.routingStateToken) {
+		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 4<<10))
+	decoder.DisallowUnknownFields()
+	var input routingStateRequest
+	if err := decoder.Decode(&input); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeJSON(writer, http.StatusRequestEntityTooLarge, map[string]string{"error": "request body too large"})
+			return
+		}
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid routing state request"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid routing state request"})
+		return
+	}
+	observedAt, err := time.Parse(time.RFC3339Nano, input.ObservedAt)
+	if err != nil || input.Generation < 1 || (input.Mode != "normal" && input.Mode != "quota_fallback") {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid routing state request"})
+		return
+	}
+	if skew := time.Since(observedAt); skew > 5*time.Minute || skew < -5*time.Minute {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid routing state request"})
+		return
+	}
+	if err := s.store.SetRoutingState(request.Context(), store.RoutingState{Mode: input.Mode, ObservedAt: observedAt.UTC(), Generation: input.Generation}); err != nil {
+		if errors.Is(err, store.ErrStaleRoutingState) {
+			writeJSON(writer, http.StatusConflict, map[string]string{"error": "stale routing state"})
+			return
+		}
+		if errors.Is(err, store.ErrInvalidRoutingState) {
+			writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid routing state request"})
+			return
+		}
+		log.Printf("routing state update failed generation=%d mode=%s: %v", input.Generation, input.Mode, err)
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "routing state update failed"})
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"mode": input.Mode, "generation": input.Generation})
+}
+
+func authorizedRoutingStateRequest(request *http.Request, configuredToken string) bool {
+	if configuredToken == "" {
+		return false
+	}
+	parts := strings.Fields(request.Header.Get("Authorization"))
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(configuredToken)) == 1
+}
+
 func (s *Server) dispatchTask(writer http.ResponseWriter, request *http.Request) {
 	if s.dispatcher == nil {
 		writeJSON(writer, http.StatusServiceUnavailable, map[string]string{"error": "dispatcher is not configured"})
@@ -265,6 +351,24 @@ func (s *Server) dispatchTask(writer http.ResponseWriter, request *http.Request)
 		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "load attempt failed"})
 		return
 	}
+	var route *modelrouter.ResolvedRoute
+	snapshot, routeErr := s.store.GetAttemptRoute(request.Context(), task.ID, attempt.ID)
+	if routeErr == nil {
+		resolved := resolvedRoute(snapshot)
+		if resolved.Role != modelrouter.RoleWorker || modelrouter.ValidateResolvedRoute(resolved) != nil {
+			writeJSON(writer, http.StatusConflict, map[string]string{"error": "attempt route snapshot is invalid"})
+			return
+		}
+		route = &resolved
+	} else if errors.Is(routeErr, store.ErrAttemptRouteNotFound) {
+		if s.requireRoute {
+			writeJSON(writer, http.StatusConflict, map[string]string{"error": "attempt has no frozen route snapshot"})
+			return
+		}
+	} else {
+		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "load attempt route failed"})
+		return
+	}
 	if _, _, err := s.store.EnsureAttemptExecutionSpec(request.Context(), store.AttemptExecutionSpec{
 		TaskID: task.ID, AttemptID: input.AttemptID,
 		Branch:            deterministicAttemptBranch(task.ID, input.AttemptID),
@@ -277,7 +381,7 @@ func (s *Server) dispatchTask(writer http.ResponseWriter, request *http.Request)
 		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid execution spec"})
 		return
 	}
-	dispatch, err := s.dispatcher.Dispatch(request.Context(), orchestrator.Request{TaskID: task.ID, AttemptID: input.AttemptID, ModelProfile: attempt.ModelProfile, Prompt: strings.TrimSpace(input.Prompt) + workerCommitBoundary, Repository: task.Repository, BaseRef: task.BaseRef, WorkspacePath: "/workspace/" + input.AttemptID, ValidationCommand: input.ValidationCommand})
+	dispatch, err := s.dispatcher.Dispatch(request.Context(), orchestrator.Request{TaskID: task.ID, AttemptID: input.AttemptID, ModelProfile: attempt.ModelProfile, Route: route, Prompt: strings.TrimSpace(input.Prompt) + workerCommitBoundary, Repository: task.Repository, BaseRef: task.BaseRef, WorkspacePath: "/workspace/" + input.AttemptID, ValidationCommand: input.ValidationCommand})
 	if err != nil {
 		log.Printf("task dispatch failed task=%s attempt=%s: %v", task.ID, input.AttemptID, err)
 		writeJSON(writer, http.StatusConflict, map[string]string{"error": "task dispatch failed"})
@@ -372,10 +476,23 @@ func (s *Server) startAttempt(writer http.ResponseWriter, request *http.Request)
 			return
 		}
 	}
-	if input.Profile == "" {
-		input.Profile = "openai-primary"
+	profile, err := workerRoleMarker(input.Profile, input.ModelProfile)
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "unsupported worker role"})
+		return
 	}
-	task, attempt, err := s.store.StartAttempt(request.Context(), request.PathValue("id"), input.Profile)
+	var task domain.Task
+	var attempt domain.Attempt
+	if s.requireRoute {
+		route, routeErr := s.resolveWorkerRoute(request.Context())
+		if routeErr != nil {
+			writeJSON(writer, http.StatusServiceUnavailable, map[string]string{"error": "worker route is not available"})
+			return
+		}
+		task, attempt, err = s.store.StartAttemptWithRoute(request.Context(), request.PathValue("id"), profile, routeSnapshot(route))
+	} else {
+		task, attempt, err = s.store.StartAttempt(request.Context(), request.PathValue("id"), profile)
+	}
 	if errors.Is(err, store.ErrTaskNotFound) {
 		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "task not found"})
 		return
@@ -387,7 +504,32 @@ func (s *Server) startAttempt(writer http.ResponseWriter, request *http.Request)
 	writeJSON(writer, http.StatusCreated, retryTaskResponse{Task: toTaskResponse(task), Attempt: attemptResponse{ID: attempt.ID, Number: attempt.Number, ModelProfile: attempt.ModelProfile, State: string(attempt.State)}})
 }
 func (s *Server) retryTask(writer http.ResponseWriter, request *http.Request) {
-	task, attempt, err := s.store.RetryTask(request.Context(), request.PathValue("id"))
+	var input startAttemptRequest
+	if request.Body != nil {
+		decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&input); err != nil && !errors.Is(err, io.EOF) {
+			writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid retry request"})
+			return
+		}
+	}
+	if _, err := workerRoleMarker(input.Profile, input.ModelProfile); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "unsupported worker role"})
+		return
+	}
+	var task domain.Task
+	var attempt domain.Attempt
+	var err error
+	if s.requireRoute {
+		route, routeErr := s.resolveWorkerRoute(request.Context())
+		if routeErr != nil {
+			writeJSON(writer, http.StatusServiceUnavailable, map[string]string{"error": "worker route is not available"})
+			return
+		}
+		task, attempt, err = s.store.RetryTaskWithRoute(request.Context(), request.PathValue("id"), routeSnapshot(route))
+	} else {
+		task, attempt, err = s.store.RetryTask(request.Context(), request.PathValue("id"))
+	}
 	if errors.Is(err, store.ErrTaskNotFound) {
 		writeJSON(writer, http.StatusNotFound, map[string]string{"error": "task not found"})
 		return
@@ -682,6 +824,10 @@ func (s *Server) createTask(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid task request"})
 		return
 	}
+	if _, err := workerRoleMarker(input.Profile, input.ModelProfile); err != nil {
+		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "unsupported worker role"})
+		return
+	}
 	if strings.TrimSpace(input.Repository) == "" || strings.TrimSpace(input.BaseRef) == "" || strings.TrimSpace(input.Objective) == "" || strings.TrimSpace(input.IdempotencyKey) == "" {
 		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "repository, base_ref, objective, and idempotency_key are required"})
 		return
@@ -702,6 +848,70 @@ func (s *Server) createTask(writer http.ResponseWriter, request *http.Request) {
 		status = http.StatusCreated
 	}
 	writeJSON(writer, status, createTaskResponse{Task: toTaskResponse(persisted)})
+}
+
+// workerRoleMarker accepts the fixed role and maps known legacy profile values
+// to it, so old callers cannot continue choosing a provider or model.
+func workerRoleMarker(profile, modelProfile string) (string, error) {
+	profile = strings.TrimSpace(profile)
+	modelProfile = strings.TrimSpace(modelProfile)
+	if profile != "" && modelProfile != "" && profile != modelProfile {
+		return "", fmt.Errorf("conflicting worker role markers")
+	}
+	marker := modelProfile
+	if marker == "" {
+		marker = profile
+	}
+	switch marker {
+	case "", "worker", "openai-primary", "muse-spark-1.3-contributor", "glm-5.3-flash":
+		return "worker", nil
+	default:
+		return "", fmt.Errorf("unsupported worker role marker")
+	}
+}
+
+func (s *Server) resolveWorkerRoute(ctx context.Context) (modelrouter.ResolvedRoute, error) {
+	state, err := s.store.GetRoutingState(ctx)
+	if err != nil {
+		if errors.Is(err, store.ErrRoutingStateNotFound) {
+			route, resolveErr := modelrouter.Resolve(modelrouter.ModeNormal, modelrouter.RoleWorker, s.routeConfig)
+			if resolveErr != nil {
+				return modelrouter.ResolvedRoute{}, fmt.Errorf("normal worker route is not configured: %w", resolveErr)
+			}
+			route.Generation = 1
+			if validateErr := modelrouter.ValidateResolvedRoute(route); validateErr != nil {
+				return modelrouter.ResolvedRoute{}, validateErr
+			}
+			return route, nil
+		}
+		return modelrouter.ResolvedRoute{}, fmt.Errorf("read routing state: %w", err)
+	}
+	route, err := modelrouter.Resolve(modelrouter.Mode(state.Mode), modelrouter.RoleWorker, s.routeConfig)
+	if err != nil {
+		return modelrouter.ResolvedRoute{}, err
+	}
+	route.Generation = state.Generation
+	if err := modelrouter.ValidateResolvedRoute(route); err != nil {
+		return modelrouter.ResolvedRoute{}, err
+	}
+	return route, nil
+}
+
+func routeSnapshot(route modelrouter.ResolvedRoute) store.AttemptRouteSnapshot {
+	return store.AttemptRouteSnapshot{
+		Mode: string(route.Mode), Generation: route.Generation, Role: string(route.Role), Provider: route.Provider,
+		Model: route.Model, WireAPI: string(route.WireAPI), ReasoningEffort: route.ReasoningEffort,
+		BaseURL: route.BaseURL, SecretName: route.SecretName, SecretKey: route.SecretKey,
+	}
+}
+
+func resolvedRoute(snapshot store.AttemptRouteSnapshot) modelrouter.ResolvedRoute {
+	return modelrouter.ResolvedRoute{
+		Mode: modelrouter.Mode(snapshot.Mode), Generation: snapshot.Generation, Role: modelrouter.Role(snapshot.Role),
+		Provider: snapshot.Provider, Model: snapshot.Model, WireAPI: modelrouter.WireAPI(snapshot.WireAPI),
+		ReasoningEffort: snapshot.ReasoningEffort, BaseURL: snapshot.BaseURL,
+		SecretName: snapshot.SecretName, SecretKey: snapshot.SecretKey,
+	}
 }
 
 func toTaskResponse(task domain.Task) taskResponse {

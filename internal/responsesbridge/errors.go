@@ -36,6 +36,9 @@ func streamErrorClass(err error) string {
 	if strings.Contains(err.Error(), "decode upstream SSE") {
 		return "malformed_sse"
 	}
+	if strings.Contains(err.Error(), "completed without output") {
+		return "malformed_upstream"
+	}
 	if strings.Contains(err.Error(), "tool call") {
 		return "invalid_tool_call"
 	}
@@ -43,4 +46,22 @@ func streamErrorClass(err error) string {
 		return "stream_interrupted"
 	}
 	return "bridge_stream_error"
+}
+
+// streamErrorDiagnostic returns parser-generated details only. It deliberately
+// does not include upstream payloads, prompts, tool arguments, or response text.
+func streamErrorDiagnostic(err error) string {
+	if err == nil {
+		return "none"
+	}
+	detail := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, err.Error())
+	if len(detail) > 160 {
+		detail = detail[:160]
+	}
+	return detail
 }

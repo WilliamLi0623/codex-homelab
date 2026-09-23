@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	_ "modernc.org/sqlite"
@@ -76,6 +78,14 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("read migration %d: %w", migration.Version, err)
 		}
 		for _, statement := range migration.Statements {
+			if migration.Version == 6 && (strings.HasPrefix(statement, "ALTER TABLE task_attempts") || strings.HasPrefix(statement, "CREATE TRIGGER IF NOT EXISTS task_attempts_route_snapshot_immutable")) {
+				var exists int
+				if err := tx.QueryRowContext(ctx, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task_attempts'").Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+					continue
+				} else if err != nil {
+					return fmt.Errorf("check task_attempts table for migration %d: %w", migration.Version, err)
+				}
+			}
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
 				return fmt.Errorf("apply migration %d: %w", migration.Version, err)
 			}
@@ -123,4 +133,17 @@ var schemaMigrations = []schemaMigration{{Version: 1, Statements: []string{
 	"CREATE TABLE IF NOT EXISTS attempt_execution_specs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, attempt_id TEXT NOT NULL UNIQUE, branch TEXT NOT NULL, validation_command_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
 }}, {Version: 5, Statements: []string{
 	"CREATE TABLE IF NOT EXISTS task_continuations (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, attempt_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, body TEXT NOT NULL, state TEXT NOT NULL, error_summary TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(task_id, attempt_id, idempotency_key))",
+}}, {Version: 6, Statements: []string{
+	"CREATE TABLE IF NOT EXISTS routing_state (id INTEGER PRIMARY KEY CHECK (id = 1), mode TEXT NOT NULL, observed_at TEXT NOT NULL, generation INTEGER NOT NULL)",
+	"ALTER TABLE task_attempts ADD COLUMN route_mode TEXT",
+	"ALTER TABLE task_attempts ADD COLUMN route_generation INTEGER",
+	"ALTER TABLE task_attempts ADD COLUMN route_role TEXT",
+	"ALTER TABLE task_attempts ADD COLUMN route_provider TEXT",
+	"ALTER TABLE task_attempts ADD COLUMN route_model TEXT",
+	"ALTER TABLE task_attempts ADD COLUMN route_wire_api TEXT",
+	"ALTER TABLE task_attempts ADD COLUMN route_reasoning_effort TEXT",
+	"ALTER TABLE task_attempts ADD COLUMN route_base_url TEXT",
+	"ALTER TABLE task_attempts ADD COLUMN route_secret_name TEXT",
+	"ALTER TABLE task_attempts ADD COLUMN route_secret_key TEXT",
+	"CREATE TRIGGER IF NOT EXISTS task_attempts_route_snapshot_immutable BEFORE UPDATE OF route_mode, route_generation, route_role, route_provider, route_model, route_wire_api, route_reasoning_effort, route_base_url, route_secret_name, route_secret_key ON task_attempts WHEN OLD.route_mode IS NOT NEW.route_mode OR OLD.route_generation IS NOT NEW.route_generation OR OLD.route_role IS NOT NEW.route_role OR OLD.route_provider IS NOT NEW.route_provider OR OLD.route_model IS NOT NEW.route_model OR OLD.route_wire_api IS NOT NEW.route_wire_api OR OLD.route_reasoning_effort IS NOT NEW.route_reasoning_effort OR OLD.route_base_url IS NOT NEW.route_base_url OR OLD.route_secret_name IS NOT NEW.route_secret_name OR OLD.route_secret_key IS NOT NEW.route_secret_key BEGIN SELECT RAISE(ABORT, 'attempt route snapshot is immutable'); END",
 }}}

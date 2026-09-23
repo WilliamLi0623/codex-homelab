@@ -228,7 +228,7 @@ func TestRetryCreatesNewAttemptForCancelledTask(t *testing.T) {
 	if body.Task.State != "PLANNED" {
 		t.Fatalf("retry task state = %q, want PLANNED", body.Task.State)
 	}
-	if body.Attempt.Number != 1 || body.Attempt.State != "CREATED" {
+	if body.Attempt.Number != 1 || body.Attempt.State != "CREATED" || body.Attempt.ModelProfile != "worker" {
 		t.Fatalf("retry attempt = %+v, want first CREATED attempt", body.Attempt)
 	}
 }

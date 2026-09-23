@@ -125,6 +125,20 @@ func (s *Store) CancelTask(ctx context.Context, id string) (domain.Task, error) 
 }
 
 func (s *Store) RetryTask(ctx context.Context, id string) (domain.Task, domain.Attempt, error) {
+	return s.retryTask(ctx, id, nil)
+}
+
+// RetryTaskWithRoute creates a retry and its route snapshot atomically. The
+// route is validated before the transaction begins and cannot be changed
+// after the attempt is committed.
+func (s *Store) RetryTaskWithRoute(ctx context.Context, id string, route AttemptRouteSnapshot) (domain.Task, domain.Attempt, error) {
+	if err := validateAttemptRoute(route); err != nil {
+		return domain.Task{}, domain.Attempt{}, err
+	}
+	return s.retryTask(ctx, id, &route)
+}
+
+func (s *Store) retryTask(ctx context.Context, id string, route *AttemptRouteSnapshot) (domain.Task, domain.Attempt, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.Task{}, domain.Attempt{}, fmt.Errorf("begin task retry: %w", err)
@@ -160,12 +174,27 @@ func (s *Store) RetryTask(ctx context.Context, id string) (domain.Task, domain.A
 	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(attempt_number), 0) FROM task_attempts WHERE task_id = ?", task.ID).Scan(&latestNumber); err != nil {
 		return domain.Task{}, domain.Attempt{}, fmt.Errorf("find attempt number: %w", err)
 	}
-	attempt := domain.NewAttempt(newStoreID("attempt"), task.ID, latestNumber+1, "openai-primary")
+	modelProfile := "worker"
+	if route != nil {
+		modelProfile = route.Role
+	}
+	attempt := domain.NewAttempt(newStoreID("attempt"), task.ID, latestNumber+1, modelProfile)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := tx.ExecContext(ctx, "UPDATE tasks SET state = ? WHERE id = ?", task.State, task.ID); err != nil {
 		return domain.Task{}, domain.Attempt{}, fmt.Errorf("persist retry task state: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO task_attempts(id, task_id, attempt_number, model_profile, state, created_at) VALUES (?, ?, ?, ?, ?, ?)", attempt.ID, attempt.TaskID, attempt.Number, attempt.ModelProfile, attempt.State, now); err != nil {
+	const insertAttempt = `INSERT INTO task_attempts(
+		id, task_id, attempt_number, model_profile, state, created_at,
+		route_mode, route_generation, route_role, route_provider, route_model,
+		route_wire_api, route_reasoning_effort, route_base_url, route_secret_name, route_secret_key
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	var routeMode, routeRole, routeProvider, routeModel, routeWire, routeEffort, routeBaseURL, routeSecretName, routeSecretKey any
+	var routeGeneration any
+	if route != nil {
+		routeMode, routeGeneration, routeRole, routeProvider, routeModel = route.Mode, route.Generation, route.Role, route.Provider, route.Model
+		routeWire, routeEffort, routeBaseURL, routeSecretName, routeSecretKey = route.WireAPI, route.ReasoningEffort, route.BaseURL, route.SecretName, route.SecretKey
+	}
+	if _, err := tx.ExecContext(ctx, insertAttempt, attempt.ID, attempt.TaskID, attempt.Number, attempt.ModelProfile, attempt.State, now, routeMode, routeGeneration, routeRole, routeProvider, routeModel, routeWire, routeEffort, routeBaseURL, routeSecretName, routeSecretKey); err != nil {
 		return domain.Task{}, domain.Attempt{}, fmt.Errorf("create retry attempt: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO task_events(id, task_id, attempt_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)", newStoreID("event"), task.ID, attempt.ID, "task.retry_requested", "{}", now); err != nil {

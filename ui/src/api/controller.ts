@@ -1,6 +1,7 @@
-import type { ContinuationResult, CreateTaskInput, Task, TaskAttempt, TaskEvent, TaskMessage } from "../types";
+import type { ContinuationResult, CreateTaskInput, Task, TaskAttempt, TaskEvent, TaskMessage, WorkerModelProfile } from "../types";
 
 const API_ROOT = "/ui/api";
+const WORKER_MODEL_PROFILE: WorkerModelProfile = "worker";
 
 export class ControllerError extends Error {
   readonly status: number;
@@ -72,10 +73,10 @@ export async function getTaskEvents(taskID: string, after?: string): Promise<Tas
   return response.events;
 }
 
-export async function startTaskAttempt(taskID: string, profile: string): Promise<{ task: Task; attempt: TaskAttempt }> {
+export async function startTaskAttempt(taskID: string): Promise<{ task: Task; attempt: TaskAttempt }> {
   return requestJSON<{ task: Task; attempt: TaskAttempt }>(`/tasks/${encodeURIComponent(taskID)}/attempts`, {
     method: "POST",
-    body: JSON.stringify({ profile }),
+    body: JSON.stringify({ model_profile: WORKER_MODEL_PROFILE }),
   });
 }
 
@@ -92,13 +93,16 @@ export async function cancelTask(taskID: string): Promise<Task> {
 }
 
 export async function retryTask(taskID: string): Promise<{ task: Task; attempt: TaskAttempt }> {
-  return requestJSON<{ task: Task; attempt: TaskAttempt }>(`/tasks/${encodeURIComponent(taskID)}/retry`, { method: "POST" });
+  return requestJSON<{ task: Task; attempt: TaskAttempt }>(`/tasks/${encodeURIComponent(taskID)}/retry`, {
+    method: "POST",
+    body: JSON.stringify({ model_profile: WORKER_MODEL_PROFILE }),
+  });
 }
 
 export async function createTask(input: CreateTaskInput): Promise<Task> {
   const response = await requestJSON<{ task: Task }>("/tasks", {
     method: "POST",
-    body: JSON.stringify(input),
+    body: JSON.stringify({ ...input, model_profile: WORKER_MODEL_PROFILE }),
   });
   return response.task;
 }

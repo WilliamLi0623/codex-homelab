@@ -61,3 +61,36 @@ func TestHTTPUpstreamDoesNotLeakProviderErrorBody(t *testing.T) {
 		t.Fatalf("provider body leaked: %v", err)
 	}
 }
+
+func TestHTTPUpstreamClassifiesClientCancellationSeparatelyFromNetworkFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := (HTTPUpstream{URL: server.URL}).Do(ctx, ChatRequest{Model: DefaultModel})
+	failure, ok := err.(*UpstreamError)
+	if !ok || failure.Status != 499 || failure.Class != "client_cancelled" {
+		t.Fatalf("cancellation error = %#v", err)
+	}
+	if got := errorClass(err); got != "upstream_client_cancelled" {
+		t.Fatalf("error class = %q", got)
+	}
+}
+
+func TestHTTPUpstreamSendsConfiguredCodingAgentUserAgent(t *testing.T) {
+	const want = "codex_cli_rs/0.156.1 (Ubuntu 24.04; x86_64) bash/5.2"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.UserAgent(); got != want {
+			t.Errorf("User-Agent = %q, want %q", got, want)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer server.Close()
+	if _, err := (HTTPUpstream{URL: server.URL, UserAgent: want}).Do(context.Background(), ChatRequest{Model: DefaultModel}); err != nil {
+		t.Fatal(err)
+	}
+}

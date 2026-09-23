@@ -12,8 +12,11 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/WilliamLi0623/codex-homelab/internal/modelrouter"
 )
 
 var ErrWorkerNotReady = errors.New("Kubernetes worker Pod is not ready")
@@ -45,13 +48,30 @@ type KubernetesConfig struct {
 	DrainPollInterval time.Duration
 }
 
-type KubernetesRuntime struct{ config KubernetesConfig }
+type KubernetesRuntime struct {
+	config       KubernetesConfig
+	requireRoute bool
+}
 
+// NewKubernetesRuntime is the compatibility constructor used by isolated
+// runtime tests and legacy callers that still supply model settings directly.
+// Production controller assembly must use NewProductionKubernetesRuntime.
 func NewKubernetesRuntime(config KubernetesConfig) *KubernetesRuntime {
+	return newKubernetesRuntime(config, false)
+}
+
+// NewProductionKubernetesRuntime constructs the fail-closed runtime used by
+// the controller. Every Job must carry a validated, attempt-frozen worker
+// route before this runtime will contact Kubernetes.
+func NewProductionKubernetesRuntime(config KubernetesConfig) *KubernetesRuntime {
+	return newKubernetesRuntime(config, true)
+}
+
+func newKubernetesRuntime(config KubernetesConfig, requireRoute bool) *KubernetesRuntime {
 	if config.HTTPClient == nil {
 		config.HTTPClient = http.DefaultClient
 	}
-	return &KubernetesRuntime{config: config}
+	return &KubernetesRuntime{config: config, requireRoute: requireRoute}
 }
 
 func (c KubernetesConfig) ValidateConfig() error {
@@ -136,8 +156,31 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 	if err := r.config.ValidateConfig(); err != nil {
 		return Job{}, err
 	}
-	if request.ModelProfile != "" && r.config.ModelProfile != "" && request.ModelProfile != r.config.ModelProfile {
+	if r.requireRoute && request.Route == nil {
+		return Job{}, errors.New("resolved worker route is required")
+	}
+	var route *modelrouter.ResolvedRoute
+	if request.Route != nil {
+		routeCopy := *request.Route
+		if err := modelrouter.ValidateResolvedRoute(routeCopy); err != nil {
+			return Job{}, fmt.Errorf("invalid resolved route: %w", err)
+		}
+		if routeCopy.Role != modelrouter.RoleWorker {
+			return Job{}, fmt.Errorf("invalid resolved route: role %q is not a worker route", routeCopy.Role)
+		}
+		route = &routeCopy
+	}
+	if route == nil && request.ModelProfile != "" && r.config.ModelProfile != "" && request.ModelProfile != r.config.ModelProfile {
 		return Job{}, fmt.Errorf("model profile %q is not configured for this worker (configured %q)", request.ModelProfile, r.config.ModelProfile)
+	}
+	model, modelProfile, wireAPI, reasoningEffort, baseURL := r.config.Model, r.config.ModelProfile, r.config.WireAPI, r.config.ReasoningEffort, r.config.OpenAIBaseURL
+	secretName, secretKey := r.config.ModelSecretName, r.config.ModelSecretKey
+	if route == nil && request.ModelProfile != "" {
+		modelProfile = request.ModelProfile
+	}
+	if route != nil {
+		model, modelProfile, wireAPI, reasoningEffort, baseURL = route.Model, route.Model, string(route.WireAPI), route.ReasoningEffort, route.BaseURL
+		secretName, secretKey = route.SecretName, route.SecretKey
 	}
 	name := jobName(request.TaskID, request.AttemptID)
 	workspacePath := "/workspace/" + request.AttemptID
@@ -147,6 +190,12 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 	labels := map[string]string{"task_id": request.TaskID, "attempt_id": request.AttemptID, "executor": executorName}
 	if r.config.QueueName != "" {
 		labels["kueue.x-k8s.io/queue-name"] = r.config.QueueName
+	}
+	if route != nil {
+		labels["codex-route-mode"] = string(route.Mode)
+		labels["codex-route-generation"] = strconv.FormatInt(route.Generation, 10)
+		labels["codex-route-model"] = route.Model
+		labels["codex-route-fingerprint"] = routeFingerprint(*route)
 	}
 	if !validLabelValue(request.TaskID) || !validLabelValue(request.AttemptID) {
 		return Job{}, errors.New("task_id and attempt_id must be valid Kubernetes label values of at most 63 characters")
@@ -167,20 +216,20 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 	}
 	requestJSON, _ := json.Marshal(map[string]string{"prompt": request.Prompt})
 	env := []any{map[string]string{"name": "CODEX_AGENTD_REQUEST", "value": string(requestJSON)}, map[string]string{"name": "CODEX_ATTEMPT_ID", "value": request.AttemptID}, map[string]string{"name": "CODEX_HOME", "value": "/work/" + request.AttemptID}}
-	if request.ModelProfile != "" {
-		env = append(env, map[string]string{"name": "CODEX_MODEL_PROFILE", "value": request.ModelProfile})
+	if modelProfile != "" {
+		env = append(env, map[string]string{"name": "CODEX_MODEL_PROFILE", "value": modelProfile})
 	}
-	if r.config.Model != "" {
-		env = append(env, map[string]string{"name": "CODEX_MODEL", "value": r.config.Model})
+	if model != "" {
+		env = append(env, map[string]string{"name": "CODEX_MODEL", "value": model})
 	}
-	if r.config.WireAPI != "" {
-		env = append(env, map[string]string{"name": "CODEX_WIRE_API", "value": r.config.WireAPI})
+	if wireAPI != "" {
+		env = append(env, map[string]string{"name": "CODEX_WIRE_API", "value": wireAPI})
 	}
-	if r.config.ReasoningEffort != "" {
-		env = append(env, map[string]string{"name": "CODEX_MODEL_REASONING_EFFORT", "value": r.config.ReasoningEffort})
+	if reasoningEffort != "" {
+		env = append(env, map[string]string{"name": "CODEX_MODEL_REASONING_EFFORT", "value": reasoningEffort})
 	}
-	if r.config.OpenAIBaseURL != "" {
-		env = append(env, map[string]string{"name": "CODEX_OPENAI_BASE_URL", "value": r.config.OpenAIBaseURL})
+	if baseURL != "" {
+		env = append(env, map[string]string{"name": "CODEX_OPENAI_BASE_URL", "value": baseURL})
 	}
 	if request.Repository != "" {
 		env = append(env, map[string]string{"name": "CODEX_REPOSITORY", "value": request.Repository})
@@ -201,7 +250,7 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 	container := map[string]any{
 		"name":    "worker",
 		"image":   r.config.WorkerImage,
-		"command": []string{"/bin/sh", "-c", workerCommand(r.config)},
+		"command": []string{"/bin/sh", "-c", workerCommandForRoute(r.config, route)},
 		"env":     env,
 		"volumeMounts": []any{map[string]string{
 			"name":      "attempt-workspace",
@@ -241,15 +290,14 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 			},
 		},
 	}
-	if r.config.ModelSecretName != "" {
+	if secretName != "" {
 		containerEnv := container["env"].([]any)
-		secretKey := r.config.ModelSecretKey
 		if secretKey == "" {
 			secretKey = "api-key"
 		}
 		containerEnv = append(containerEnv, map[string]any{
 			"name":      "CODEX_API_KEY",
-			"valueFrom": map[string]any{"secretKeyRef": map[string]string{"name": r.config.ModelSecretName, "key": secretKey}},
+			"valueFrom": map[string]any{"secretKeyRef": map[string]string{"name": secretName, "key": secretKey}},
 		})
 		container["env"] = containerEnv
 	}
@@ -260,8 +308,24 @@ func (r *KubernetesRuntime) CreateJob(ctx context.Context, request JobRequest) (
 	return Job{ID: name, TaskID: request.TaskID, AttemptID: request.AttemptID, State: JobPending}, nil
 }
 
+func routeFingerprint(route modelrouter.ResolvedRoute) string {
+	encoded, _ := json.Marshal(route)
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
+}
+
 func workerCommand(config KubernetesConfig) string {
 	if config.Model == "muse-spark-1.3-contributor" || config.ModelProfile == "muse-spark-1.3-contributor" {
+		return "chmod 0755 /usr/local/bin/codex-agentd && export GIT_AUTHOR_NAME=codex-agent GIT_AUTHOR_EMAIL=codex-agent@localhost GIT_COMMITTER_NAME=codex-agent GIT_COMMITTER_EMAIL=codex-agent@localhost && mkdir -p \"$CODEX_HOME\" && exec /usr/local/bin/codex-agentd --listen 0.0.0.0:8080"
+	}
+	return "chmod 0755 /opt/codex/vendor/x86_64-unknown-linux-musl/bin/codex /usr/local/bin/codex /usr/local/bin/codex-agentd && export GIT_AUTHOR_NAME=codex-agent GIT_AUTHOR_EMAIL=codex-agent@localhost GIT_COMMITTER_NAME=codex-agent GIT_COMMITTER_EMAIL=codex-agent@localhost && mkdir -p \"$CODEX_HOME\" && printf '%s\\n' \"$CODEX_API_KEY\" | /usr/local/bin/codex login --with-api-key >/dev/null && exec /usr/local/bin/codex-agentd --listen 0.0.0.0:8080"
+}
+
+func workerCommandForRoute(config KubernetesConfig, route *modelrouter.ResolvedRoute) string {
+	if route == nil {
+		return workerCommand(config)
+	}
+	if route.Provider == "cch" || route.WireAPI == modelrouter.WireAPIChatCompletions {
 		return "chmod 0755 /usr/local/bin/codex-agentd && export GIT_AUTHOR_NAME=codex-agent GIT_AUTHOR_EMAIL=codex-agent@localhost GIT_COMMITTER_NAME=codex-agent GIT_COMMITTER_EMAIL=codex-agent@localhost && mkdir -p \"$CODEX_HOME\" && exec /usr/local/bin/codex-agentd --listen 0.0.0.0:8080"
 	}
 	return "chmod 0755 /opt/codex/vendor/x86_64-unknown-linux-musl/bin/codex /usr/local/bin/codex /usr/local/bin/codex-agentd && export GIT_AUTHOR_NAME=codex-agent GIT_AUTHOR_EMAIL=codex-agent@localhost GIT_COMMITTER_NAME=codex-agent GIT_COMMITTER_EMAIL=codex-agent@localhost && mkdir -p \"$CODEX_HOME\" && printf '%s\\n' \"$CODEX_API_KEY\" | /usr/local/bin/codex login --with-api-key >/dev/null && exec /usr/local/bin/codex-agentd --listen 0.0.0.0:8080"

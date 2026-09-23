@@ -34,6 +34,8 @@ export interface TaskAttempt {
   state: string;
 }
 
+export type WorkerModelProfile = "worker";
+
 export interface TaskMessage {
   id: string;
   role: string;
@@ -54,6 +56,5 @@ export interface CreateTaskInput {
   repository: string;
   base_ref: string;
   objective: string;
-  profile?: string;
   idempotency_key: string;
 }

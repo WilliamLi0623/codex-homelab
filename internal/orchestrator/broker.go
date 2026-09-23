@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/executor/k3s"
+	"github.com/WilliamLi0623/codex-homelab/internal/modelrouter"
 )
 
 type Claim struct {
@@ -28,6 +29,7 @@ type Request struct {
 	TaskID            string
 	AttemptID         string
 	ModelProfile      string
+	Route             *modelrouter.ResolvedRoute
 	Prompt            string
 	Repository        string
 	BaseRef           string
@@ -56,11 +58,20 @@ func (b *Broker) Dispatch(ctx context.Context, r Request) (Dispatch, error) {
 	if r.TaskID == "" || r.AttemptID == "" {
 		return Dispatch{}, fmt.Errorf("task and attempt IDs are required")
 	}
+	if r.Route == nil {
+		return Dispatch{}, fmt.Errorf("frozen worker route is required")
+	}
+	if err := modelrouter.ValidateResolvedRoute(*r.Route); err != nil {
+		return Dispatch{}, fmt.Errorf("invalid resolved route: %w", err)
+	}
+	if r.Route.Role != modelrouter.RoleWorker {
+		return Dispatch{}, fmt.Errorf("invalid resolved route: role %q cannot be dispatched to a worker", r.Route.Role)
+	}
 	claim, err := b.capacity.Create(ctx, ClaimRequest{TaskID: r.TaskID, AttemptID: r.AttemptID})
 	if err != nil {
 		return Dispatch{}, err
 	}
-	job, err := b.executor.CreateJob(ctx, k3s.JobRequest{TaskID: r.TaskID, AttemptID: r.AttemptID, ModelProfile: r.ModelProfile, NodeName: claim.KubeNode, Prompt: r.Prompt, Repository: r.Repository, BaseRef: r.BaseRef, WorkspacePath: r.WorkspacePath, ValidationCommand: r.ValidationCommand})
+	job, err := b.executor.CreateJob(ctx, k3s.JobRequest{TaskID: r.TaskID, AttemptID: r.AttemptID, ModelProfile: r.ModelProfile, Route: r.Route, NodeName: claim.KubeNode, Prompt: r.Prompt, Repository: r.Repository, BaseRef: r.BaseRef, WorkspacePath: r.WorkspacePath, ValidationCommand: r.ValidationCommand})
 	if errors.Is(err, k3s.ErrUnknown) {
 		return Dispatch{Claim: claim}, err
 	}

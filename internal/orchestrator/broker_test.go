@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/executor/k3s"
+	"github.com/WilliamLi0623/codex-homelab/internal/modelrouter"
 )
 
 type fakeCapacity struct {
@@ -44,19 +45,143 @@ func (f *fakeExecutor) CreateJob(_ context.Context, r k3s.JobRequest) (k3s.Job, 
 	return k3s.Job{ID: "job-1", TaskID: r.TaskID, AttemptID: r.AttemptID, State: k3s.JobRunning}, nil
 }
 
+func normalWorkerRoute() *modelrouter.ResolvedRoute {
+	return &modelrouter.ResolvedRoute{
+		Mode: modelrouter.ModeNormal, Generation: 1, Role: modelrouter.RoleWorker,
+		Provider: "openai", Model: "gpt-6-luna", WireAPI: modelrouter.WireAPIResponses,
+		ReasoningEffort: "high", BaseURL: "https://api.openai.com/v1",
+		SecretName: "openai-model-gateway", SecretKey: "api-key",
+	}
+}
+
 func TestDispatchCarriesRepositoryBaseRefAndWorkspaceContract(t *testing.T) {
 	capacity := &fakeCapacity{}
 	executor := &fakeExecutor{}
 	broker := New(capacity, executor)
-	_, err := broker.Dispatch(context.Background(), Request{TaskID: "task-1", AttemptID: "attempt-1", ModelProfile: "muse-spark-1.3-contributor", Prompt: "change", Repository: "owner/repo", BaseRef: "main", WorkspacePath: "/workspace/attempt-1", ValidationCommand: []string{"go", "test", "./..."}})
+	_, err := broker.Dispatch(context.Background(), Request{TaskID: "task-1", AttemptID: "attempt-1", ModelProfile: "worker", Route: normalWorkerRoute(), Prompt: "change", Repository: "owner/repo", BaseRef: "main", WorkspacePath: "/workspace/attempt-1", ValidationCommand: []string{"go", "test", "./..."}})
 	if err != nil {
 		t.Fatalf("Dispatch() error = %v", err)
 	}
-	if len(executor.jobs) != 1 || executor.jobs[0].ModelProfile != "muse-spark-1.3-contributor" || executor.jobs[0].Repository != "owner/repo" || executor.jobs[0].BaseRef != "main" || executor.jobs[0].WorkspacePath != "/workspace/attempt-1" || strings.Join(executor.jobs[0].ValidationCommand, " ") != "go test ./..." {
+	if len(executor.jobs) != 1 || executor.jobs[0].ModelProfile != "worker" || executor.jobs[0].Repository != "owner/repo" || executor.jobs[0].BaseRef != "main" || executor.jobs[0].WorkspacePath != "/workspace/attempt-1" || strings.Join(executor.jobs[0].ValidationCommand, " ") != "go test ./..." {
 		t.Fatalf("job request = %+v, want repository/base_ref/workspace contract", executor.jobs)
 	}
 	if executor.jobs[0].NodeName != "codex-node" {
 		t.Fatalf("job node = %q, want codex-node", executor.jobs[0].NodeName)
+	}
+	if executor.jobs[0].Route == nil || executor.jobs[0].Route.Model != "gpt-6-luna" {
+		t.Fatalf("job route = %+v, want frozen normal route", executor.jobs[0].Route)
+	}
+}
+
+func TestDispatchValidatesRouteBeforeCreatingCapacityOrJob(t *testing.T) {
+	capacity := &fakeCapacity{}
+	executor := &fakeExecutor{}
+	broker := New(capacity, executor)
+	route := &modelrouter.ResolvedRoute{
+		Mode:            modelrouter.ModeNormal,
+		Generation:      0,
+		Role:            modelrouter.RoleWorker,
+		Provider:        "openai",
+		Model:           "gpt-6-luna",
+		WireAPI:         modelrouter.WireAPIResponses,
+		ReasoningEffort: "high",
+		BaseURL:         "https://api.openai.com/v1",
+		SecretName:      "openai-model-gateway",
+		SecretKey:       "api-key",
+	}
+
+	_, err := broker.Dispatch(context.Background(), Request{
+		TaskID:    "task-1",
+		AttemptID: "attempt-1",
+		Route:     route,
+	})
+	if err == nil {
+		t.Fatal("Dispatch() error = nil, want route validation error")
+	}
+	if len(capacity.claims) != 0 {
+		t.Fatalf("capacity claims = %v, want none", capacity.claims)
+	}
+	if len(executor.jobs) != 0 {
+		t.Fatalf("executor jobs = %v, want none", executor.jobs)
+	}
+}
+
+func TestDispatchRejectsMissingFrozenRouteBeforeCapacityClaim(t *testing.T) {
+	capacity := &fakeCapacity{}
+	executor := &fakeExecutor{}
+	broker := New(capacity, executor)
+
+	_, err := broker.Dispatch(context.Background(), Request{TaskID: "task-1", AttemptID: "attempt-1"})
+	if err == nil || !strings.Contains(err.Error(), "frozen worker route is required") {
+		t.Fatalf("Dispatch() error = %v, want missing frozen route error", err)
+	}
+	if len(capacity.claims) != 0 {
+		t.Fatalf("capacity claims = %v, want none", capacity.claims)
+	}
+	if len(executor.jobs) != 0 {
+		t.Fatalf("executor jobs = %v, want none", executor.jobs)
+	}
+}
+
+func TestDispatchRejectsOrchestratorRouteBeforeCapacityClaim(t *testing.T) {
+	capacity := &fakeCapacity{}
+	executor := &fakeExecutor{}
+	broker := New(capacity, executor)
+	route := &modelrouter.ResolvedRoute{
+		Mode:            modelrouter.ModeQuotaFallback,
+		Generation:      1,
+		Role:            modelrouter.RoleOrchestrator,
+		Provider:        "cch",
+		Model:           "muse-spark-1.3-contributor",
+		WireAPI:         modelrouter.WireAPIResponses,
+		ReasoningEffort: "xhigh",
+		BaseURL:         "https://cch-jp.zenkexi.com/v1",
+		SecretName:      "cch-model-gateway",
+		SecretKey:       "api-key",
+	}
+
+	_, err := broker.Dispatch(context.Background(), Request{TaskID: "task-1", AttemptID: "attempt-1", Route: route})
+	if err == nil {
+		t.Fatal("Dispatch() error = nil, want worker-role validation error")
+	}
+	if len(capacity.claims) != 0 {
+		t.Fatalf("capacity claims = %v, want none", capacity.claims)
+	}
+	if len(executor.jobs) != 0 {
+		t.Fatalf("executor jobs = %v, want none", executor.jobs)
+	}
+}
+
+func TestDispatchPropagatesTheFrozenRoutePointerToJob(t *testing.T) {
+	capacity := &fakeCapacity{}
+	executor := &fakeExecutor{}
+	broker := New(capacity, executor)
+	route := &modelrouter.ResolvedRoute{
+		Mode:            modelrouter.ModeNormal,
+		Generation:      1,
+		Role:            modelrouter.RoleWorker,
+		Provider:        "openai",
+		Model:           "gpt-6-luna",
+		WireAPI:         modelrouter.WireAPIResponses,
+		ReasoningEffort: "high",
+		BaseURL:         "https://api.openai.com/v1",
+		SecretName:      "openai-model-gateway",
+		SecretKey:       "api-key",
+	}
+
+	_, err := broker.Dispatch(context.Background(), Request{
+		TaskID:    "task-1",
+		AttemptID: "attempt-1",
+		Route:     route,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch() error = %v", err)
+	}
+	if len(executor.jobs) != 1 {
+		t.Fatalf("executor jobs = %d, want 1", len(executor.jobs))
+	}
+	if executor.jobs[0].Route != route {
+		t.Fatalf("job route pointer = %p, want request route pointer %p", executor.jobs[0].Route, route)
 	}
 }
 func (f *fakeExecutor) SendMessage(_ context.Context, id, msg string) error {
@@ -75,7 +200,7 @@ func TestDispatchKeepsClaimAndReusesJobForFollowUp(t *testing.T) {
 	c := &fakeCapacity{}
 	e := &fakeExecutor{result: k3s.Result{CommitSHA: "abc"}}
 	b := New(c, e)
-	d, err := b.Dispatch(context.Background(), Request{TaskID: "task-1", AttemptID: "attempt-1", Prompt: "make change"})
+	d, err := b.Dispatch(context.Background(), Request{TaskID: "task-1", AttemptID: "attempt-1", Route: normalWorkerRoute(), Prompt: "make change"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +215,7 @@ func TestDispatchDoesNotReleaseClaimOnUnknownCreate(t *testing.T) {
 	c := &fakeCapacity{}
 	e := &fakeExecutor{createErr: k3s.ErrUnknown}
 	b := New(c, e)
-	_, err := b.Dispatch(context.Background(), Request{TaskID: "task-1", AttemptID: "attempt-1"})
+	_, err := b.Dispatch(context.Background(), Request{TaskID: "task-1", AttemptID: "attempt-1", Route: normalWorkerRoute()})
 	if !errors.Is(err, k3s.ErrUnknown) {
 		t.Fatalf("Dispatch() error=%v", err)
 	}
@@ -102,7 +227,7 @@ func TestCancelReleasesClaimAfterExecutorCancellation(t *testing.T) {
 	c := &fakeCapacity{}
 	e := &fakeExecutor{}
 	b := New(c, e)
-	d, err := b.Dispatch(context.Background(), Request{TaskID: "task-1", AttemptID: "attempt-1"})
+	d, err := b.Dispatch(context.Background(), Request{TaskID: "task-1", AttemptID: "attempt-1", Route: normalWorkerRoute()})
 	if err != nil {
 		t.Fatal(err)
 	}

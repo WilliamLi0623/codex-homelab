@@ -3,7 +3,7 @@ import { ControllerError, createTask, listTasks } from "./api/controller";
 import type { Task } from "./types";
 import TaskDetail from "./components/TaskDetail";
 
-const initialForm = { repository: "", base_ref: "main", objective: "", profile: "openai-primary" };
+const initialForm = { repository: "", base_ref: "main", objective: "" };
 
 function stateLabel(state: Task["state"]): string {
   return state.replaceAll("_", " ").toLowerCase();
@@ -111,7 +111,7 @@ export default function App() {
           <form className="task-form" onSubmit={submitTask}>
             <label htmlFor="repository">Repository<input id="repository" name="repository" required value={form.repository} onChange={(event) => setForm({ ...form, repository: event.target.value })} placeholder="owner/repository" /></label>
             <label htmlFor="base-ref">Base ref<input id="base-ref" name="base_ref" required value={form.base_ref} onChange={(event) => setForm({ ...form, base_ref: event.target.value })} /></label>
-            <label htmlFor="profile">Profile<select id="profile" name="profile" value={form.profile} onChange={(event) => setForm({ ...form, profile: event.target.value })}><option value="openai-primary">OpenAI primary</option><option value="muse-spark-1.3-contributor">Muse Spark</option><option value="glm-5.3-flash">GLM-5.3 Flash</option></select></label>
+            <label htmlFor="worker-role">Worker role<output id="worker-role" aria-readonly="true">Automatic (Codex quota state)</output></label>
             <label className="field-wide" htmlFor="objective">Objective<textarea id="objective" name="objective" required rows={4} value={form.objective} onChange={(event) => setForm({ ...form, objective: event.target.value })} placeholder="Describe the change and the evidence you expect." /></label>
             <div className="form-actions"><button type="submit" className="button button-primary" disabled={creating}>{creating ? "Submitting…" : "Submit task"}</button><span className="helper-text">The Controller owns scheduling, worker allocation, and provider routing.</span></div>
           </form>

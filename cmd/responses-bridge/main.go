@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/responsesbridge"
@@ -23,9 +24,14 @@ func main() {
 	if *upstream == "" {
 		log.Fatal("CCH_CHAT_URL or -upstream is required")
 	}
+	userAgent := strings.TrimSpace(os.Getenv("CCH_USER_AGENT"))
+	if err := validateCodingAgentUserAgent(userAgent); err != nil {
+		log.Fatal(err)
+	}
 	bridge := responsesbridge.NewBridge(responsesbridge.BridgeConfig{
 		UpstreamURL:     *upstream,
 		APIKey:          os.Getenv("CCH_API_KEY"),
+		UserAgent:       userAgent,
 		Model:           *model,
 		UpstreamTimeout: 90 * time.Second,
 	})
@@ -34,6 +40,13 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+func validateCodingAgentUserAgent(value string) error {
+	if !strings.HasPrefix(value, "codex_cli_rs/") || !strings.Contains(value, " (") || !strings.Contains(value, "; ") || !strings.Contains(value, ") ") {
+		return fmt.Errorf("CCH_USER_AGENT must use the configured codex_cli_rs/<version> (<OS> <version>; <architecture>) <terminal> format")
+	}
+	return nil
 }
 
 func validateLoopback(address string) error {

@@ -42,7 +42,11 @@ func messageOutputItem(id, text string) map[string]any {
 }
 
 func functionOutputItem(id string, call AssembledToolCall) map[string]any {
-	return map[string]any{"type": "function_call", "id": id, "status": "completed", "call_id": call.ID, "name": call.Name, "arguments": call.Arguments}
+	item := map[string]any{"type": "function_call", "id": id, "status": "completed", "call_id": call.ID, "name": call.Name, "arguments": call.Arguments}
+	if call.Namespace != "" {
+		item["namespace"] = call.Namespace
+	}
+	return item
 }
 
 func writeEvent(w io.Writer, event string, data any) error {

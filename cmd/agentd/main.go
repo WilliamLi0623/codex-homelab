@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path"
 	"path/filepath"
@@ -277,6 +278,13 @@ func main() {
 	if err := validateEnvironment(environment); err != nil {
 		fatal(err)
 	}
+	if strings.TrimSpace(os.Getenv("CODEX_CLI_VERSION")) == "" {
+		versionCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		if version, err := installedCodexVersion(versionCtx, *codex); err == nil {
+			_ = os.Setenv("CODEX_CLI_VERSION", version)
+		}
+		cancel()
+	}
 	if err := prepareConfiguredWorkspace(ctx, environment, nil); err != nil {
 		fatal(err)
 	}
@@ -337,6 +345,39 @@ func main() {
 			fatal(err)
 		}
 	}
+}
+
+func installedCodexVersion(ctx context.Context, executable string) (string, error) {
+	output, err := exec.CommandContext(ctx, executable, "--version").Output()
+	if err != nil {
+		return "", errors.New("could not identify installed Codex CLI version")
+	}
+	return parseCodexVersion(string(output))
+}
+
+func parseCodexVersion(output string) (string, error) {
+	for _, field := range strings.Fields(output) {
+		field = strings.TrimPrefix(field, "codex-cli")
+		field = strings.TrimPrefix(field, "codex")
+		field = strings.Trim(field, "v ")
+		parts := strings.Split(field, ".")
+		if len(parts) != 3 {
+			continue
+		}
+		valid := true
+		for _, part := range parts {
+			for _, char := range part {
+				if char < '0' || char > '9' {
+					valid = false
+					break
+				}
+			}
+		}
+		if valid {
+			return field, nil
+		}
+	}
+	return "", errors.New("Codex CLI version output was not recognized")
 }
 
 func waitForHTTPServer(ctx context.Context) {

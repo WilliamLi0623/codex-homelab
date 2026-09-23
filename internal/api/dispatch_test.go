@@ -8,9 +8,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/executor/k3s"
+	"github.com/WilliamLi0623/codex-homelab/internal/modelrouter"
 	"github.com/WilliamLi0623/codex-homelab/internal/orchestrator"
+	"github.com/WilliamLi0623/codex-homelab/internal/store"
 )
 
 type fakeDispatcher struct{ requests []orchestrator.Request }
@@ -23,7 +26,11 @@ func (f *fakeDispatcher) Dispatch(_ context.Context, r orchestrator.Request) (or
 func TestDispatchTaskOverHTTPUsesPersistedAttempt(t *testing.T) {
 	base := newTestServer(t)
 	dispatcher := &fakeDispatcher{}
-	server := NewServerWithDispatcher(base.store, dispatcher)
+	server := NewServerWithRoutingStateAndRoutes(base.store, dispatcher, nil, nil, nil, testRoutingToken, testAPIroutes(), true)
+	observed := time.Now().UTC().Truncate(time.Millisecond)
+	if err := base.store.SetRoutingState(context.Background(), store.RoutingState{Mode: string(modelrouter.ModeNormal), ObservedAt: observed, Generation: 12}); err != nil {
+		t.Fatal(err)
+	}
 	create := httptest.NewRecorder()
 	server.ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/v1/tasks", bytes.NewBufferString(`{"repository":"owner/repo","base_ref":"main","objective":"change","idempotency_key":"dispatch-1"}`)))
 	var created createTaskResponse
@@ -39,13 +46,20 @@ func TestDispatchTaskOverHTTPUsesPersistedAttempt(t *testing.T) {
 	if err := json.Unmarshal(start.Body.Bytes(), &started); err != nil {
 		t.Fatal(err)
 	}
+	if err := base.store.SetRoutingState(context.Background(), store.RoutingState{Mode: string(modelrouter.ModeQuotaFallback), ObservedAt: observed.Add(time.Second), Generation: 13}); err != nil {
+		t.Fatal(err)
+	}
 	dispatch := httptest.NewRecorder()
 	server.ServeHTTP(dispatch, httptest.NewRequest(http.MethodPost, "/v1/tasks/"+created.Task.ID+"/dispatch", bytes.NewBufferString(`{"attempt_id":"`+started.Attempt.ID+`","prompt":"run","validation_command":["go","test","./..."]}`)))
 	if dispatch.Code != http.StatusAccepted {
 		t.Fatalf("dispatch status=%d body=%s", dispatch.Code, dispatch.Body.String())
 	}
-	if len(dispatcher.requests) != 1 || dispatcher.requests[0].ModelProfile != "openai-primary" {
+	if len(dispatcher.requests) != 1 || dispatcher.requests[0].ModelProfile != "worker" {
 		t.Fatalf("dispatch request model profile = %+v", dispatcher.requests)
+	}
+	route := dispatcher.requests[0].Route
+	if route == nil || route.Mode != modelrouter.ModeNormal || route.Generation != 12 || route.Model != "gpt-6-luna" || route.ReasoningEffort != "high" {
+		t.Fatalf("dispatch route = %+v; want frozen normal generation 12 Luna/high", route)
 	}
 	if !strings.Contains(dispatcher.requests[0].Prompt, "Do not run git commit or git push") {
 		t.Fatalf("dispatch prompt lacks commit boundary: %q", dispatcher.requests[0].Prompt)

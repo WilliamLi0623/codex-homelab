@@ -26,7 +26,7 @@ func TestListAttemptsReturnsAttemptMetadata(t *testing.T) {
 	if err := json.Unmarshal(listed.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode list attempts response: %v", err)
 	}
-	if len(response.Attempts) != 1 || response.Attempts[0].ModelProfile != "muse-spark-1.3-contributor" {
-		t.Fatalf("attempts = %+v, want one Muse attempt", response.Attempts)
+	if len(response.Attempts) != 1 || response.Attempts[0].ModelProfile != "worker" {
+		t.Fatalf("attempts = %+v, want fixed worker role marker", response.Attempts)
 	}
 }

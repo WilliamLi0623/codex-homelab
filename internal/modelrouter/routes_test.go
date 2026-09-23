@@ -96,3 +96,50 @@ func TestResolvedRouteContainsOnlySecretReference(t *testing.T) {
 		t.Fatalf("secret reference = %q/%q", got.SecretName, got.SecretKey)
 	}
 }
+
+func TestValidateResolvedRouteChecksFrozenPolicyAndGeneration(t *testing.T) {
+	route, err := Resolve(ModeQuotaFallback, RoleWorker, validRoutes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	route.Generation = 3
+	if err := ValidateResolvedRoute(route); err != nil {
+		t.Fatalf("ValidateResolvedRoute(valid) error = %v", err)
+	}
+	invalid := route
+	invalid.Model = "muse-spark-1.3-contributor"
+	if err := ValidateResolvedRoute(invalid); err == nil {
+		t.Fatal("ValidateResolvedRoute accepted a worker route with the wrong model")
+	}
+	invalid = route
+	invalid.Generation = 0
+	if err := ValidateResolvedRoute(invalid); err == nil {
+		t.Fatal("ValidateResolvedRoute accepted a zero generation")
+	}
+}
+
+func TestValidateResolvedRouteAgainstConfigBindsEndpointAndSecretReference(t *testing.T) {
+	config := validRoutes()
+	route, err := Resolve(ModeQuotaFallback, RoleWorker, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route.Generation = 2
+	if err := ValidateResolvedRouteAgainstConfig(route, config); err != nil {
+		t.Fatalf("valid configured route rejected: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*ResolvedRoute){
+		"endpoint":    func(r *ResolvedRoute) { r.BaseURL = "https://attacker.example/v1" },
+		"secret name": func(r *ResolvedRoute) { r.SecretName = "attacker-secret" },
+		"secret key":  func(r *ResolvedRoute) { r.SecretKey = "other-key" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := route
+			mutate(&invalid)
+			if err := ValidateResolvedRouteAgainstConfig(invalid, config); err == nil {
+				t.Fatal("accepted route snapshot that differs from deployment configuration")
+			}
+		})
+	}
+}

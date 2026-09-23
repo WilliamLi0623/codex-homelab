@@ -56,6 +56,7 @@ type RouteConfig struct {
 // one attempt. It contains secret references only, never credential values.
 type ResolvedRoute struct {
 	Mode            Mode
+	Generation      int64
 	Role            Role
 	Provider        string
 	Model           string
@@ -64,6 +65,50 @@ type ResolvedRoute struct {
 	BaseURL         string
 	SecretName      string
 	SecretKey       string
+}
+
+// ValidateResolvedRoute rechecks a persisted route snapshot against the fixed
+// policy before it crosses the capacity or executor boundary.
+func ValidateResolvedRoute(route ResolvedRoute) error {
+	if route.Generation < 1 {
+		return fmt.Errorf("route generation must be positive")
+	}
+	settings := RouteSettings{Provider: route.Provider, Model: route.Model, WireAPI: route.WireAPI, ReasoningEffort: route.ReasoningEffort, BaseURL: route.BaseURL, SecretName: route.SecretName, SecretKey: route.SecretKey}
+	config := RouteConfig{}
+	switch route.Mode {
+	case ModeNormal:
+		config.OpenAI = settings
+	case ModeQuotaFallback:
+		switch route.Role {
+		case RoleOrchestrator:
+			config.Spark = settings
+		case RoleWorker:
+			config.GLM = settings
+		default:
+			return fmt.Errorf("unknown routing role %q", route.Role)
+		}
+	default:
+		return fmt.Errorf("unknown routing mode %q", route.Mode)
+	}
+	_, err := Resolve(route.Mode, route.Role, config)
+	return err
+}
+
+// ValidateResolvedRouteAgainstConfig verifies both the fixed role policy and
+// that mutable deployment-owned endpoint/Secret references still match the
+// configuration that created the route snapshot.
+func ValidateResolvedRouteAgainstConfig(route ResolvedRoute, config RouteConfig) error {
+	if err := ValidateResolvedRoute(route); err != nil {
+		return err
+	}
+	expected, err := Resolve(route.Mode, route.Role, config)
+	if err != nil {
+		return err
+	}
+	if route.Provider != expected.Provider || route.Model != expected.Model || route.WireAPI != expected.WireAPI || route.ReasoningEffort != expected.ReasoningEffort || route.BaseURL != expected.BaseURL || route.SecretName != expected.SecretName || route.SecretKey != expected.SecretKey {
+		return fmt.Errorf("resolved route does not match configured provider endpoint and Secret reference")
+	}
+	return nil
 }
 
 var (

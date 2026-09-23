@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/WilliamLi0623/codex-homelab/internal/modelrouter"
 	"github.com/WilliamLi0623/codex-homelab/internal/store"
 )
 
@@ -50,6 +51,7 @@ type JobRequest struct {
 	BaseRef           string
 	WorkspacePath     string
 	ValidationCommand []string
+	Route             *modelrouter.ResolvedRoute
 }
 type Job struct {
 	ID        string

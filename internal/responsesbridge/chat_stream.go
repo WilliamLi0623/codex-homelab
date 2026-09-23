@@ -32,6 +32,7 @@ type ToolCallDelta struct {
 
 type AssembledToolCall struct {
 	ID        string
+	Namespace string
 	Name      string
 	Arguments string
 }
@@ -48,10 +49,10 @@ type ChatUsage struct {
 func StreamChatSSE(r io.Reader, onDelta func(ChatDelta) error) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 4096), 2<<20)
-	seenDone := false
 	assembled := map[int]*AssembledToolCall{}
 	idIndexes := map[string]int{}
 	var lastUsage *ChatUsage
+	sawOutput := false
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" || line[0] == ':' {
@@ -65,11 +66,7 @@ func StreamChatSSE(r io.Reader, onDelta func(ChatDelta) error) error {
 			data = data[1:]
 		}
 		if data == "[DONE]" {
-			if seenDone {
-				return fmt.Errorf("duplicate [DONE] marker")
-			}
-			seenDone = true
-			continue
+			return finishChatStream(assembled, lastUsage, sawOutput, onDelta)
 		}
 		var chunk struct {
 			Choices []struct {
@@ -78,6 +75,7 @@ func StreamChatSSE(r io.Reader, onDelta func(ChatDelta) error) error {
 					ToolCalls []struct {
 						Index    *int   `json:"index"`
 						ID       string `json:"id"`
+						Type     string `json:"type"`
 						Function struct {
 							Name      string `json:"name"`
 							Arguments string `json:"arguments"`
@@ -90,6 +88,9 @@ func StreamChatSSE(r io.Reader, onDelta func(ChatDelta) error) error {
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			return fmt.Errorf("decode upstream SSE: %w", err)
 		}
+		if len(chunk.Choices) > 1 {
+			return fmt.Errorf("upstream SSE contains multiple choices")
+		}
 		if chunk.Usage != nil {
 			lastUsage = chunk.Usage
 		}
@@ -99,6 +100,9 @@ func StreamChatSSE(r io.Reader, onDelta func(ChatDelta) error) error {
 			for _, call := range choice.Delta.ToolCalls {
 				if call.Index == nil {
 					return fmt.Errorf("tool call has missing index")
+				}
+				if call.Type != "" && call.Type != "function" {
+					return fmt.Errorf("tool call has unsupported type %q", call.Type)
 				}
 				index := *call.Index
 				item := assembled[index]
@@ -122,6 +126,9 @@ func StreamChatSSE(r io.Reader, onDelta func(ChatDelta) error) error {
 			}
 		}
 		if delta.Text != "" || len(delta.ToolCalls) != 0 || delta.Usage != nil {
+			if delta.Text != "" || len(delta.ToolCalls) != 0 {
+				sawOutput = true
+			}
 			if err := onDelta(delta); err != nil {
 				return err
 			}
@@ -130,8 +137,12 @@ func StreamChatSSE(r io.Reader, onDelta func(ChatDelta) error) error {
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("read upstream SSE: %w", err)
 	}
-	if !seenDone {
-		return fmt.Errorf("upstream SSE ended before [DONE]")
+	return fmt.Errorf("upstream SSE ended before [DONE]")
+}
+
+func finishChatStream(assembled map[int]*AssembledToolCall, lastUsage *ChatUsage, sawOutput bool, onDelta func(ChatDelta) error) error {
+	if !sawOutput {
+		return fmt.Errorf("upstream SSE completed without output")
 	}
 	indexes := sortedCallIndexes(assembled)
 	for _, index := range indexes {

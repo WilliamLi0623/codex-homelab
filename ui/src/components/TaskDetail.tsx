@@ -11,6 +11,10 @@ interface TaskDetailProps {
 const terminalTaskStates = new Set(["SUCCEEDED", "FAILED", "BLOCKED", "CANCELLED"]);
 const terminalAttemptStates = new Set(["COMPLETED", "PROVIDER_FAILED", "EXECUTION_FAILED", "VALIDATION_FAILED", "CANCELLED"]);
 
+export function formatHistoricalAttemptProfile(profile: string): string {
+  return profile;
+}
+
 function stateLabel(state: string): string {
   return state.replaceAll("_", " ").toLowerCase();
 }
@@ -24,7 +28,6 @@ export default function TaskDetail({ taskID, onTaskChanged }: TaskDetailProps) {
   const [attempts, setAttempts] = useState<TaskAttempt[]>([]);
   const [messages, setMessages] = useState<TaskMessage[]>([]);
   const [events, setEvents] = useState<TaskEvent[]>([]);
-  const [profile, setProfile] = useState("openai-primary");
   const [body, setBody] = useState("");
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
@@ -96,7 +99,7 @@ export default function TaskDetail({ taskID, onTaskChanged }: TaskDetailProps) {
     setWorking(true);
     setError(undefined);
     try {
-      const result = await startTaskAttempt(taskID, profile);
+      const result = await startTaskAttempt(taskID);
       setTask(result.task);
       setAttempts((current) => [...current, result.attempt]);
       onTaskChanged(result.task);
@@ -138,8 +141,8 @@ export default function TaskDetail({ taskID, onTaskChanged }: TaskDetailProps) {
       <dl className="detail-list"><div><dt>Repository</dt><dd>{task.repository}</dd></div><div><dt>Base ref</dt><dd>{task.base_ref}</dd></div><div><dt>Execution</dt><dd>{task.execution_class}</dd></div><div><dt>Task ID</dt><dd className="mono">{task.id}</dd></div></dl>
 
       <section className="detail-section" aria-labelledby="attempts-title"><div className="subsection-heading"><h3 id="attempts-title">Attempts</h3><span className="muted-label">{attempts.length}</span></div>
-        {attempts.length === 0 && <form className="inline-form" onSubmit={submitAttempt}><label htmlFor="attempt-profile">Profile<select id="attempt-profile" value={profile} onChange={(event) => setProfile(event.target.value)}><option value="openai-primary">OpenAI primary</option><option value="muse-spark-1.3-contributor">Muse Spark</option><option value="glm-5.3-flash">GLM-5.3 Flash</option></select></label><button className="button button-primary" disabled={working}>Start attempt</button></form>}
-        {attempts.length > 0 && <ol className="attempt-list">{attempts.map((attempt) => <li key={attempt.id}><span><strong>Attempt {attempt.number}</strong><small className="mono">{attempt.model_profile}</small></span><span className={`state state-${attempt.state.toLowerCase()}`}>{stateLabel(attempt.state)}</span></li>)}</ol>}
+        {attempts.length === 0 && <form className="inline-form" onSubmit={submitAttempt}><label htmlFor="attempt-profile">Worker role<output id="attempt-profile" aria-readonly="true">Automatic (Codex quota state)</output></label><button className="button button-primary" disabled={working}>Start attempt</button></form>}
+        {attempts.length > 0 && <ol className="attempt-list">{attempts.map((attempt) => <li key={attempt.id}><span><strong>Attempt {attempt.number}</strong><small className="mono">Historical profile: {formatHistoricalAttemptProfile(attempt.model_profile)}</small></span><span className={`state state-${attempt.state.toLowerCase()}`}>{stateLabel(attempt.state)}</span></li>)}</ol>}
       </section>
 
       <section className="detail-section" aria-labelledby="messages-title"><div className="subsection-heading"><h3 id="messages-title">Conversation</h3><span className="muted-label">{messages.length} messages</span></div>

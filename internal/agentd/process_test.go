@@ -25,9 +25,25 @@ func TestStartProcessConnectsClientOverStdio(t *testing.T) {
 	}
 }
 
+func TestStartIsolatedProcessDoesNotInheritSecrets(t *testing.T) {
+	t.Setenv("AGENTD_TEST_PARENT_SECRET", "must-not-reach-child")
+	process, err := StartIsolatedProcess(context.Background(), os.Args[0], []string{"-test.run=TestStartProcessConnectsClientOverStdio", "--", "app-server"}, []string{"GO_WANT_AGENTD_HELPER=1"})
+	if err != nil {
+		t.Fatalf("StartIsolatedProcess() error = %v", err)
+	}
+	t.Cleanup(func() { _ = process.Close() })
+	if err := process.Client.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+}
+
 func TestAgentdHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_AGENTD_HELPER") != "1" {
 		return
+	}
+	if os.Getenv("AGENTD_TEST_PARENT_SECRET") != "" {
+		fmt.Fprintln(os.Stdout, "parent secret was inherited")
+		os.Exit(2)
 	}
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {

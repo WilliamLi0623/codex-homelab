@@ -12,6 +12,7 @@ import (
 	"github.com/WilliamLi0623/codex-homelab/internal/api"
 	"github.com/WilliamLi0623/codex-homelab/internal/capacity"
 	"github.com/WilliamLi0623/codex-homelab/internal/executor/k3s"
+	"github.com/WilliamLi0623/codex-homelab/internal/modelrouter"
 	"github.com/WilliamLi0623/codex-homelab/internal/orchestrator"
 	"github.com/WilliamLi0623/codex-homelab/internal/store"
 )
@@ -59,19 +60,19 @@ func newHandlerFromEnvironment(databasePath string) (http.Handler, func(), error
 
 	config, configErr := loadEnvironmentConfig()
 	if configErr != nil {
-		return api.NewServerWithDispatcher(database, nil), closeStore, nil
+		return api.NewServerWithRoutingStateAndRoutes(database, nil, nil, nil, nil, routingStateTokenFromEnvironment(), modelrouter.RouteConfig{}, true), closeStore, nil
 	}
 
 	proxmoxRuntime := capacity.NewProxmoxRuntime(config.Proxmox)
 	manager := capacity.NewManager(proxmoxRuntime, capacity.VMIDRange{Min: controllerVMIDMin, Max: controllerVMIDMax})
-	kubernetesRuntime := k3s.NewKubernetesRuntime(config.Kubernetes)
+	kubernetesRuntime := k3s.NewProductionKubernetesRuntime(config.Kubernetes)
 	config.CapacityConfig.ReleaseOperations = orchestrator.NewReleaseOperations(kubernetesRuntime, proxmoxRuntime)
 	capacityAdapter := orchestrator.NewCapacityAdapterWithConfig(database, manager, config.CapacityConfig)
 	executor := k3s.New(kubernetesRuntime, database)
 	dispatcher := orchestrator.New(capacityAdapter, executor)
 	completer := orchestrator.NewResultConsumer(database, executor, capacityAdapter)
 	observationDone = startObservationLoop(runtimeContext, orchestrator.NewObservationLoop(database, completer))
-	return api.NewServerWithDispatcherCompletionReleaseAndMessageSender(database, dispatcher, completer, capacityAdapter, executor), closeStore, nil
+	return api.NewServerWithRoutingStateAndRoutes(database, dispatcher, completer, capacityAdapter, executor, routingStateTokenFromEnvironment(), config.Routes, true), closeStore, nil
 }
 
 func startObservationLoop(ctx context.Context, loop *orchestrator.ObservationLoop) <-chan struct{} {

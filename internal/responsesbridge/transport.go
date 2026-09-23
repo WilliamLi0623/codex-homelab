@@ -17,10 +17,11 @@ type Upstream interface {
 }
 
 type HTTPUpstream struct {
-	URL     string
-	APIKey  string
-	Client  *http.Client
-	Timeout time.Duration
+	URL       string
+	APIKey    string
+	UserAgent string
+	Client    *http.Client
+	Timeout   time.Duration
 }
 
 func (u HTTPUpstream) Do(ctx context.Context, request ChatRequest) (*http.Response, error) {
@@ -46,11 +47,17 @@ func (u HTTPUpstream) Do(ctx context.Context, request ChatRequest) (*http.Respon
 		return nil, fmt.Errorf("create upstream request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if u.UserAgent != "" {
+		req.Header.Set("User-Agent", u.UserAgent)
+	}
 	if u.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+u.APIKey)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+			return nil, &UpstreamError{Status: 499, Class: "client_cancelled"}
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, &UpstreamError{Status: http.StatusGatewayTimeout, Class: "timeout"}
 		}

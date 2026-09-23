@@ -3,7 +3,51 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/WilliamLi0623/codex-homelab/internal/modelrouter"
 )
+
+func TestRoutingStateTokenFromEnvironmentFailsClosed(t *testing.T) {
+	t.Setenv("CODEX_ROUTING_STATE_TOKEN", "")
+	if got := routingStateTokenFromEnvironment(); got != "" {
+		t.Fatalf("missing token = %q, want disabled endpoint", got)
+	}
+	t.Setenv("CODEX_ROUTING_STATE_TOKEN", "too-short")
+	if got := routingStateTokenFromEnvironment(); got != "" {
+		t.Fatalf("short token = %q, want disabled endpoint", got)
+	}
+	token := "0123456789abcdef0123456789abcdef"
+	t.Setenv("CODEX_ROUTING_STATE_TOKEN", token)
+	if got := routingStateTokenFromEnvironment(); got != token {
+		t.Fatal("valid token was not accepted")
+	}
+}
+
+func TestLoadRouteConfigIsOptionalButRequiresBothSecretReferences(t *testing.T) {
+	for _, name := range []string{"CODEX_OPENAI_ROUTE_BASE_URL", "CODEX_OPENAI_ROUTE_SECRET_NAME", "CODEX_OPENAI_ROUTE_SECRET_KEY", "CODEX_CCH_ROUTE_BASE_URL", "CODEX_CCH_ROUTE_SECRET_NAME", "CODEX_CCH_ROUTE_SECRET_KEY"} {
+		t.Setenv(name, "")
+	}
+	if config, err := loadRouteConfig(); err != nil || config != (modelrouter.RouteConfig{}) {
+		t.Fatalf("empty route config = %+v, %v; want disabled", config, err)
+	}
+	t.Setenv("CODEX_OPENAI_ROUTE_SECRET_NAME", "openai-route")
+	if _, err := loadRouteConfig(); err == nil {
+		t.Fatal("partial route secrets were accepted")
+	}
+	t.Setenv("CODEX_OPENAI_ROUTE_SECRET_KEY", "api-key")
+	t.Setenv("CODEX_CCH_ROUTE_SECRET_NAME", "cch-route")
+	t.Setenv("CODEX_CCH_ROUTE_SECRET_KEY", "api-key")
+	config, err := loadRouteConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := modelrouter.Resolve(modelrouter.ModeNormal, modelrouter.RoleWorker, config); err != nil {
+		t.Fatalf("normal route configuration invalid: %v", err)
+	}
+	if _, err := modelrouter.Resolve(modelrouter.ModeQuotaFallback, modelrouter.RoleWorker, config); err != nil {
+		t.Fatalf("fallback route configuration invalid: %v", err)
+	}
+}
 
 func TestLoadEnvironmentConfigRequiresAllValuesWithoutLeakingSecrets(t *testing.T) {
 	setControllerEnvironment(t)

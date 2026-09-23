@@ -28,6 +28,18 @@ type Process struct {
 func StartProcess(ctx context.Context, executable string, arguments, environment []string) (*Process, error) {
 	cmd := exec.CommandContext(ctx, executable, arguments...)
 	cmd.Env = append(os.Environ(), environment...)
+	return startProcessCommand(cmd, environment)
+}
+
+// StartIsolatedProcess launches a child with exactly the supplied environment
+// instead of implicitly inheriting potentially sensitive parent variables.
+func StartIsolatedProcess(ctx context.Context, executable string, arguments, environment []string) (*Process, error) {
+	cmd := exec.CommandContext(ctx, executable, arguments...)
+	cmd.Env = append([]string(nil), environment...)
+	return startProcessCommand(cmd, environment)
+}
+
+func startProcessCommand(cmd *exec.Cmd, environment []string) (*Process, error) {
 	if workspace := environmentValue(environment, "CODEX_WORKSPACE"); workspace != "" {
 		cmd.Dir = workspace
 	}
@@ -58,6 +70,15 @@ func StartCodexAppServer(ctx context.Context, executable string, environment []s
 		return nil, ErrMissingCodexHome
 	}
 	return StartProcess(ctx, executable, []string{"app-server", "--listen", "stdio://"}, environment)
+}
+
+// StartIsolatedCodexAppServer requires explicit CODEX_HOME and does not pass
+// unrelated parent environment variables to the App Server child.
+func StartIsolatedCodexAppServer(ctx context.Context, executable string, environment []string) (*Process, error) {
+	if !hasEnvironmentVariable(environment, "CODEX_HOME") {
+		return nil, ErrMissingCodexHome
+	}
+	return StartIsolatedProcess(ctx, executable, []string{"app-server", "--listen", "stdio://"}, environment)
 }
 
 func hasEnvironmentVariable(environment []string, name string) bool {

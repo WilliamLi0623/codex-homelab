@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/WilliamLi0623/codex-homelab/internal/modelrouter"
 )
 
 func TestKubernetesRuntimeCreateJobIsDeterministicAndIdempotent(t *testing.T) {
@@ -116,6 +118,201 @@ func TestKubernetesRuntimePropagatesReasoningEffort(t *testing.T) {
 	container := spec["containers"].([]any)[0].(map[string]any)
 	if !containsEnv(container["env"].([]any), "CODEX_MODEL_REASONING_EFFORT", "max") {
 		t.Fatalf("env = %v", container["env"])
+	}
+}
+
+func TestKubernetesRuntimeAppliesResolvedRouteToJob(t *testing.T) {
+	var manifest map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&manifest); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"metadata":{"name":"job"}}`))
+	}))
+	defer server.Close()
+	r := NewKubernetesRuntime(KubernetesConfig{
+		BaseURL: server.URL, Namespace: "default", Token: "secret", WorkerImage: "worker:latest", ServiceAccount: "sa",
+		Model: "gpt-6-luna", ModelProfile: "gpt-6-luna", WireAPI: "responses", ReasoningEffort: "high", OpenAIBaseURL: "https://old.example/v1", ModelSecretName: "old-secret", ModelSecretKey: "old-key", HTTPClient: server.Client(),
+	})
+	route := &modelrouter.ResolvedRoute{
+		Mode: modelrouter.ModeQuotaFallback, Generation: 7, Role: modelrouter.RoleWorker,
+		Provider: "cch", Model: "glm-5.3-flash", WireAPI: modelrouter.WireAPIChatCompletions,
+		ReasoningEffort: "max", BaseURL: "https://cch-jp.zenkexi.com/v1", SecretName: "cch-model-gateway", SecretKey: "api-key",
+	}
+	if _, err := r.CreateJob(context.Background(), JobRequest{TaskID: "route-task", AttemptID: "route-attempt", Route: route}); err != nil {
+		t.Fatal(err)
+	}
+	metadata := manifest["metadata"].(map[string]any)
+	labels := metadata["labels"].(map[string]any)
+	if labels["codex-route-mode"] != "quota_fallback" || labels["codex-route-generation"] != "7" || labels["codex-route-model"] != "glm-5.3-flash" || labels["codex-route-fingerprint"] == "" {
+		t.Fatalf("route labels = %v", labels)
+	}
+	spec := manifest["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+	container := spec["containers"].([]any)[0].(map[string]any)
+	envs := container["env"].([]any)
+	if !containsEnv(envs, "CODEX_MODEL", "glm-5.3-flash") || !containsEnv(envs, "CODEX_MODEL_PROFILE", "glm-5.3-flash") || !containsEnv(envs, "CODEX_WIRE_API", "chat-completions") || !containsEnv(envs, "CODEX_MODEL_REASONING_EFFORT", "max") || !containsEnv(envs, "CODEX_OPENAI_BASE_URL", "https://cch-jp.zenkexi.com/v1") {
+		t.Fatalf("route env = %v", envs)
+	}
+	secretEnv, ok := findEnv(envs, "CODEX_API_KEY")
+	if !ok || secretEnv["valueFrom"].(map[string]any)["secretKeyRef"].(map[string]any)["name"] != "cch-model-gateway" || secretEnv["valueFrom"].(map[string]any)["secretKeyRef"].(map[string]any)["key"] != "api-key" {
+		t.Fatalf("route secret env = %v", secretEnv)
+	}
+	if strings.Contains(fmt.Sprint(labels), "cch-model-gateway") || strings.Contains(fmt.Sprint(manifest), "old-secret") {
+		t.Fatalf("route metadata leaked secret reference: %v", manifest)
+	}
+	command := container["command"].([]any)[2].(string)
+	if strings.Contains(command, "codex login") || !strings.Contains(command, "/usr/local/bin/codex-agentd") {
+		t.Fatalf("GLM command = %q", command)
+	}
+}
+
+func TestKubernetesRuntimeDoesNotReuseJobWithDifferentRouteFingerprint(t *testing.T) {
+	var created bool
+	var savedLabels map[string]string
+	creates := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			if !created {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"metadata": map[string]any{"name": "job", "labels": savedLabels}})
+			return
+		}
+		creates++
+		var manifest map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&manifest); err != nil {
+			t.Fatal(err)
+		}
+		metadata := manifest["metadata"].(map[string]any)
+		labelValues := metadata["labels"].(map[string]any)
+		savedLabels = make(map[string]string, len(labelValues))
+		for key, value := range labelValues {
+			savedLabels[key] = value.(string)
+		}
+		created = true
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"metadata":{"name":"job"}}`))
+	}))
+	defer server.Close()
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "default", Token: "secret", WorkerImage: "worker:latest", ServiceAccount: "sa", HTTPClient: server.Client()})
+	first := modelrouter.ResolvedRoute{Mode: modelrouter.ModeQuotaFallback, Generation: 3, Role: modelrouter.RoleWorker, Provider: "cch", Model: "glm-5.3-flash", WireAPI: modelrouter.WireAPIChatCompletions, ReasoningEffort: "max", BaseURL: "https://cch-jp.zenkexi.com/v1", SecretName: "cch-model-gateway", SecretKey: "api-key"}
+	request := JobRequest{TaskID: "fingerprint-task", AttemptID: "fingerprint-attempt", Route: &first}
+	if _, err := r.CreateJob(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.BaseURL = "https://other-cch.example/v1"
+	request.Route = &second
+	if _, err := r.CreateJob(context.Background(), request); err == nil || !strings.Contains(err.Error(), "mismatched labels") {
+		t.Fatalf("CreateJob with a changed route returned %v; want fingerprint mismatch", err)
+	}
+	if creates != 1 {
+		t.Fatalf("Kubernetes Job create calls = %d; want 1", creates)
+	}
+	if strings.Contains(savedLabels["codex-route-fingerprint"], first.SecretName) {
+		t.Fatalf("route fingerprint label exposed secret reference: %q", savedLabels["codex-route-fingerprint"])
+	}
+}
+
+func TestKubernetesRuntimeRouteCommandUsesProviderTransport(t *testing.T) {
+	tests := []struct {
+		name  string
+		route modelrouter.ResolvedRoute
+		login bool
+	}{
+		{name: "spark responses", route: modelrouter.ResolvedRoute{Mode: modelrouter.ModeQuotaFallback, Generation: 1, Role: modelrouter.RoleOrchestrator, Provider: "cch", Model: "muse-spark-1.3-contributor", WireAPI: modelrouter.WireAPIResponses, ReasoningEffort: "xhigh"}},
+		{name: "glm chat", route: modelrouter.ResolvedRoute{Mode: modelrouter.ModeQuotaFallback, Generation: 1, Role: modelrouter.RoleWorker, Provider: "cch", Model: "glm-5.3-flash", WireAPI: modelrouter.WireAPIChatCompletions, ReasoningEffort: "max"}},
+		{name: "openai responses", route: modelrouter.ResolvedRoute{Mode: modelrouter.ModeNormal, Generation: 1, Role: modelrouter.RoleWorker, Provider: "openai", Model: "gpt-6-luna", WireAPI: modelrouter.WireAPIResponses, ReasoningEffort: "high"}, login: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			command := workerCommandForRoute(KubernetesConfig{}, &tt.route)
+			if got := strings.Contains(command, "codex login"); got != tt.login {
+				t.Fatalf("command login=%t, want %t: %q", got, tt.login, command)
+			}
+		})
+	}
+}
+
+func TestKubernetesRuntimeValidatesResolvedRouteBeforeKubernetesAPI(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "default", Token: "secret", WorkerImage: "worker:latest", ServiceAccount: "sa", HTTPClient: server.Client()})
+	route := &modelrouter.ResolvedRoute{Mode: modelrouter.ModeQuotaFallback, Generation: 0, Role: modelrouter.RoleWorker, Provider: "cch", Model: "glm-5.3-flash", WireAPI: modelrouter.WireAPIChatCompletions, ReasoningEffort: "max", BaseURL: "https://cch-jp.zenkexi.com/v1", SecretName: "cch-model-gateway", SecretKey: "api-key"}
+	if _, err := r.CreateJob(context.Background(), JobRequest{TaskID: "invalid-route-task", AttemptID: "invalid-route-attempt", Route: route}); err == nil || !strings.Contains(err.Error(), "generation") {
+		t.Fatalf("CreateJob() error = %v, want route validation error", err)
+	}
+	wrongRole := &modelrouter.ResolvedRoute{Mode: modelrouter.ModeQuotaFallback, Generation: 1, Role: modelrouter.RoleOrchestrator, Provider: "cch", Model: "muse-spark-1.3-contributor", WireAPI: modelrouter.WireAPIResponses, ReasoningEffort: "xhigh", BaseURL: "https://cch-jp.zenkexi.com/v1", SecretName: "cch-model-gateway", SecretKey: "api-key"}
+	if _, err := r.CreateJob(context.Background(), JobRequest{TaskID: "wrong-role-task", AttemptID: "wrong-role-attempt", Route: wrongRole}); err == nil || !strings.Contains(err.Error(), "worker route") {
+		t.Fatalf("CreateJob() error = %v, want worker-role validation error", err)
+	}
+	if requests != 0 {
+		t.Fatalf("Kubernetes API requests = %d, want 0", requests)
+	}
+}
+
+func TestProductionKubernetesRuntimeRejectsNilRouteBeforeKubernetesAPI(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	r := NewProductionKubernetesRuntime(KubernetesConfig{
+		BaseURL: server.URL, Namespace: "default", Token: "secret",
+		WorkerImage: "worker:latest", ServiceAccount: "sa", HTTPClient: server.Client(),
+	})
+	if _, err := r.CreateJob(context.Background(), JobRequest{TaskID: "production-nil-route-task", AttemptID: "production-nil-route-attempt"}); err == nil || !strings.Contains(err.Error(), "resolved worker route is required") {
+		t.Fatalf("CreateJob() error = %v, want required route error", err)
+	}
+	if requests != 0 {
+		t.Fatalf("Kubernetes API requests = %d, want 0", requests)
+	}
+}
+
+func TestProductionKubernetesRuntimeCreatesJobWithFrozenRoute(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"metadata":{"name":"job"}}`))
+	}))
+	defer server.Close()
+
+	r := NewProductionKubernetesRuntime(KubernetesConfig{
+		BaseURL: server.URL, Namespace: "default", Token: "secret",
+		WorkerImage: "worker:latest", ServiceAccount: "sa", HTTPClient: server.Client(),
+	})
+	route := &modelrouter.ResolvedRoute{
+		Mode: modelrouter.ModeNormal, Generation: 11, Role: modelrouter.RoleWorker,
+		Provider: "openai", Model: "gpt-6-luna", WireAPI: modelrouter.WireAPIResponses,
+		ReasoningEffort: "high", BaseURL: "https://api.openai.com/v1",
+		SecretName: "openai-model-gateway", SecretKey: "api-key",
+	}
+	job, err := r.CreateJob(context.Background(), JobRequest{
+		TaskID: "production-frozen-route-task", AttemptID: "production-frozen-route-attempt", Route: route,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.ID == "" || requests != 2 {
+		t.Fatalf("job=%+v Kubernetes API requests=%d, want non-empty job and GET+POST", job, requests)
 	}
 }
 

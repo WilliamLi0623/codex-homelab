@@ -44,6 +44,26 @@ func (c *Client) Initialize(ctx context.Context) error {
 	return nil
 }
 
+// ReadAccountRateLimits calls the read-only account quota RPC. It exposes no
+// account identifiers or provider credentials to callers.
+func (c *Client) ReadAccountRateLimits(ctx context.Context) (json.RawMessage, error) {
+	if !c.initialized {
+		return nil, fmt.Errorf("app server client is not initialized")
+	}
+	result, err := c.call(ctx, "account/rateLimits/read", map[string]any{})
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("read account rate limits failed")
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("encode account rate limits result failed")
+	}
+	return encoded, nil
+}
+
 func (c *Client) StartNewTurn(ctx context.Context, prompt string) (string, []Event, error) {
 	if err := c.Initialize(ctx); err != nil {
 		return "", nil, err

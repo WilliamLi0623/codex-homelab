@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ControllerError, createTask, getTaskEvents, listTasks } from "./controller";
+import { ControllerError, createTask, getTaskEvents, listTasks, retryTask, startTaskAttempt } from "./controller";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -29,5 +29,38 @@ describe("controller client", () => {
       errorClass: "unavailable",
       message: "The Controller is temporarily unavailable.",
     } satisfies Partial<ControllerError>);
+  });
+
+  it("submits the fixed worker model profile for new tasks", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ task: { id: "task-1" } }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createTask({ repository: "owner/repo", base_ref: "main", objective: "test", idempotency_key: "ui-1" });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({
+      repository: "owner/repo",
+      base_ref: "main",
+      objective: "test",
+      idempotency_key: "ui-1",
+      model_profile: "worker",
+    });
+  });
+
+  it("submits the fixed worker model profile for new attempts", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ task: { id: "task-1" }, attempt: { id: "attempt-1" } }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await startTaskAttempt("task-1");
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({ model_profile: "worker" });
+  });
+
+  it("submits the fixed worker model profile when retrying a task", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ task: { id: "task-1" }, attempt: { id: "attempt-2" } }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await retryTask("task-1");
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({ model_profile: "worker" });
   });
 });

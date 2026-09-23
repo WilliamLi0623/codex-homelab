@@ -8,6 +8,7 @@ import (
 
 	"github.com/WilliamLi0623/codex-homelab/internal/capacity"
 	"github.com/WilliamLi0623/codex-homelab/internal/executor/k3s"
+	"github.com/WilliamLi0623/codex-homelab/internal/modelrouter"
 	"github.com/WilliamLi0623/codex-homelab/internal/orchestrator"
 )
 
@@ -22,6 +23,7 @@ type environmentConfig struct {
 	Proxmox        capacity.ProxmoxConfig
 	Kubernetes     k3s.KubernetesConfig
 	CapacityConfig orchestrator.CapacityAdapterConfig
+	Routes         modelrouter.RouteConfig
 }
 
 func loadEnvironmentConfig() (environmentConfig, error) {
@@ -67,6 +69,10 @@ func loadEnvironmentConfig() (environmentConfig, error) {
 			return environmentConfig{}, fmt.Errorf("glm-5.3-flash requires CODEX_WIRE_API=chat-completions")
 		}
 	}
+	routes, routeErr := loadRouteConfig()
+	if routeErr != nil {
+		return environmentConfig{}, routeErr
+	}
 	queueName := strings.TrimSpace(os.Getenv("KUEUE_QUEUE_NAME"))
 	cpuRequest := strings.TrimSpace(os.Getenv("KUBERNETES_CPU_REQUEST"))
 	memoryRequest := strings.TrimSpace(os.Getenv("KUBERNETES_MEMORY_REQUEST"))
@@ -103,6 +109,7 @@ func loadEnvironmentConfig() (environmentConfig, error) {
 			TemplateVMID: templateVMID,
 			Priority:     1,
 		},
+		Routes: routes,
 	}
 	if err := config.Proxmox.ValidateConfig(); err != nil {
 		return environmentConfig{}, fmt.Errorf("invalid Proxmox configuration: %w", err)
@@ -111,6 +118,43 @@ func loadEnvironmentConfig() (environmentConfig, error) {
 		return environmentConfig{}, fmt.Errorf("invalid Kubernetes configuration: %w", err)
 	}
 	return config, nil
+}
+
+func loadRouteConfig() (modelrouter.RouteConfig, error) {
+	openAIBase := strings.TrimSpace(os.Getenv("CODEX_OPENAI_ROUTE_BASE_URL"))
+	openAISecret := strings.TrimSpace(os.Getenv("CODEX_OPENAI_ROUTE_SECRET_NAME"))
+	openAIKey := strings.TrimSpace(os.Getenv("CODEX_OPENAI_ROUTE_SECRET_KEY"))
+	cchBase := strings.TrimSpace(os.Getenv("CODEX_CCH_ROUTE_BASE_URL"))
+	cchSecret := strings.TrimSpace(os.Getenv("CODEX_CCH_ROUTE_SECRET_NAME"))
+	cchKey := strings.TrimSpace(os.Getenv("CODEX_CCH_ROUTE_SECRET_KEY"))
+	configured := openAIBase != "" || openAISecret != "" || openAIKey != "" || cchBase != "" || cchSecret != "" || cchKey != ""
+	if !configured {
+		return modelrouter.RouteConfig{}, nil
+	}
+	if openAIBase == "" {
+		openAIBase = "https://api.openai.com/v1"
+	}
+	if cchBase == "" {
+		cchBase = "https://cch-jp.zenkexi.com/v1"
+	}
+	if openAISecret == "" || openAIKey == "" || cchSecret == "" || cchKey == "" {
+		return modelrouter.RouteConfig{}, fmt.Errorf("route configuration requires OpenAI and CC Hub Kubernetes Secret references")
+	}
+	return modelrouter.RouteConfig{
+		OpenAI: modelrouter.RouteSettings{Provider: "openai", Model: "gpt-6-luna", WireAPI: modelrouter.WireAPIResponses, ReasoningEffort: "high", BaseURL: openAIBase, SecretName: openAISecret, SecretKey: openAIKey},
+		Spark:  modelrouter.RouteSettings{Provider: "cch", Model: "muse-spark-1.3-contributor", WireAPI: modelrouter.WireAPIResponses, ReasoningEffort: "xhigh", BaseURL: cchBase, SecretName: cchSecret, SecretKey: cchKey},
+		GLM:    modelrouter.RouteSettings{Provider: "cch", Model: "glm-5.3-flash", WireAPI: modelrouter.WireAPIChatCompletions, ReasoningEffort: "max", BaseURL: cchBase, SecretName: cchSecret, SecretKey: cchKey},
+	}, nil
+}
+
+// routingStateTokenFromEnvironment fails closed: an absent or short token
+// leaves the internal quota-state endpoint disabled.
+func routingStateTokenFromEnvironment() string {
+	token := strings.TrimSpace(os.Getenv("CODEX_ROUTING_STATE_TOKEN"))
+	if len(token) < 32 {
+		return ""
+	}
+	return token
 }
 
 func configuredReasoningEffort(model, profile, configured string) (string, error) {

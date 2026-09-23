@@ -17,3 +17,14 @@ func TestValidateLoopbackRejectsPublicListeners(t *testing.T) {
 		t.Fatal("localhost must not bypass literal loopback restriction")
 	}
 }
+
+func TestValidateCodingAgentUserAgent(t *testing.T) {
+	if err := validateCodingAgentUserAgent("codex_cli_rs/0.156.1 (Ubuntu 24.04; x86_64) bash/5.2"); err != nil {
+		t.Fatalf("valid coding-agent UA rejected: %v", err)
+	}
+	for _, value := range []string{"", "Go-http-client/1.1", "codex_cli_rs/0.156.1"} {
+		if err := validateCodingAgentUserAgent(value); err == nil {
+			t.Errorf("invalid UA %q accepted", value)
+		}
+	}
+}
