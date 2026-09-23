@@ -66,6 +66,44 @@ function Get-RunnerSshArguments([hashtable]$Config) {
   )
 }
 
+function Get-PublicKeyLine([string]$Path) {
+  if (!(Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "SSH public key missing: $Path"
+  }
+  $lines = @(Get-Content -LiteralPath $Path | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+  if ($lines.Count -ne 1) {
+    throw "SSH public key file must contain exactly one non-empty line: $Path"
+  }
+  $line = $lines[0]
+  if ($line -notmatch '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ssh-ed25519|sk-ecdsa-sha2-nistp256)\s+[A-Za-z0-9+/=]+(?:\s+.*)?$') {
+    throw "SSH public key is not a supported OpenSSH public-key line: $Path"
+  }
+  return $line
+}
+
+function Assert-RemotePublicKeyPath([string]$RemotePath) {
+  if ($RemotePath -notmatch '^/root/[A-Za-z0-9._-]+\.pub$') {
+    throw "Unsafe temporary public-key path: $RemotePath"
+  }
+}
+
+function New-RemotePublicKeyFile([hashtable]$Config, [string]$RemotePath) {
+  Assert-RemotePublicKeyPath $RemotePath
+  $pub = Get-PublicKeyLine $Config["ssh_public_key_file"]
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  $pub | & ssh.exe -o BatchMode=yes -o ConnectTimeout=10 $Config["proxmox_alias"] "umask 077; cat > '$RemotePath'; chown root:root '$RemotePath'; chmod 600 '$RemotePath'; test -s '$RemotePath'" 2>&1 | Out-Null
+  $code = $LASTEXITCODE
+  $ErrorActionPreference = $prevEap
+  if ($code -ne 0) { throw "failed to upload SSH public key to temporary PVE path: $RemotePath" }
+  return $pub
+}
+
+function Remove-RemotePublicKeyFile([hashtable]$Config, [string]$RemotePath) {
+  Assert-RemotePublicKeyPath $RemotePath
+  Invoke-Proxmox "rm -f -- '$RemotePath'" -AllowFailure | Out-Null
+}
+
 function Get-State {
   if(!(Test-Path $script:StatePath)) {
     return [ordered]@{
