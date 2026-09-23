@@ -1,0 +1,7 @@
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_unicode_01","function":{"name":"get_test_value","arguments":"{\"input\":\"你"}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"好 🌍\"}"}}]}}]}
+
+data: {"choices":[{"finish_reason":"tool_calls","delta":{}}]}
+
+data: [DONE]

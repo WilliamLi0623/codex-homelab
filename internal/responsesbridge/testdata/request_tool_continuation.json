@@ -1,0 +1,13 @@
+{
+  "model": "glm-5.3-flash",
+  "stream": true,
+  "instructions": "Use the available function when needed.",
+  "input": [
+    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Get the test value."}]},
+    {"type": "function_call", "call_id": "call_pwd_01", "name": "get_test_value", "arguments": "{}"},
+    {"type": "function_call_output", "call_id": "call_pwd_01", "output": "/workspace/demo"}
+  ],
+  "tools": [
+    {"type": "function", "name": "get_test_value", "description": "Returns a test value.", "parameters": {"type": "object", "properties": {}}}
+  ]
+}

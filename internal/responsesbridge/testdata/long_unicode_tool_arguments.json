@@ -1,0 +1,1 @@
+{"model":"glm-5.3-flash","input":[{"type":"function_call","call_id":"call_unicode","name":"get_test_value","arguments":"{\"input\":\"你好 🌍 — sanitized fixture\"}"}],"tools":[{"type":"function","name":"get_test_value","parameters":{"type":"object","properties":{"input":{"type":"string"}}}}]}
