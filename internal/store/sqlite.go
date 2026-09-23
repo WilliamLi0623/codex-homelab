@@ -17,11 +17,11 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
-	return OpenWithCapacityConfig(path, CapacityConfig{ReservedVMIDs: []int{3005}})
+	return OpenWithCapacityConfig(path, CapacityConfig{ReservedVMIDs: []int{3900}})
 }
 
 func OpenWithCapacityConfig(path string, config CapacityConfig) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout%3d5000")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
 	}
@@ -32,10 +32,7 @@ func OpenWithCapacityConfig(path string, config CapacityConfig) (*Store, error) 
 	}
 	store := &Store{db: db, reservedVMIDs: reserved}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("set sqlite busy timeout: %w", err)
-	}
+	db.SetMaxIdleConns(0)
 	if err := store.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err

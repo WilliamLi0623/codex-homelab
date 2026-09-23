@@ -319,8 +319,8 @@ func reconcileRelease(output io.Writer, client *http.Client, endpoint, taskID, a
 		return fmt.Errorf("--vmid, --generation, --kube-node, and --proof are required")
 	}
 	vmid, err := strconv.Atoi(values["vmid"])
-	if err != nil || vmid < 3000 || vmid > 3999 {
-		return fmt.Errorf("--vmid must be an integer in 3000-3999")
+	if err != nil || vmid < 3000 || vmid > 3899 {
+		return fmt.Errorf("--vmid must be an integer in 3000-3899")
 	}
 	path := taskPath(taskID) + "/attempts/" + url.PathEscape(attemptID) + "/release/reconcile"
 	input := map[string]any{"vmid": vmid, "generation": values["generation"], "kube_node": values["kube-node"], "proof": values["proof"]}

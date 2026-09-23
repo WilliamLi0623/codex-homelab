@@ -48,7 +48,7 @@ func setControllerEnvironment(t *testing.T) {
 	t.Setenv("PROXMOX_BASE_URL", "https://proxmox.example")
 	t.Setenv("PROXMOX_NODE", "pve-node")
 	t.Setenv("PROXMOX_TOKEN", "proxmox-token")
-	t.Setenv("PROXMOX_TEMPLATE_VMID", "3005")
+	t.Setenv("PROXMOX_TEMPLATE_VMID", "3900")
 	t.Setenv("KUBERNETES_BASE_URL", "https://kubernetes.example")
 	t.Setenv("KUBERNETES_NAMESPACE", "codex")
 	t.Setenv("KUBERNETES_TOKEN", "kubernetes-token")

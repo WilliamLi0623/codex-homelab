@@ -4,7 +4,7 @@ V3 is staged so that dynamic capacity is proven before it becomes the default. T
 
 1. Freeze V2, inventory live state, preserve Git, and publish the V3 source.
 2. Implement and test Controller, codex-agentd, model discovery, and provider compatibility without enabling an unverified model.
-3. Create unprivileged LXC220 and prove K3s-agent compatibility in at least three disposable lifecycle cycles. Stop migration if privileges, host mounts, Docker sockets, host keys, or unsafe devices are required.
+3. Create privileged LXC220 and prove K3s-agent compatibility in at least three disposable lifecycle cycles. The explicit `/dev/kmsg` device and K3s containerd `disable_apparmor` drop-in are allowed; other host mounts, Docker sockets, host keys, or unsafe devices remain forbidden.
 4. Build the secret-free template, narrow runtime Proxmox identity, and K3s executor. Demonstrate dedicated-LXC commit and publication flows.
 5. Add Kueue only after plain K3s succeeds. Complete failover, recovery, security, and release CI gates before destructive reconciliation.
 
@@ -45,6 +45,13 @@ go build -trimpath -ldflags "-s -w" -o codex-agentd ./cmd/agentd
 The Proxmox template gate remains open until the template contains both this
 entrypoint and the pinned Codex CLI/runtime. No model key or `CODEX_HOME`
 contents belong in the template.
+
+Worker-template migration targets are LXC3900–3902. LXC3004, LXC3005,
+LXC3013, and LXC3090 remain preserved as legacy/rollback resources until the
+3900–3902 migration is explicitly verified; they are not deletion targets.
+All Codex LXCs, including these legacy rollback resources, are now privileged;
+only 3900–3902 are approved as new dynamic-worker templates. Dynamic worker
+system roots remain on `local` SSD storage and use DHCP.
 
 ## Live storage and P22–P25 checkpoint
 

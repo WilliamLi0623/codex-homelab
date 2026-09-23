@@ -2,7 +2,7 @@
 param(
   [switch]$Apply,
   [string]$ProxmoxHost = "100.64.2.121",
-  [int]$TemplateVMID = 3005,
+  [int]$TemplateVMID = 3900,
   [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path,
   [string]$GoExe = "go"
 )

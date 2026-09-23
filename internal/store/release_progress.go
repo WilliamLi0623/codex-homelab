@@ -142,7 +142,7 @@ func (s *Store) ReconcileReleaseProgress(ctx context.Context, request ReleasePro
 }
 
 func validateReleaseProgressRequest(request ReleaseProgressRequest) error {
-	if request.TaskID == "" || request.AttemptID == "" || request.Generation == "" || request.KubeNode == "" || request.VMID < 3000 || request.VMID > 3999 {
+	if request.TaskID == "" || request.AttemptID == "" || request.Generation == "" || request.KubeNode == "" || request.VMID < 3000 || request.VMID > 3899 {
 		return ErrReleaseProgressInvalid
 	}
 	return nil
@@ -151,7 +151,7 @@ func validReleaseState(state string) bool {
 	return state == ReleaseStatePending || state == ReleaseStateRunning || state == ReleaseStateUnknown || state == ReleaseStateCompleted
 }
 func validateStoredReleaseProgress(progress ReleaseProgress) error {
-	if progress.ID == "" || progress.TaskID == "" || progress.AttemptID == "" || progress.VMID < 3000 || progress.VMID > 3999 || progress.Generation == "" || progress.KubeNode == "" || !validReleaseState(progress.State) {
+	if progress.ID == "" || progress.TaskID == "" || progress.AttemptID == "" || progress.VMID < 3000 || progress.VMID > 3899 || progress.Generation == "" || progress.KubeNode == "" || !validReleaseState(progress.State) {
 		return ErrReleaseProgressInvalid
 	}
 	if _, ok := releaseStepOrder[progress.Step]; !ok || progress.UpdatedAt == "" {

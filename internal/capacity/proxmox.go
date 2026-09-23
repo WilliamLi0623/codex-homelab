@@ -18,6 +18,11 @@ var (
 	ErrRejected      = errors.New("proxmox operation rejected")
 )
 
+const (
+	TemplateVMIDMin = 3900
+	TemplateVMIDMax = 3902
+)
+
 type ProxmoxConfig struct {
 	BaseURL string
 	Node    string
@@ -50,8 +55,8 @@ func (config ProxmoxConfig) ValidateConfig() error {
 	if strings.TrimSpace(config.Token) == "" {
 		return errors.New("proxmox token must not be empty")
 	}
-	if config.Range.Min > config.Range.Max || config.Range.Min > 3000 || config.Range.Max < 3999 {
-		return errors.New("proxmox dynamic VMID range must be valid and cover 3000-3999")
+	if config.Range.Min > config.Range.Max || config.Range.Min > 3000 || config.Range.Max < 3899 {
+		return errors.New("proxmox dynamic VMID range must be valid and cover 3000-3899")
 	}
 	return nil
 }
@@ -128,7 +133,8 @@ func (r *ProxmoxRuntime) Create(ctx context.Context, request CreateRequest) (Nod
 	if err := r.validate(request.VMID); err != nil {
 		return Node{}, err
 	}
-	if err := r.validate(request.TemplateVMID); err != nil {
+	if request.TemplateVMID < TemplateVMIDMin || request.TemplateVMID > TemplateVMIDMax {
+		err := fmt.Errorf("%w: %d not in %d-%d", ErrVMIDOutsideRange, request.TemplateVMID, TemplateVMIDMin, TemplateVMIDMax)
 		return Node{}, fmt.Errorf("template vmid: %w", err)
 	}
 	form := url.Values{

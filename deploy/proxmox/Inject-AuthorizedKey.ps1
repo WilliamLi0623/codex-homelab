@@ -35,7 +35,8 @@ function Invoke-Pve([string]$Command, [switch]$AllowFailure) {
 }
 
 function Invoke-PveGuestScript([int]$Id, [string]$Script) {
-  $out = $Script | & ssh.exe -o BatchMode=yes -o ConnectTimeout=10 $ProxmoxAlias "qm guest exec $Id --synchronous 1 --pass-stdin 1 -- bash -s" 2>&1
+  $normalizedScript = $Script -replace "`r`n", "`n"
+  $out = $normalizedScript | & ssh.exe -o BatchMode=yes -o ConnectTimeout=10 $ProxmoxAlias "qm guest exec $Id --synchronous 1 --pass-stdin 1 -- bash -s" 2>&1
   $code = $LASTEXITCODE
   if ($code -ne 0) { throw "QEMU Guest Agent command failed for VM $Id ($code): $($out -join ' ')" }
   return ,$out
@@ -67,6 +68,56 @@ function Backup-VmConfig([int]$Id) {
   Invoke-Pve "printf %s '$encoded' | base64 -d > '$BackupRoot/vm-$Id.conf'; chmod 600 '$BackupRoot/vm-$Id.conf'" | Out-Null
 }
 
+function Invoke-LxcRawTemplateInjection([int]$Id, [string]$Stamp) {
+  Backup-LxcConfig $Id
+  $remote = @'
+set -eu
+id=__ID__
+image=$(pvesm path "$(pct config "$id" | sed -n 's/^rootfs: \([^,]*\).*/\1/p')")
+mnt=/mnt/codex-key-$id-__STAMP__
+dev=
+original_mode=$(stat -c '%a' "$image")
+immutable=0
+cleanup() {
+  umount "$mnt" 2>/dev/null || true
+  if [ -n "${dev:-}" ]; then qemu-nbd --disconnect "$dev" >/dev/null 2>&1 || true; fi
+  chmod "$original_mode" "$image" 2>/dev/null || true
+  if [ "$immutable" -eq 1 ]; then chattr +i "$image" 2>/dev/null || true; fi
+  rmdir "$mnt" 2>/dev/null || true
+}
+trap cleanup EXIT
+test -f "$image"
+if lsattr -d "$image" | awk '{print $1}' | grep -q 'i'; then chattr -i "$image"; immutable=1; fi
+chmod u+w "$image"
+mkdir -p "$mnt"
+for candidate in /dev/nbd0 /dev/nbd1 /dev/nbd2 /dev/nbd3 /dev/nbd4 /dev/nbd5 /dev/nbd6 /dev/nbd7 /dev/nbd8 /dev/nbd9 /dev/nbd10 /dev/nbd11 /dev/nbd12 /dev/nbd13 /dev/nbd14 /dev/nbd15; do
+  if qemu-nbd --read-write --format=raw --connect="$candidate" "$image" 2>/dev/null; then dev="$candidate"; break; fi
+done
+test -n "$dev"
+mount "$dev" "$mnt"
+auth="$mnt/root/.ssh/authorized_keys"
+backup="__BACKUP_ROOT__/lxc-$id-authorized_keys.pre-codex-key"
+missing="__BACKUP_ROOT__/lxc-$id-authorized_keys.missing-pre-codex-key"
+install -d -m 700 "$mnt/root/.ssh"
+if [ -e "$auth" ]; then cp -p "$auth" "$backup"; else : > "$missing"; fi
+touch "$auth"
+key_value=$(tr -d '\r\n' < "__REMOTE_KEY__")
+if ! grep -Fqx "$key_value" "$auth"; then printf '%s\n' "$key_value" >> "$auth"; fi
+chmod 600 "$auth"
+count=$(grep -Fxc "$key_value" "$auth")
+key_hash=$(printf '%s' "$key_value" | sha256sum | awk '{print $1}')
+mode=$(stat -c '%a' "$auth")
+test "$count" -eq 1
+printf 'KEY_HASH=%s COUNT=%s MODE=%s\n' "$key_hash" "$count" "$mode"
+'@
+  $remote = $remote.Replace("__ID__", $Id).Replace("__STAMP__", $Stamp).Replace("__BACKUP_ROOT__", $BackupRoot).Replace("__REMOTE_KEY__", $script:RemotePublicKeyPath)
+  $encoded = ConvertTo-Base64String $remote
+  $out = Invoke-Pve "printf %s $encoded | base64 -d | bash"
+  $text = $out -join "`n"
+  if ($text -notmatch 'KEY_HASH=[0-9a-f]{64} COUNT=1 MODE=600') { throw "LXC template $Id verification failed: $text" }
+  Write-Output (($text | Select-String -Pattern 'KEY_HASH=.*').ToString().Trim())
+}
+
 function Invoke-LxcInjection([int]$Id, [string]$Stamp) {
   Assert-GuestId $Id
   $status = Get-LxcStatus $Id
@@ -74,17 +125,17 @@ function Invoke-LxcInjection([int]$Id, [string]$Stamp) {
     Write-Output "WHATIF LXC $Id status=$status target=/root/.ssh/authorized_keys"
     return
   }
+  if ($status -eq "stopped" -and (Test-LxcTemplate $Id)) {
+    if (!$StartStopped) { throw "LXC template $Id is stopped; pass -StartStopped to modify it" }
+    Invoke-LxcRawTemplateInjection $Id $Stamp
+    return
+  }
   Backup-LxcConfig $Id
   $startedByUs = $false
-  $templateCleared = $false
   $keyPath = "/root/.ssh/.codex-homelab-key-$Stamp"
   try {
     if ($status -eq "stopped") {
       if (!$StartStopped) { throw "LXC $Id is stopped; pass -StartStopped to modify it" }
-      if (Test-LxcTemplate $Id) {
-        Invoke-Pve "pct set $Id --template 0" | Out-Null
-        $templateCleared = $true
-      }
       Invoke-Pve "pct start $Id" | Out-Null
       $startedByUs = $true
       Start-Sleep -Seconds 3
@@ -117,7 +168,6 @@ printf 'KEY_HASH=%s COUNT=%s MODE=%s\n' "$key_hash" "$count" "$mode"
     Write-Output (($text | Select-String -Pattern 'KEY_HASH=.*').ToString().Trim())
   } finally {
     if ($startedByUs) { Invoke-Pve "pct stop $Id" -AllowFailure | Out-Null }
-    if ($templateCleared) { Invoke-Pve "pct set $Id --template 1" -AllowFailure | Out-Null }
   }
 }
 

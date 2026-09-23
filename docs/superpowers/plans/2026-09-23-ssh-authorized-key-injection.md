@@ -22,8 +22,10 @@ Go/PowerShell repository tests and live PVE verification.
 - The private key never leaves Windows and never enters Git, Proxmox, a guest, a log, or a fixture.
 - Existing `authorized_keys` content is preserved byte-for-byte except for one missing public-key line.
 - Each guest's existing authorized-key file is backed up before modification.
-- The controller's dynamic VMID, lifecycle, and provider routing code remain unchanged.
-- Existing templates, protected LXC100/LXC200, and current worker lifecycle are not destroyed or recreated.
+- The controller's task/lifecycle/provider routing semantics remain unchanged;
+  only the dynamic VMID boundary and template selection are updated.
+- Protected LXC100/LXC200 are not recreated. Legacy worker resources are
+  preserved as privileged rollback guests with pre-migration vzdump backups.
 
 ### Task 1: Canonical key helper and bootstrap paths
 
@@ -34,17 +36,17 @@ Go/PowerShell repository tests and live PVE verification.
 - Create: `deploy/proxmox/Inject-AuthorizedKey.ps1`
 - Test: PowerShell syntax and dry-run output for the helper
 
-- [ ] Add a helper that reads and validates one OpenSSH public-key line, uploads
+- [x] Add a helper that reads and validates one OpenSSH public-key line, uploads
   only that line to a temporary root-owned PVE path, and removes the temporary
   file in a `finally` block.
-- [ ] Add `--ssh-public-keys <temporary-pve-file>` to the control LXC create
+- [x] Add `--ssh-public-keys <temporary-pve-file>` to the control LXC create
   command and keep VM creation on `qm set --sshkeys`.
-- [ ] Make the reusable injection script append the key exactly once to the
+- [x] Make the reusable injection script append the key exactly once to the
   selected LXC root authorized-keys file while preserving old content.
-- [ ] Add `-WhatIf`/dry-run support so target selection can be verified without
+- [x] Add `-WhatIf`/dry-run support so target selection can be verified without
   guest mutation.
-- [ ] Run PowerShell parse checks and dry-run checks before live mutation.
-- [ ] Commit the source-only bootstrap change.
+- [x] Run PowerShell parse checks and dry-run checks before live mutation.
+- [x] Commit the source-only bootstrap change.
 
 ### Task 2: Existing guest injection
 
@@ -52,12 +54,13 @@ Go/PowerShell repository tests and live PVE verification.
 - Use: `deploy/proxmox/Inject-AuthorizedKey.ps1`
 - Modify: `docs/migration/p27-dual-interface-2026-09-22.md`
 
-- [ ] Back up PVE guest configuration and each existing guest authorized-key
+- [x] Back up PVE guest configuration and each existing guest authorized-key
   file before modification.
-- [ ] Inject into LXC100, 200, 210, 220, 3004, 3005, 3006, 3013, and 3090.
-- [ ] Inject into VM101's `webcodex` authorized-key file through QEMU Guest
-  Agent, without printing file content.
-- [ ] Verify exact key hash, one occurrence, file mode, and preserved backups.
+- [x] Inject into LXC100, 200, 210, 220, 3004, 3005, 3006, 3013, and 3090.
+- [x] Inject into VM101's verified `codex` authorized-key file through QEMU
+  Guest Agent, without printing file content; future bootstrap remains
+  explicitly configured for `webcodex`.
+- [x] Verify exact key hash, one occurrence, file mode, and preserved backups.
 - [ ] Record the target list, backup locations, and verification hashes without
   recording the key itself.
 
@@ -66,7 +69,8 @@ Go/PowerShell repository tests and live PVE verification.
 **Files:**
 - Modify: `docs/migration/p27-dual-interface-2026-09-22.md`
 
-- [ ] Verify the active template 3090 contains the canonical key before clone.
+- [x] Verify the active templates 3900–3902 contain the canonical key,
+  privileged configuration, DHCP, `/dev/kmsg`, and the K3s containerd drop-in.
 - [ ] Create one disposable dynamic worker through the existing Controller
   allocation path, verify its inherited authorized-key hash, and release it
   through the normal lifecycle.

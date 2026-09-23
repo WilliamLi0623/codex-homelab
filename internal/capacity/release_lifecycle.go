@@ -48,7 +48,7 @@ func ReleaseWorker(ctx context.Context, node Node, operations WorkerReleaseOpera
 // step. An UNKNOWN step must be explicitly reconciled by the caller before it
 // is passed here; this function never infers external progress.
 func ReleaseWorkerFromStep(ctx context.Context, node Node, operations WorkerReleaseOperations, start ReleaseStep, checkpoint ReleaseCheckpoint) error {
-	if operations == nil || node.VMID < 3000 || node.VMID > 3999 || node.Generation == "" || node.TaskID == "" || node.KubeNode == "" || node.State == NodeUnknown {
+	if operations == nil || node.VMID < 3000 || node.VMID > 3899 || node.Generation == "" || node.TaskID == "" || node.KubeNode == "" || node.State == NodeUnknown {
 		return ErrReleaseInvalid
 	}
 	steps := []struct {

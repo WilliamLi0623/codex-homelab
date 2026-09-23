@@ -71,10 +71,9 @@ still intentionally open.
 - no live side-effecting MCP dispatch or continuation was issued during the
   deployment smoke test;
 - no external HTTPS/Tailscale static UI proxy has been configured;
-- a full Go run still has the pre-existing intermittent Windows/SQLite
-  `TempDir RemoveAll` failure in
-  `TestNewHandlerFromEnvironmentServesReadyWithCompleteConfig`; all affected
-  feature packages and the frontend tests/build pass.
+- a previous full Go run had an intermittent Windows/SQLite `TempDir RemoveAll`
+  failure in `TestNewHandlerFromEnvironmentServesReadyWithCompleteConfig`;
+  the connection-lifecycle fix now makes the repeated test stable.
 
 These are explicit remaining gates, not claims of completed ChatGPT or
 production coding-task E2E.
@@ -162,11 +161,11 @@ normal release path. The earlier failed probe remains evidence of the clone
 and no-change failure path; its disposable LXC was not destroyed in this
 checkpoint.
 
-The relevant internal packages and command packages pass. The known Windows
-SQLite `TempDir RemoveAll` cleanup race still reproduces in
-`cmd/controller/TestNewHandlerFromEnvironmentServesReadyWithCompleteConfig`;
-it does not reproduce in the Linux live path and is not treated as a new
-Controller regression.
+The relevant internal packages and command packages pass. The Windows SQLite
+`TempDir RemoveAll` cleanup race in
+`cmd/controller/TestNewHandlerFromEnvironmentServesReadyWithCompleteConfig`
+was fixed by applying the busy timeout per connection and closing idle
+connections; the test passes in a 20-run repetition.
 
 ## 2026-09-22 persistent worker-image bootstrap
 
@@ -179,9 +178,13 @@ Node was removed, and VMID 3090 was converted to the preserved template
 The Controller environment was backed up and switched to:
 
 ```text
-PROXMOX_TEMPLATE_VMID=3090
+PROXMOX_TEMPLATE_VMID=3900
 KUBERNETES_WORKER_IMAGE=localhost/codex-worker:agentd-glm-chat-p27-repo-normalize-0296fb99
 ```
+
+Templates 3004, 3005, 3013, and 3090 are privileged legacy/rollback resources.
+The replacement worker-template migration targets are LXC3900–3902. None of
+these legacy resources are deletion targets as part of this synchronization.
 
 The new template was added to the existing `codex-workers` pool and received
 the same narrow `CodexWorkerController` token ACL as the old template. A

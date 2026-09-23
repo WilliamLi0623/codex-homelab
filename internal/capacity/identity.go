@@ -16,7 +16,7 @@ var identityPart = regexp.MustCompile(`[^a-z0-9-]+`)
 // to 63 characters; the generation remains persisted separately for exact
 // ownership checks.
 func DynamicHostname(vmid int, generation string) (string, error) {
-	if vmid < 3000 || vmid > 3999 || strings.TrimSpace(generation) == "" {
+	if vmid < 3000 || vmid > 3899 || strings.TrimSpace(generation) == "" {
 		return "", ErrIdentityInvalid
 	}
 	part := strings.ToLower(identityPart.ReplaceAllString(generation, "-"))

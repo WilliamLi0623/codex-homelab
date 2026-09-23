@@ -42,7 +42,7 @@ func (f *fakeRuntime) Destroy(_ context.Context, vmid int) error {
 }
 
 func newTestManager(runtime Runtime) *Manager {
-	return NewManager(runtime, VMIDRange{Min: 3000, Max: 3999})
+	return NewManager(runtime, VMIDRange{Min: 3000, Max: 3899})
 }
 
 func TestManagerRejectsProtectedVMIDBeforeRuntimeMutation(t *testing.T) {

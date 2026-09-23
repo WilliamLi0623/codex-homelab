@@ -70,6 +70,9 @@ func (l *ObservationLoop) Run(ctx context.Context, interval time.Duration) error
 		return errors.New("observation interval must be positive")
 	}
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if _, err := l.RunOnce(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}

@@ -39,8 +39,8 @@ func TestClaimCapacitySkipsReservedVMIDAndChoosesLowestFree(t *testing.T) {
 	if claim.VMID != 3001 {
 		t.Fatalf("second VMID = %d, want 3001", claim.VMID)
 	}
-	if claim.VMID == 3005 {
-		t.Fatal("reserved template VMID 3005 was allocated")
+	if claim.VMID == 3900 {
+		t.Fatal("reserved template VMID 3900 was allocated")
 	}
 }
 
@@ -171,7 +171,7 @@ func TestClaimCapacityFailsClosedForInvalidInput(t *testing.T) {
 	for _, request := range []CapacityClaimRequest{
 		{TaskID: "task", AttemptID: "attempt", Generation: "gen", Priority: 0},
 		{TaskID: "task", AttemptID: "attempt", Generation: "gen", Priority: 1, VMID: 2999},
-		{TaskID: "task", AttemptID: "attempt", Generation: "gen", Priority: 1, VMID: 3005},
+		{TaskID: "task", AttemptID: "attempt", Generation: "gen", Priority: 1, VMID: 3900},
 	} {
 		if _, _, err := s.ClaimCapacity(context.Background(), request); !errors.Is(err, ErrCapacityClaimInvalid) {
 			t.Fatalf("request %+v error = %v, want ErrCapacityClaimInvalid", request, err)
@@ -190,15 +190,15 @@ func TestCustomReservedVMIDsAlwaysIncludeTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if claim.VMID != 3001 {
-		t.Fatalf("VMID = %d, want 3001 with 3000 and template 3005 reserved", claim.VMID)
+		t.Fatalf("VMID = %d, want 3001 with 3000 and template 3900 reserved", claim.VMID)
 	}
 	for i := 0; i < 3; i++ {
 		claim, _, err = s.ClaimCapacity(context.Background(), capacityRequest("task-"+itoa(i), "attempt", "gen-"+itoa(i), 1))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if claim.VMID == 3005 {
-			t.Fatal("custom reserved set allowed template VMID 3005")
+		if claim.VMID == 3900 {
+			t.Fatal("custom reserved set allowed template VMID 3900")
 		}
 	}
 }

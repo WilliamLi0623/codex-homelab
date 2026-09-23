@@ -322,7 +322,7 @@ func (s *Server) reconcileRelease(writer http.ResponseWriter, request *http.Requ
 	var input reconcileReleaseRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 1<<20))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil || input.VMID < 3000 || input.VMID > 3999 || strings.TrimSpace(input.Generation) == "" || strings.TrimSpace(input.KubeNode) == "" || strings.TrimSpace(input.Proof) == "" || len(input.Proof) > 2048 {
+	if err := decoder.Decode(&input); err != nil || input.VMID < 3000 || input.VMID > 3899 || strings.TrimSpace(input.Generation) == "" || strings.TrimSpace(input.KubeNode) == "" || strings.TrimSpace(input.Proof) == "" || len(input.Proof) > 2048 {
 		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "vmid, generation, kube_node, and proof are required and valid"})
 		return
 	}

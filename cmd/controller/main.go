@@ -38,9 +38,10 @@ func newHandler(databasePath string) (http.Handler, func(), error) {
 }
 
 func newHandlerFromEnvironment(databasePath string) (http.Handler, func(), error) {
-	// 3004/3005/3013 are template containers and 3006 is the dedicated
-	// P13 probe worker; never allocate any of them dynamically.
-	database, err := store.OpenWithCapacityConfig(databasePath, store.CapacityConfig{ReservedVMIDs: []int{3004, 3005, 3006, 3013}})
+	// 3900-3902 are privileged template containers. The legacy template IDs
+	// remain reserved during migration, and 3006 is the dedicated P13 worker;
+	// none of them may be allocated dynamically.
+	database, err := store.OpenWithCapacityConfig(databasePath, store.CapacityConfig{ReservedVMIDs: []int{3004, 3005, 3006, 3013, 3090, 3900, 3901, 3902}})
 	if err != nil {
 		return nil, nil, fmt.Errorf("open controller store: %w", err)
 	}

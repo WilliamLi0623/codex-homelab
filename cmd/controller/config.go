@@ -12,8 +12,10 @@ import (
 )
 
 const (
-	controllerVMIDMin = 3000
-	controllerVMIDMax = 3999
+	controllerVMIDMin         = 3000
+	controllerVMIDMax         = 3899
+	controllerTemplateVMIDMin = 3900
+	controllerTemplateVMIDMax = 3902
 )
 
 type environmentConfig struct {
@@ -42,8 +44,8 @@ func loadEnvironmentConfig() (environmentConfig, error) {
 	}
 
 	templateVMID, err := strconv.Atoi(values["PROXMOX_TEMPLATE_VMID"])
-	if err != nil || templateVMID < controllerVMIDMin || templateVMID > controllerVMIDMax {
-		return environmentConfig{}, fmt.Errorf("PROXMOX_TEMPLATE_VMID must be an integer in %d-%d", controllerVMIDMin, controllerVMIDMax)
+	if err != nil || templateVMID < controllerTemplateVMIDMin || templateVMID > controllerTemplateVMIDMax {
+		return environmentConfig{}, fmt.Errorf("PROXMOX_TEMPLATE_VMID must be an integer in %d-%d", controllerTemplateVMIDMin, controllerTemplateVMIDMax)
 	}
 	model := strings.TrimSpace(os.Getenv("CODEX_MODEL"))
 	modelProfile := strings.TrimSpace(os.Getenv("CODEX_MODEL_PROFILE"))

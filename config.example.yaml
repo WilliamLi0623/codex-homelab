@@ -13,7 +13,7 @@ proxmox:
   api_url: https://PROXMOX_HOST:8006/api2/json
   pool: codex-workers
   runtime_identity: codex-homelab-runtime
-  dynamic_vmid_range: 3000-3999
+  dynamic_vmid_range: 3000-3899
   system_storage: local
   data_storage: pool
   bridge: vmbr0

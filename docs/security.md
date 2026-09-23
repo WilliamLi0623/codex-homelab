@@ -1,7 +1,7 @@
 # V3 security model
 
 The controller runtime uses a narrow Proxmox identity limited to dynamic VMIDs
-3000–3999. It cannot modify protected LXCs, persistent guests, host network,
+3000–3899. It cannot modify protected LXCs, persistent guests, host network,
 or host storage. Static migration uses separately protected administration
 credentials.
 

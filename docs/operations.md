@@ -79,7 +79,7 @@ The dispatch path is:
 
 ```text
 Controller
-  -> Proxmox clone/start in VMID 3000-3999
+  -> Proxmox clone/start in VMID 3000-3899
   -> K3s node and isolated Job
   -> codex-agentd/Codex
   -> validation and local commit

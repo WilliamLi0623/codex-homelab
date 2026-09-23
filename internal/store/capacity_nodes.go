@@ -46,12 +46,21 @@ type CapacityClaim struct {
 
 const maxCapacityClaimRetries = 8
 
+const (
+	dynamicVMIDMin  = 3000
+	dynamicVMIDMax  = 3899
+	templateVMIDMin = 3900
+	templateVMIDMax = 3902
+)
+
 func normalizeReservedVMIDs(values []int) (map[int]struct{}, error) {
 	reserved := make(map[int]struct{}, len(values)+1)
-	reserved[3005] = struct{}{}
+	for vmid := templateVMIDMin; vmid <= templateVMIDMax; vmid++ {
+		reserved[vmid] = struct{}{}
+	}
 	for _, vmid := range values {
-		if vmid < 3000 || vmid > 3999 {
-			return nil, fmt.Errorf("%w: reserved VMID %d is outside 3000-3999", ErrCapacityClaimInvalid, vmid)
+		if vmid < dynamicVMIDMin || vmid > templateVMIDMax {
+			return nil, fmt.Errorf("%w: reserved VMID %d is outside %d-%d", ErrCapacityClaimInvalid, vmid, dynamicVMIDMin, templateVMIDMax)
 		}
 		reserved[vmid] = struct{}{}
 	}
@@ -149,7 +158,7 @@ func (s *Store) validateCapacityRequest(request CapacityClaimRequest) error {
 	if request.TaskID == "" || request.AttemptID == "" || request.Generation == "" || request.Priority <= 0 {
 		return ErrCapacityClaimInvalid
 	}
-	if request.VMID != 0 && (request.VMID < 3000 || request.VMID > 3999) {
+	if request.VMID != 0 && (request.VMID < dynamicVMIDMin || request.VMID > dynamicVMIDMax) {
 		return ErrCapacityClaimInvalid
 	}
 	if _, reserved := s.reservedVMIDs[request.VMID]; request.VMID != 0 && reserved {
@@ -170,7 +179,7 @@ func (s *Store) nextCapacityVMID(ctx context.Context, tx *sql.Tx, requested int,
 		}
 		return requested, nil
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT vmid FROM capacity_nodes WHERE vmid BETWEEN 3000 AND 3999")
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf("SELECT vmid FROM capacity_nodes WHERE vmid BETWEEN %d AND %d", dynamicVMIDMin, dynamicVMIDMax))
 	if err != nil {
 		return 0, fmt.Errorf("list capacity VMIDs: %w", err)
 	}
@@ -186,7 +195,7 @@ func (s *Store) nextCapacityVMID(ctx context.Context, tx *sql.Tx, requested int,
 	if err := rows.Err(); err != nil {
 		return 0, fmt.Errorf("read capacity VMIDs: %w", err)
 	}
-	for vmid := 3000; vmid <= 3999; vmid++ {
+	for vmid := dynamicVMIDMin; vmid <= dynamicVMIDMax; vmid++ {
 		if _, reserved := s.reservedVMIDs[vmid]; reserved {
 			continue
 		}
@@ -204,7 +213,7 @@ func (s *Store) nextCapacityVMID(ctx context.Context, tx *sql.Tx, requested int,
 // mutation. The exact state predicate prevents deleting a claim after another
 // goroutine has advanced it to CREATING or UNKNOWN.
 func (s *Store) DeleteCapacityClaimIfState(ctx context.Context, taskID, attemptID string, vmid int, state string) error {
-	if taskID == "" || attemptID == "" || vmid < 3000 || vmid > 3999 || state != CapacityClaimed && state != CapacityCreating {
+	if taskID == "" || attemptID == "" || vmid < dynamicVMIDMin || vmid > dynamicVMIDMax || state != CapacityClaimed && state != CapacityCreating {
 		return ErrCapacityClaimInvalid
 	}
 	s.capacityMu.Lock()
@@ -262,7 +271,7 @@ func (s *Store) UpdateCapacityClaimState(ctx context.Context, taskID, attemptID,
 }
 
 func (s *Store) validateStoredCapacityClaim(claim CapacityClaim) error {
-	if claim.ID == "" || claim.TaskID == "" || claim.AttemptID == "" || claim.Generation == "" || claim.Priority <= 0 || claim.VMID < 3000 || claim.VMID > 3999 || claim.CreatedAt == "" {
+	if claim.ID == "" || claim.TaskID == "" || claim.AttemptID == "" || claim.Generation == "" || claim.Priority <= 0 || claim.VMID < dynamicVMIDMin || claim.VMID > dynamicVMIDMax || claim.CreatedAt == "" {
 		return ErrCapacityClaimInvalid
 	}
 	if claim.State != CapacityClaimed && claim.State != CapacityCreating && claim.State != CapacityUnknown {

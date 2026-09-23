@@ -90,7 +90,7 @@ func TestCapacityAdapterRecordsUnknownAndDoesNotReplayCreateOrRelease(t *testing
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	runtime := &adapterRuntime{createErr: capacity.ErrUnknown}
-	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3999}), 3005)
+	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3899}), 3900)
 	req := CapacityClaimRequest{TaskID: "task", AttemptID: "attempt", Generation: "caller-gen", Priority: 10}
 	claim, err := adapter.Claim(context.Background(), req)
 	if !errors.Is(err, capacity.ErrUnknown) || claim.State != string(capacity.NodeUnknown) {
@@ -117,7 +117,7 @@ func TestCapacityAdapterSkipsExternallyOccupiedVMID(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	runtime := &adapterRuntime{occupied: map[int]bool{3000: true}}
-	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3999}), 3005)
+	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3899}), 3900)
 	claim, err := adapter.Claim(context.Background(), CapacityClaimRequest{TaskID: "task", AttemptID: "attempt", Generation: "gen", Priority: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +134,7 @@ func TestCapacityAdapterRetriesDeterministicVMIDCollision(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	runtime := &adapterRuntime{createErrs: []error{capacity.ErrVMIDOccupied, nil}}
-	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3999}), 3005)
+	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3899}), 3900)
 	claim, err := adapter.Claim(context.Background(), CapacityClaimRequest{TaskID: "task", AttemptID: "attempt", Generation: "gen", Priority: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -151,7 +151,7 @@ func TestCapacityAdapterRemovesRejectedCreateClaimSoRetryCanProceed(t *testing.T
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	runtime := &adapterRuntime{createErrs: []error{capacity.ErrRejected, nil}}
-	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3999}), 3005)
+	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3899}), 3900)
 	req := CapacityClaimRequest{TaskID: "task", AttemptID: "attempt", Generation: "gen", Priority: 10}
 	claim, err := adapter.Claim(context.Background(), req)
 	if !errors.Is(err, capacity.ErrRejected) || claim.VMID != 3000 {
@@ -176,7 +176,7 @@ func TestCapacityAdapterSameAttemptIsIdempotentAndDoesNotCreateTwice(t *testing.
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	runtime := &adapterRuntime{}
-	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3999}), 3005)
+	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3899}), 3900)
 	req := CapacityClaimRequest{TaskID: "task", AttemptID: "attempt", Generation: "caller-gen", Priority: 10}
 	first, err := adapter.Claim(context.Background(), req)
 	if err != nil {
@@ -201,7 +201,7 @@ func TestCapacityAdapterReleaseFailsClosedBeforeFullLifecycle(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	runtime := &adapterRuntime{}
-	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3999}), 3005)
+	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3899}), 3900)
 	claim, err := adapter.Claim(context.Background(), CapacityClaimRequest{TaskID: "task", AttemptID: "attempt", Generation: "gen", Priority: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -222,7 +222,7 @@ func TestCapacityAdapterReleasePersistsOrderAndIsIdempotent(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	runtime := &adapterRuntime{}
 	operations := &adapterReleaseOps{}
-	adapter := NewCapacityAdapterWithConfig(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3999}), CapacityAdapterConfig{TemplateVMID: 3005, Priority: 1, Hostname: "codex-3010-gen-1", ReleaseOperations: operations})
+	adapter := NewCapacityAdapterWithConfig(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3899}), CapacityAdapterConfig{TemplateVMID: 3900, Priority: 1, Hostname: "codex-3010-gen-1", ReleaseOperations: operations})
 	claim, err := adapter.Create(context.Background(), ClaimRequest{TaskID: "task", AttemptID: "attempt"})
 	if err != nil {
 		t.Fatal(err)
@@ -261,7 +261,7 @@ func TestCapacityAdapterRequiresExplicitReconcileAfterUnknown(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	runtime := &adapterRuntime{}
 	operations := &adapterReleaseOps{fail: "stop", err: capacity.ErrUnknown}
-	adapter := NewCapacityAdapterWithConfig(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3999}), CapacityAdapterConfig{TemplateVMID: 3005, Priority: 1, Hostname: "codex-3010-gen-1", ReleaseOperations: operations})
+	adapter := NewCapacityAdapterWithConfig(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3899}), CapacityAdapterConfig{TemplateVMID: 3900, Priority: 1, Hostname: "codex-3010-gen-1", ReleaseOperations: operations})
 	claim, err := adapter.Create(context.Background(), ClaimRequest{TaskID: "task", AttemptID: "attempt"})
 	if err != nil {
 		t.Fatal(err)
@@ -295,7 +295,7 @@ func TestCapacityAdapterImplementsCapacityWithDeterministicGeneration(t *testing
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	runtime := &adapterRuntime{}
-	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3999}), 3005)
+	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3899}), 3900)
 	claim, err := adapter.Create(context.Background(), ClaimRequest{TaskID: "task", AttemptID: "attempt"})
 	if err != nil {
 		t.Fatal(err)
@@ -330,7 +330,7 @@ func TestCapacityAdapterReturnsUnknownWhenUnknownPersistenceFailsAndNeverRetries
 		return nil
 	})
 	runtime := &adapterRuntime{createErr: capacity.ErrUnknown}
-	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3999}), 3005)
+	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3899}), 3900)
 	req := ClaimRequest{TaskID: "task", AttemptID: "attempt"}
 	_, err = adapter.Create(context.Background(), req)
 	if !errors.Is(err, capacity.ErrUnknown) || !errors.Is(err, persistErr) || !errors.Is(err, ErrCapacityLedgerReconciliation) {
@@ -351,12 +351,12 @@ func TestCapacityAdapterClaimUsesConfiguredTemplateAndNilReceiverFailsClosed(t *
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	runtime := &adapterRuntime{}
-	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3999}), 3005)
+	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3899}), 3900)
 	if _, err := adapter.Claim(context.Background(), CapacityClaimRequest{TaskID: "task", AttemptID: "attempt", Generation: "gen", Priority: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if runtime.lastCreate.TemplateVMID != 3005 {
-		t.Fatalf("template VMID = %d, want configured 3005", runtime.lastCreate.TemplateVMID)
+	if runtime.lastCreate.TemplateVMID != 3900 {
+		t.Fatalf("template VMID = %d, want configured 3900", runtime.lastCreate.TemplateVMID)
 	}
 	var nilAdapter *CapacityAdapter
 	if _, err := nilAdapter.Create(context.Background(), ClaimRequest{TaskID: "task", AttemptID: "attempt"}); err == nil {

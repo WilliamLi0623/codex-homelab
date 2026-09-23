@@ -7,9 +7,9 @@ The controller decides **what** logical task happens. The model router decides *
 | Resource | Role | Normal coding work |
 | --- | --- | --- |
 | LXC210 `codex-control` | controller API, MCP, SQLite, task console, router, broker, capacity manager | forbidden |
-| LXC220 `k3s-control` | unprivileged K3s server and control-plane services | forbidden by taint |
+| LXC220 `k3s-control` | privileged K3s server and control-plane services | forbidden by taint |
 | VM101 `codex-special-runner` | exceptional compatibility, recovery, and dangerous workloads | explicit `vm-special` only |
-| LXC3000–3999 | dedicated or shared K3s agent capacity | default path |
+| LXC3000–3899 | dedicated or shared K3s agent capacity | default path |
 
 ## Task path
 
@@ -20,7 +20,7 @@ Every attempt uses an isolated worktree and attempt-specific `CODEX_HOME`. Provi
 ## Invariants
 
 - `dedicated-lxc` is the global default; shared LXC and VM101 require policy.
-- Only Capacity Manager may mutate VMIDs 3000–3999. Its runtime identity may not modify persistent or protected guests.
+- Only Capacity Manager may mutate VMIDs 3000–3899. Its runtime identity may not modify persistent or protected guests.
 - Dynamic workers contain no provider key, Proxmox credential, GitHub token, private SSH key, or task data before claim.
 - `UNKNOWN` is a reconciliation state, not permission to replay a mutation.
 - Observable events may contain commands and model-provided summaries, never hidden chain-of-thought.

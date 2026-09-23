@@ -35,18 +35,18 @@ func TestProxmoxRuntimeCloneUsesOnlyDynamicVMIDs(t *testing.T) {
 		BaseURL: server.URL,
 		Node:    "pve-node",
 		Token:   "PVEAPIToken=runtime=redacted",
-		Range:   VMIDRange{Min: 3000, Max: 3999},
+		Range:   VMIDRange{Min: 3000, Max: 3899},
 		Client:  server.Client(),
 	})
 
-	node, err := runtime.Create(context.Background(), CreateRequest{VMID: 3010, TemplateVMID: 3005, Generation: "gen-1", Hostname: "codex-3010", Metadata: map[string]string{"managed-by": ManagedBy, "task": "task-1"}})
+	node, err := runtime.Create(context.Background(), CreateRequest{VMID: 3010, TemplateVMID: 3900, Generation: "gen-1", Hostname: "codex-3010", Metadata: map[string]string{"managed-by": ManagedBy, "task": "task-1"}})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
 	if node.State != NodeCreating || node.VMID != 3010 {
 		t.Fatalf("created node = %+v", node)
 	}
-	if gotPath != "/api2/json/nodes/pve-node/lxc/3005/clone" {
+	if gotPath != "/api2/json/nodes/pve-node/lxc/3900/clone" {
 		t.Fatalf("clone path = %q", gotPath)
 	}
 	if gotAuth == "" {
@@ -59,15 +59,15 @@ func TestProxmoxRuntimeCloneUsesOnlyDynamicVMIDs(t *testing.T) {
 
 func TestProxmoxRuntimeDoesNotMarkRejectedCloneAsUnknown(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api2/json/nodes/pve-node/lxc/3013/clone" {
+		if r.URL.Path != "/api2/json/nodes/pve-node/lxc/3900/clone" {
 			t.Fatalf("clone path = %q", r.URL.Path)
 		}
 		http.Error(w, "permission denied", http.StatusForbidden)
 	}))
 	defer server.Close()
 
-	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3999}, Client: server.Client()})
-	_, err := runtime.Create(context.Background(), CreateRequest{VMID: 3010, TemplateVMID: 3013, Generation: "gen-1", Hostname: "codex-3010"})
+	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3899}, Client: server.Client()})
+	_, err := runtime.Create(context.Background(), CreateRequest{VMID: 3010, TemplateVMID: 3900, Generation: "gen-1", Hostname: "codex-3010"})
 	if !errors.Is(err, ErrRejected) {
 		t.Fatalf("Create() error = %v, want ErrRejected", err)
 	}
@@ -78,15 +78,15 @@ func TestProxmoxRuntimeDoesNotMarkRejectedCloneAsUnknown(t *testing.T) {
 
 func TestProxmoxRuntimeClassifiesExistingTargetAsOccupied(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api2/json/nodes/pve-node/lxc/3013/clone" {
+		if r.URL.Path != "/api2/json/nodes/pve-node/lxc/3900/clone" {
 			t.Fatalf("clone path = %q", r.URL.Path)
 		}
 		http.Error(w, "CT 3010 already exists on node 'pve-node'", http.StatusInternalServerError)
 	}))
 	defer server.Close()
 
-	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3999}, Client: server.Client()})
-	_, err := runtime.Create(context.Background(), CreateRequest{VMID: 3010, TemplateVMID: 3013, Generation: "gen-1", Hostname: "codex-3010"})
+	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3899}, Client: server.Client()})
+	_, err := runtime.Create(context.Background(), CreateRequest{VMID: 3010, TemplateVMID: 3900, Generation: "gen-1", Hostname: "codex-3010"})
 	if !errors.Is(err, ErrVMIDOccupied) {
 		t.Fatalf("Create() error = %v, want ErrVMIDOccupied", err)
 	}
@@ -100,7 +100,7 @@ func TestProxmoxRuntimeRejectsProtectedActionBeforeHTTP(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
 	defer server.Close()
 
-	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Range: VMIDRange{Min: 3000, Max: 3999}, Client: server.Client()})
+	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Range: VMIDRange{Min: 3000, Max: 3899}, Client: server.Client()})
 	if err := runtime.Start(context.Background(), 220); err == nil || !strings.Contains(err.Error(), ErrVMIDOutsideRange.Error()) {
 		t.Fatalf("Start(protected VMID) error = %v", err)
 	}
@@ -122,7 +122,7 @@ func TestProxmoxRuntimeObservesStatusWithoutExposingToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3999}, Client: server.Client()})
+	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3899}, Client: server.Client()})
 	node, err := runtime.Observe(context.Background(), 3010)
 	if err != nil {
 		t.Fatalf("Observe() error = %v", err)
@@ -143,7 +143,7 @@ func TestProxmoxRuntimeTreatsMissingConfigAsAbsentTarget(t *testing.T) {
 	}))
 	defer server.Close()
 
-	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3999}, Client: server.Client()})
+	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3899}, Client: server.Client()})
 	_, err := runtime.Observe(context.Background(), 3012)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Observe() error = %v, want ErrNotFound", err)
@@ -160,7 +160,7 @@ func TestProxmoxRuntimeTargetAvailableUsesClusterInventory(t *testing.T) {
 	}))
 	defer server.Close()
 
-	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3999}, Client: server.Client()})
+	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3899}, Client: server.Client()})
 	available, err := runtime.TargetAvailable(context.Background(), 3014)
 	if err != nil || !available {
 		t.Fatalf("TargetAvailable(absent) = (%t, %v), want true, nil", available, err)
@@ -181,7 +181,7 @@ func TestProxmoxRuntimeStopTreatsAlreadyStoppedAsIdempotent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3999}, Client: server.Client()})
+	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3899}, Client: server.Client()})
 	if err := runtime.Stop(context.Background(), 3010); err != nil {
 		t.Fatalf("Stop(already stopped) error = %v", err)
 	}
@@ -204,7 +204,7 @@ func TestProxmoxRuntimeVerifiesExactDynamicIdentityReadOnly(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"hostname": "codex-lxc-3010-gen-1", "description": description}})
 	}))
 	defer server.Close()
-	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3999}, Client: server.Client()})
+	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3899}, Client: server.Client()})
 	if err := runtime.VerifyIdentity(context.Background(), Node{VMID: 3010, Generation: "gen-1", TaskID: "task-1"}); err != nil {
 		t.Fatalf("VerifyIdentity() error = %v", err)
 	}
@@ -216,7 +216,7 @@ func TestProxmoxRuntimeRejectsMismatchedIdentity(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"vmid": 3011, "hostname": "codex-lxc-3010-gen-1", "description": "managed-by=codex-homelab"}})
 	}))
 	defer server.Close()
-	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3999}, Client: server.Client()})
+	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3899}, Client: server.Client()})
 	if err := runtime.VerifyIdentity(context.Background(), Node{VMID: 3010, Generation: "gen-1", TaskID: "task-1"}); !errors.Is(err, ErrIdentityInvalid) || !strings.Contains(err.Error(), "identity fields mismatch") {
 		t.Fatalf("VerifyIdentity() error = %v, want ErrIdentityInvalid", err)
 	}
