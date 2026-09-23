@@ -79,3 +79,20 @@ streaming, one function call, and one function-result continuation. The
 Chat-to-Responses bridge remains paused. GLM-5.3-Flash and DeepSeek V4.1
 Flash are not promoted to Responses routing while their current upstream
 Responses path returns `no_available_providers`.
+
+## 2026-09-23 live recheck
+
+A fresh Linux probe used the existing key source without printing or saving
+the key. It requested GLM-5.3-Flash Responses with reasoning effort `max`,
+DeepSeek V4.1 Flash Responses, and Muse Spark Responses with effort `xhigh`.
+All three requests were rejected with HTTP 403 before any Responses payload
+was returned. A read-only `/v1/models` request was also rejected with HTTP 403.
+The response body identifies Cloudflare Error 1010, which Cloudflare documents
+as an owner-configured browser-signature block. This is an edge-access result,
+not a model/provider capability result; the current GLM and DeepSeek Responses
+availability and reasoning-effort acceptance are therefore **unknown**.
+
+No client fingerprint was altered and no further generation retries were
+made. Resume these probes after the CC Hub site owner removes the block or
+provides an approved API access path. The earlier 2026-09-22 HTTP 503 results
+remain historical evidence and are not superseded by this edge-level 403.
