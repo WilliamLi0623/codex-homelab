@@ -33,12 +33,13 @@ type ProxmoxConfig struct {
 }
 
 type ProxmoxRuntime struct {
-	baseURL string
-	node    string
-	token   string
-	pool    string
-	range_  VMIDRange
-	client  *http.Client
+	baseURL   string
+	node      string
+	token     string
+	pool      string
+	range_    VMIDRange
+	client    *http.Client
+	cloneGate chan struct{}
 }
 
 // ValidateConfig checks the configuration required by the Proxmox runtime.
@@ -67,12 +68,13 @@ func NewProxmoxRuntime(config ProxmoxConfig) *ProxmoxRuntime {
 		client = http.DefaultClient
 	}
 	return &ProxmoxRuntime{
-		baseURL: strings.TrimRight(config.BaseURL, "/"),
-		node:    config.Node,
-		token:   config.Token,
-		pool:    defaultPool(config.Pool),
-		range_:  config.Range,
-		client:  client,
+		baseURL:   strings.TrimRight(config.BaseURL, "/"),
+		node:      config.Node,
+		token:     config.Token,
+		pool:      defaultPool(config.Pool),
+		range_:    config.Range,
+		client:    client,
+		cloneGate: make(chan struct{}, 1),
 	}
 }
 
@@ -124,6 +126,9 @@ func (r *ProxmoxRuntime) request(ctx context.Context, method, path string, form 
 		if response.StatusCode >= http.StatusBadRequest && response.StatusCode < http.StatusInternalServerError {
 			return nil, fmt.Errorf("%w: %s: %s", ErrRejected, response.Status, strings.TrimSpace(string(body)))
 		}
+		if method == http.MethodPost && strings.HasSuffix(path, "/clone") && strings.Contains(strings.ToLower(string(body)), "ct is locked (disk)") {
+			return nil, fmt.Errorf("%w: %s: %s", ErrRejected, response.Status, strings.TrimSpace(string(body)))
+		}
 		return nil, fmt.Errorf("proxmox %s %s returned %s: %s", method, path, response.Status, strings.TrimSpace(string(body)))
 	}
 	return response, nil
@@ -156,6 +161,12 @@ func (r *ProxmoxRuntime) Create(ctx context.Context, request CreateRequest) (Nod
 	}
 	if r.pool != "" {
 		form.Set("pool", r.pool)
+	}
+	select {
+	case r.cloneGate <- struct{}{}:
+		defer func() { <-r.cloneGate }()
+	case <-ctx.Done():
+		return Node{}, fmt.Errorf("%w: waiting for template clone: %v", ErrRejected, ctx.Err())
 	}
 	path := "/nodes/" + url.PathEscape(r.node) + "/lxc/" + strconv.Itoa(request.TemplateVMID) + "/clone"
 	response, err := r.request(ctx, http.MethodPost, path, form)

@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestProxmoxRuntimeCloneUsesOnlyDynamicVMIDs(t *testing.T) {
@@ -73,6 +76,117 @@ func TestProxmoxRuntimeDoesNotMarkRejectedCloneAsUnknown(t *testing.T) {
 	}
 	if errors.Is(err, ErrUnknown) {
 		t.Fatalf("Create() error = %v, must not be ErrUnknown", err)
+	}
+}
+
+func TestProxmoxRuntimeClassifiesTemplateDiskLockAsRejected(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api2/json/nodes/pve-node/lxc/3900/clone" {
+			t.Fatalf("clone path = %q", r.URL.Path)
+		}
+		http.Error(w, "CT is locked (disk)", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3899}, Client: server.Client()})
+	_, err := runtime.Create(context.Background(), CreateRequest{VMID: 3010, TemplateVMID: 3900, Generation: "gen-1", Hostname: "codex-3010"})
+	if !errors.Is(err, ErrRejected) {
+		t.Fatalf("Create() error = %v, want ErrRejected", err)
+	}
+	if errors.Is(err, ErrUnknown) {
+		t.Fatalf("Create() error = %v, must not be ErrUnknown", err)
+	}
+}
+
+func TestProxmoxRuntimeSerializesTemplateClones(t *testing.T) {
+	firstTaskObserved := make(chan struct{})
+	allowFirstTaskToFinish := make(chan struct{})
+	var finishOnce sync.Once
+	finishFirstTask := func() { finishOnce.Do(func() { close(allowFirstTaskToFinish) }) }
+	secondCloneObserved := make(chan struct{}, 1)
+	var cloneCount int
+	var activeClones int
+	var maxActiveClones int
+	var lock sync.Mutex
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/clone") {
+			lock.Lock()
+			cloneCount++
+			taskID := cloneCount
+			activeClones++
+			if activeClones > maxActiveClones {
+				maxActiveClones = activeClones
+			}
+			lock.Unlock()
+			if taskID == 2 {
+				secondCloneObserved <- struct{}{}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"data":"UPID:%d"}`, taskID)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/tasks/") {
+			if strings.Contains(r.URL.Path, "UPID:1") {
+				select {
+				case <-firstTaskObserved:
+				default:
+					close(firstTaskObserved)
+				}
+				<-allowFirstTaskToFinish
+			}
+			lock.Lock()
+			activeClones--
+			lock.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":{"status":"stopped","exitstatus":"OK"}}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	defer finishFirstTask()
+
+	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3899}, Client: server.Client()})
+	create := func(vmid int) error {
+		_, err := runtime.Create(context.Background(), CreateRequest{VMID: vmid, TemplateVMID: 3900, Generation: fmt.Sprintf("gen-%d", vmid), Hostname: fmt.Sprintf("codex-%d", vmid)})
+		return err
+	}
+	firstResult := make(chan error, 1)
+	go func() { firstResult <- create(3010) }()
+	select {
+	case <-firstTaskObserved:
+	case <-time.After(time.Second):
+		t.Fatal("first clone did not reach task observation")
+	}
+	secondResult := make(chan error, 1)
+	secondStarted := make(chan struct{})
+	go func() {
+		close(secondStarted)
+		secondResult <- create(3011)
+	}()
+	<-secondStarted
+	select {
+	case <-secondCloneObserved:
+		finishFirstTask()
+		t.Fatal("second clone started while the first template clone was still running")
+	case <-time.After(100 * time.Millisecond):
+	}
+	finishFirstTask()
+	for name, result := range map[string]<-chan error{"first": firstResult, "second": secondResult} {
+		select {
+		case err := <-result:
+			if err != nil {
+				t.Fatalf("%s Create() error = %v", name, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s clone did not complete", name)
+		}
+	}
+	lock.Lock()
+	defer lock.Unlock()
+	if cloneCount != 2 || maxActiveClones != 1 {
+		t.Fatalf("cloneCount=%d maxActiveClones=%d, want 2 and 1", cloneCount, maxActiveClones)
 	}
 }
 
