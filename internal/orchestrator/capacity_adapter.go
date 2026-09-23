@@ -241,7 +241,7 @@ func (a *CapacityAdapter) Release(ctx context.Context, claim Claim) error {
 			return a.deleteReleasedClaim(ctx, claim)
 		}
 	}
-	node := capacity.Node{VMID: claim.VMID, Generation: claim.Generation, TaskID: claim.TaskID, KubeNode: claim.KubeNode, State: capacity.NodeStopped}
+	node := capacity.Node{VMID: claim.VMID, Generation: claim.Generation, TaskID: claim.TaskID, AttemptID: claim.AttemptID, KubeNode: claim.KubeNode, State: capacity.NodeStopped}
 	checkpoint := func(checkpointCtx context.Context, _ capacity.Node, step capacity.ReleaseStep, stepErr error) error {
 		state := store.ReleaseStateCompleted
 		summary := ""

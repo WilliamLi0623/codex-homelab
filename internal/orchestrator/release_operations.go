@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/capacity"
 )
@@ -12,6 +13,7 @@ var ErrReleaseOperationsUnavailable = errors.New("release operations are not con
 
 type K3sNodeLifecycle interface {
 	Cordon(context.Context, string) error
+	CleanupExecution(context.Context, string, string) error
 	Drain(context.Context, string) error
 	RemoveNode(context.Context, string) error
 	VerifyNodeRemoved(context.Context, string) error
@@ -27,12 +29,14 @@ type ProxmoxNodeLifecycle interface {
 // ReleaseOperations composes the Kubernetes and Proxmox boundaries without
 // allowing either subsystem to skip the mandatory release order.
 type ReleaseOperations struct {
-	k3s     K3sNodeLifecycle
-	proxmox ProxmoxNodeLifecycle
+	k3s              K3sNodeLifecycle
+	proxmox          ProxmoxNodeLifecycle
+	stopTimeout      time.Duration
+	stopPollInterval time.Duration
 }
 
 func NewReleaseOperations(k3s K3sNodeLifecycle, proxmox ProxmoxNodeLifecycle) *ReleaseOperations {
-	return &ReleaseOperations{k3s: k3s, proxmox: proxmox}
+	return &ReleaseOperations{k3s: k3s, proxmox: proxmox, stopTimeout: 30 * time.Second, stopPollInterval: 250 * time.Millisecond}
 }
 
 func (o *ReleaseOperations) validate() error {
@@ -50,6 +54,12 @@ func (o *ReleaseOperations) Cordon(ctx context.Context, node capacity.Node) erro
 }
 func (o *ReleaseOperations) Drain(ctx context.Context, node capacity.Node) error {
 	if err := o.validate(); err != nil {
+		return err
+	}
+	if node.TaskID == "" || node.AttemptID == "" {
+		return capacity.ErrReleaseInvalid
+	}
+	if err := o.k3s.CleanupExecution(ctx, node.TaskID, node.AttemptID); err != nil {
 		return err
 	}
 	return o.k3s.Drain(ctx, node.KubeNode)
@@ -93,14 +103,41 @@ func (o *ReleaseOperations) VerifyStopped(ctx context.Context, node capacity.Nod
 	if err := o.validate(); err != nil {
 		return err
 	}
-	observed, err := o.proxmox.Observe(ctx, node.VMID)
-	if err != nil {
-		return err
+	timeout := o.stopTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
 	}
-	if observed.VMID != node.VMID || observed.State != capacity.NodeStopped {
-		return fmt.Errorf("worker VMID %d is not stopped", node.VMID)
+	interval := o.stopPollInterval
+	if interval <= 0 {
+		interval = 250 * time.Millisecond
 	}
-	return nil
+	pollCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		observed, err := o.proxmox.Observe(pollCtx, node.VMID)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+				return fmt.Errorf("worker VMID %d did not reach stopped state before timeout", node.VMID)
+			}
+			return err
+		}
+		if observed.VMID != node.VMID {
+			return fmt.Errorf("Proxmox returned VMID %d while verifying worker VMID %d", observed.VMID, node.VMID)
+		}
+		if observed.State == capacity.NodeStopped {
+			return nil
+		}
+		select {
+		case <-pollCtx.Done():
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("worker VMID %d did not reach stopped state (last state %s)", node.VMID, observed.State)
+		case <-ticker.C:
+		}
+	}
 }
 func (o *ReleaseOperations) Destroy(ctx context.Context, node capacity.Node) error {
 	if err := o.validate(); err != nil {

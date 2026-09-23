@@ -32,7 +32,7 @@ func (o *releaseOps) VerifyIdentity(context.Context, Node) error { return o.call
 func (o *releaseOps) Destroy(context.Context, Node) error        { return o.call("destroy") }
 
 func validReleaseNode() Node {
-	return Node{VMID: 3010, Generation: "gen-1", TaskID: "task-1", KubeNode: "codex-3010-gen-1", State: NodeStopped}
+	return Node{VMID: 3010, Generation: "gen-1", TaskID: "task-1", AttemptID: "attempt-1", KubeNode: "codex-3010-gen-1", State: NodeStopped}
 }
 
 func TestReleaseWorkerUsesMandatoryOrder(t *testing.T) {

@@ -30,19 +30,21 @@ func (f *fakeRuntime) CreateJob(_ context.Context, r JobRequest) (Job, error) {
 	f.jobs[j.ID] = j
 	return j, nil
 }
-func (f *fakeRuntime) Observe(_ context.Context, id string) (Job, error) { return f.jobs[id], nil }
-func (f *fakeRuntime) SendMessage(_ context.Context, id, msg string) error {
+func (f *fakeRuntime) Observe(_ context.Context, id, taskID, attemptID string) (Job, error) {
+	return f.jobs[id], nil
+}
+func (f *fakeRuntime) SendMessage(_ context.Context, id, taskID, attemptID, msg string) error {
 	f.messages = append(f.messages, id+":"+msg)
 	return f.sendErr
 }
-func (f *fakeRuntime) Cancel(_ context.Context, id string) error {
+func (f *fakeRuntime) Cancel(_ context.Context, id, taskID, attemptID string) error {
 	f.cancelled = append(f.cancelled, id)
 	j := f.jobs[id]
 	j.State = JobCancelled
 	f.jobs[id] = j
 	return nil
 }
-func (f *fakeRuntime) CollectResult(_ context.Context, id string) (Result, error) {
+func (f *fakeRuntime) CollectResult(_ context.Context, id, taskID, attemptID string) (Result, error) {
 	return f.results[id], nil
 }
 
@@ -65,14 +67,14 @@ func (f *fakeHandles) GetExecutionHandle(_ context.Context, id string) (store.Ex
 	}
 	return h, nil
 }
-func (f *fakeHandles) RecordExecutionHandle(_ context.Context, attempt, executor, external, state string) (store.ExecutionHandle, bool, error) {
+func (f *fakeHandles) RecordExecutionHandle(_ context.Context, taskID, attempt, executor, external, state string) (store.ExecutionHandle, bool, error) {
 	if f.handles == nil {
 		f.handles = map[string]store.ExecutionHandle{}
 	}
 	if h, ok := f.handles[attempt]; ok {
 		return h, false, nil
 	}
-	h := store.ExecutionHandle{AttemptID: attempt, Executor: executor, ExternalID: external, State: state}
+	h := store.ExecutionHandle{TaskID: taskID, AttemptID: attempt, Executor: executor, ExternalID: external, State: state}
 	f.handles[attempt] = h
 	return h, true, nil
 }
@@ -146,6 +148,15 @@ func TestUnknownCreateCannotReplayAndCanReconcile(t *testing.T) {
 	}
 	if j.State != JobRunning {
 		t.Fatalf("job=%+v", j)
+	}
+}
+
+func TestObserveRejectsRuntimeIdentityMismatch(t *testing.T) {
+	r := &fakeRuntime{jobs: map[string]Job{"job-1": {ID: "job-1", TaskID: "another-task", AttemptID: "attempt-1", State: JobRunning}}}
+	h := &fakeHandles{handles: map[string]store.ExecutionHandle{"attempt-1": {TaskID: "task-1", AttemptID: "attempt-1", ExternalID: "job-1", State: string(HandleRunning)}}}
+	e := New(r, h)
+	if _, err := e.Observe(context.Background(), "attempt-1"); err == nil {
+		t.Fatal("Observe accepted a runtime Job with a different task identity")
 	}
 }
 func TestUnknownMutationIsRejected(t *testing.T) {

@@ -246,7 +246,7 @@ func resultConsumerFixture(t *testing.T) (*store.Store, domain.Task, domain.Atte
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := database.RecordExecutionHandle(context.Background(), attempt.ID, "k3s", "job-1", string(k3s.HandleRunning)); err != nil {
+	if _, _, err := database.RecordExecutionHandle(context.Background(), task.ID, attempt.ID, "k3s", "job-1", string(k3s.HandleRunning)); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := database.ClaimCapacity(context.Background(), store.CapacityClaimRequest{TaskID: task.ID, AttemptID: attempt.ID, Generation: "gen-1", Priority: 1}); err != nil {

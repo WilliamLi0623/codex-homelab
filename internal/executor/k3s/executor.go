@@ -64,15 +64,15 @@ type Result struct {
 
 type Runtime interface {
 	CreateJob(context.Context, JobRequest) (Job, error)
-	Observe(context.Context, string) (Job, error)
-	SendMessage(context.Context, string, string) error
-	Cancel(context.Context, string) error
-	CollectResult(context.Context, string) (Result, error)
+	Observe(context.Context, string, string, string) (Job, error)
+	SendMessage(context.Context, string, string, string, string) error
+	Cancel(context.Context, string, string, string) error
+	CollectResult(context.Context, string, string, string) (Result, error)
 }
 type HandleStore interface {
 	GetExecutionHandle(context.Context, string) (store.ExecutionHandle, error)
 	GetExecutionHandleByExternalID(context.Context, string) (store.ExecutionHandle, error)
-	RecordExecutionHandle(context.Context, string, string, string, string) (store.ExecutionHandle, bool, error)
+	RecordExecutionHandle(context.Context, string, string, string, string, string) (store.ExecutionHandle, bool, error)
 	UpdateExecutionHandleState(context.Context, string, string) error
 }
 type Executor struct {
@@ -105,7 +105,7 @@ func (e *Executor) CreateJob(ctx context.Context, request JobRequest) (Job, erro
 		if external == "" {
 			external = unknownExternalPrefix + request.AttemptID
 		}
-		_, _, recordErr := e.handles.RecordExecutionHandle(ctx, request.AttemptID, executorName, external, string(HandleUnknown))
+		_, _, recordErr := e.handles.RecordExecutionHandle(ctx, request.TaskID, request.AttemptID, executorName, external, string(HandleUnknown))
 		if recordErr != nil {
 			return Job{}, fmt.Errorf("record unknown K3s create: %w", recordErr)
 		}
@@ -117,7 +117,7 @@ func (e *Executor) CreateJob(ctx context.Context, request JobRequest) (Job, erro
 	if job.ID == "" {
 		return Job{}, fmt.Errorf("K3s runtime returned an empty job ID")
 	}
-	if _, _, err := e.handles.RecordExecutionHandle(ctx, request.AttemptID, executorName, job.ID, handleState(job.State)); err != nil {
+	if _, _, err := e.handles.RecordExecutionHandle(ctx, request.TaskID, request.AttemptID, executorName, job.ID, handleState(job.State)); err != nil {
 		return Job{}, fmt.Errorf("record K3s execution handle: %w", err)
 	}
 	return job, nil
@@ -141,7 +141,9 @@ func (e *Executor) Reconcile(ctx context.Context, attemptID string) (Job, error)
 	return e.observeHandle(ctx, handle)
 }
 func (e *Executor) SendMessage(ctx context.Context, jobID, message string) error {
-	return e.mutate(ctx, jobID, func() error { return e.runtime.SendMessage(ctx, jobID, message) })
+	return e.mutate(ctx, jobID, func(handle store.ExecutionHandle) error {
+		return e.runtime.SendMessage(ctx, jobID, handle.TaskID, handle.AttemptID, message)
+	})
 }
 
 // SendMessageForAttempt resolves the durable execution handle before sending a
@@ -156,14 +158,18 @@ func (e *Executor) SendMessageForAttempt(ctx context.Context, attemptID, message
 		}
 		return fmt.Errorf("%w: %v", store.ErrContinuationDeliveryUnknown, err)
 	}
-	if err := e.SendMessage(ctx, handle.ExternalID, message); err != nil {
+	if err := e.mutate(ctx, handle.ExternalID, func(_ store.ExecutionHandle) error {
+		return e.runtime.SendMessage(ctx, handle.ExternalID, handle.TaskID, handle.AttemptID, message)
+	}); err != nil {
 		return fmt.Errorf("%w: %v", store.ErrContinuationDeliveryUnknown, err)
 	}
 	return nil
 }
 
 func (e *Executor) Cancel(ctx context.Context, jobID string) error {
-	return e.mutate(ctx, jobID, func() error { return e.runtime.Cancel(ctx, jobID) })
+	return e.mutate(ctx, jobID, func(handle store.ExecutionHandle) error {
+		return e.runtime.Cancel(ctx, jobID, handle.TaskID, handle.AttemptID)
+	})
 }
 func (e *Executor) CollectResult(ctx context.Context, jobID string) (Result, error) {
 	handle, err := e.handles.GetExecutionHandleByExternalID(ctx, jobID)
@@ -173,7 +179,7 @@ func (e *Executor) CollectResult(ctx context.Context, jobID string) (Result, err
 	if handle.State == string(HandleUnknown) {
 		return Result{}, ErrUnknownUnresolved
 	}
-	result, err := e.runtime.CollectResult(ctx, jobID)
+	result, err := e.runtime.CollectResult(ctx, jobID, handle.TaskID, handle.AttemptID)
 	if errors.Is(err, ErrUnknown) {
 		_ = e.handles.UpdateExecutionHandleState(ctx, jobID, string(HandleUnknown))
 		return Result{}, ErrUnknown
@@ -201,7 +207,7 @@ func (e *Executor) observeHandle(ctx context.Context, handle store.ExecutionHand
 	if strings.HasPrefix(handle.ExternalID, unknownExternalPrefix) {
 		return Job{}, ErrUnknown
 	}
-	job, err := e.runtime.Observe(ctx, handle.ExternalID)
+	job, err := e.runtime.Observe(ctx, handle.ExternalID, handle.TaskID, handle.AttemptID)
 	if errors.Is(err, ErrUnknown) {
 		_ = e.handles.UpdateExecutionHandleState(ctx, handle.ExternalID, string(HandleUnknown))
 		return Job{}, ErrUnknown
@@ -209,12 +215,15 @@ func (e *Executor) observeHandle(ctx context.Context, handle store.ExecutionHand
 	if err != nil {
 		return Job{}, err
 	}
+	if job.ID != handle.ExternalID || job.TaskID != handle.TaskID || job.AttemptID != handle.AttemptID {
+		return Job{}, fmt.Errorf("Kubernetes execution identity mismatch for %q", handle.ExternalID)
+	}
 	if err := e.handles.UpdateExecutionHandleState(ctx, handle.ExternalID, handleState(job.State)); err != nil {
 		return Job{}, err
 	}
 	return job, nil
 }
-func (e *Executor) mutate(ctx context.Context, jobID string, operation func() error) error {
+func (e *Executor) mutate(ctx context.Context, jobID string, operation func(store.ExecutionHandle) error) error {
 	handle, err := e.handles.GetExecutionHandleByExternalID(ctx, jobID)
 	if err != nil {
 		return err
@@ -222,7 +231,7 @@ func (e *Executor) mutate(ctx context.Context, jobID string, operation func() er
 	if handle.State == string(HandleUnknown) {
 		return ErrUnknownUnresolved
 	}
-	if err := operation(); errors.Is(err, ErrUnknown) {
+	if err := operation(handle); errors.Is(err, ErrUnknown) {
 		_ = e.handles.UpdateExecutionHandleState(ctx, jobID, string(HandleUnknown))
 		return ErrUnknown
 	} else {

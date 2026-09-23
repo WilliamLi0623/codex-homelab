@@ -18,6 +18,7 @@ import (
 
 var ErrWorkerNotReady = errors.New("Kubernetes worker Pod is not ready")
 var ErrResultProtocol = errors.New("agentd result protocol is invalid")
+var ErrExecutionNotFound = errors.New("Kubernetes execution Job not found")
 var labelValuePattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$`)
 var resourceQuantityPattern = regexp.MustCompile(`^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+|n|u|m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?$`)
 
@@ -108,6 +109,7 @@ type kJob struct {
 	Metadata struct {
 		Name   string            `json:"name"`
 		Labels map[string]string `json:"labels"`
+		UID    string            `json:"uid"`
 	} `json:"metadata"`
 	Status struct {
 		Active    int `json:"active"`
@@ -118,7 +120,14 @@ type kJob struct {
 type kPodList struct {
 	Items []struct {
 		Metadata struct {
-			Name string `json:"name"`
+			Name            string            `json:"name"`
+			UID             string            `json:"uid"`
+			Labels          map[string]string `json:"labels"`
+			OwnerReferences []struct {
+				Kind string `json:"kind"`
+				Name string `json:"name"`
+				UID  string `json:"uid"`
+			} `json:"ownerReferences"`
 		} `json:"metadata"`
 	} `json:"items"`
 }
@@ -258,44 +267,71 @@ func workerCommand(config KubernetesConfig) string {
 	return "chmod 0755 /opt/codex/vendor/x86_64-unknown-linux-musl/bin/codex /usr/local/bin/codex /usr/local/bin/codex-agentd && export GIT_AUTHOR_NAME=codex-agent GIT_AUTHOR_EMAIL=codex-agent@localhost GIT_COMMITTER_NAME=codex-agent GIT_COMMITTER_EMAIL=codex-agent@localhost && mkdir -p \"$CODEX_HOME\" && printf '%s\\n' \"$CODEX_API_KEY\" | /usr/local/bin/codex login --with-api-key >/dev/null && exec /usr/local/bin/codex-agentd --listen 0.0.0.0:8080"
 }
 
-func (r *KubernetesRuntime) Observe(ctx context.Context, id string) (Job, error) {
+func (r *KubernetesRuntime) Observe(ctx context.Context, id, taskID, attemptID string) (Job, error) {
 	if err := r.config.ValidateConfig(); err != nil {
 		return Job{}, err
 	}
-	var job kJob
-	if err := r.doJSON(ctx, http.MethodGet, r.path("apis/batch/v1/namespaces/"+url.PathEscape(r.config.Namespace)+"/jobs/"+url.PathEscape(id)), nil, &job); err != nil {
-		if isNotFound(err) {
-			return Job{}, ErrUnknown
-		}
+	job, err := r.executionJob(ctx, id, taskID, attemptID)
+	if errors.Is(err, ErrExecutionNotFound) {
+		return Job{}, ErrUnknown
+	}
+	if err != nil {
 		return Job{}, err
 	}
-	return Job{ID: id, TaskID: job.Metadata.Labels["task_id"], AttemptID: job.Metadata.Labels["attempt_id"], State: jobState(job.Status.Active, job.Status.Succeeded, job.Status.Failed)}, nil
+	return Job{ID: id, TaskID: taskID, AttemptID: attemptID, State: jobState(job.Status.Active, job.Status.Succeeded, job.Status.Failed)}, nil
 }
 
-func (r *KubernetesRuntime) SendMessage(ctx context.Context, id, message string) error {
+func (r *KubernetesRuntime) SendMessage(ctx context.Context, id, taskID, attemptID, message string) error {
 	if err := r.config.ValidateConfig(); err != nil {
 		return err
 	}
-	pod, err := r.workerPod(ctx, id)
+	pod, err := r.workerPod(ctx, id, taskID, attemptID)
 	if err != nil {
 		return err
 	}
 	return r.doJSON(ctx, http.MethodPost, r.podProxyPath(pod, "messages"), map[string]string{"prompt": message}, nil)
 }
 
-func (r *KubernetesRuntime) Cancel(ctx context.Context, id string) error {
-	err := r.doJSON(ctx, http.MethodDelete, r.path("apis/batch/v1/namespaces/"+url.PathEscape(r.config.Namespace)+"/jobs/"+url.PathEscape(id)), nil, nil)
+func (r *KubernetesRuntime) Cancel(ctx context.Context, id, taskID, attemptID string) error {
+	if err := r.config.ValidateConfig(); err != nil {
+		return err
+	}
+	job, err := r.executionJob(ctx, id, taskID, attemptID)
+	if err != nil {
+		if errors.Is(err, ErrExecutionNotFound) {
+			return nil
+		}
+		return err
+	}
+	err = r.deleteWithUID(ctx, r.path("apis/batch/v1/namespaces/"+url.PathEscape(r.config.Namespace)+"/jobs/"+url.PathEscape(id)), job.Metadata.UID, "Foreground")
 	if isNotFound(err) {
 		return nil
 	}
 	return err
 }
 
-func (r *KubernetesRuntime) CollectResult(ctx context.Context, id string) (Result, error) {
+func (r *KubernetesRuntime) deleteWithUID(ctx context.Context, resourcePath, uid, propagationPolicy string) error {
+	if uid == "" {
+		return errors.New("Kubernetes delete requires a UID precondition")
+	}
+	options := map[string]any{
+		"apiVersion": "v1",
+		"kind":       "DeleteOptions",
+		"preconditions": map[string]string{
+			"uid": uid,
+		},
+	}
+	if propagationPolicy != "" {
+		options["propagationPolicy"] = propagationPolicy
+	}
+	return r.doJSON(ctx, http.MethodDelete, resourcePath, options, nil)
+}
+
+func (r *KubernetesRuntime) CollectResult(ctx context.Context, id, taskID, attemptID string) (Result, error) {
 	if err := r.config.ValidateConfig(); err != nil {
 		return Result{}, err
 	}
-	pod, err := r.workerPod(ctx, id)
+	pod, err := r.workerPod(ctx, id, taskID, attemptID)
 	if err != nil {
 		return Result{}, err
 	}
@@ -324,14 +360,54 @@ func (r *KubernetesRuntime) CollectResult(ctx context.Context, id string) (Resul
 	return Result{Output: string(bytes.TrimSpace(data)), CommitSHA: response.CommitSHA}, nil
 }
 
-func (r *KubernetesRuntime) workerPod(ctx context.Context, id string) (string, error) {
+func (r *KubernetesRuntime) executionJob(ctx context.Context, id, taskID, attemptID string) (kJob, error) {
+	if taskID == "" || attemptID == "" {
+		return kJob{}, errors.New("Kubernetes execution identity mismatch")
+	}
+	var job kJob
+	err := r.doJSON(ctx, http.MethodGet, r.path("apis/batch/v1/namespaces/"+url.PathEscape(r.config.Namespace)+"/jobs/"+url.PathEscape(id)), nil, &job)
+	if isNotFound(err) {
+		return kJob{}, ErrExecutionNotFound
+	}
+	if err != nil {
+		return kJob{}, err
+	}
+	if job.Metadata.Name != id || job.Metadata.UID == "" || !sameLabels(job.Metadata.Labels, map[string]string{"task_id": taskID, "attempt_id": attemptID, "executor": executorName}) {
+		return kJob{}, errors.New("Kubernetes execution identity mismatch")
+	}
+	return job, nil
+}
+
+func (r *KubernetesRuntime) workerPod(ctx context.Context, id, taskID, attemptID string) (string, error) {
+	job, err := r.executionJob(ctx, id, taskID, attemptID)
+	if errors.Is(err, ErrExecutionNotFound) {
+		return "", ErrUnknown
+	}
+	if err != nil {
+		return "", err
+	}
 	var pods kPodList
-	selector := url.QueryEscape("job-name=" + id)
+	selector := url.QueryEscape("job-name=" + id + ",task_id=" + taskID + ",attempt_id=" + attemptID)
 	if err := r.doJSON(ctx, http.MethodGet, r.path("api/v1/namespaces/"+url.PathEscape(r.config.Namespace)+"/pods?labelSelector="+selector), nil, &pods); err != nil {
 		return "", err
 	}
 	if len(pods.Items) == 0 {
 		return "", ErrWorkerNotReady
+	}
+	for _, pod := range pods.Items {
+		if !sameLabels(pod.Metadata.Labels, map[string]string{"task_id": taskID, "attempt_id": attemptID, "executor": executorName}) {
+			return "", errors.New("Kubernetes worker Pod identity mismatch")
+		}
+		ownedByJob := false
+		for _, owner := range pod.Metadata.OwnerReferences {
+			if owner.Kind == "Job" && owner.Name == id && owner.UID == job.Metadata.UID {
+				ownedByJob = true
+				break
+			}
+		}
+		if !ownedByJob {
+			return "", errors.New("Kubernetes worker Pod owner mismatch")
+		}
 	}
 	return pods.Items[0].Metadata.Name, nil
 }

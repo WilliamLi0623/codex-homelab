@@ -16,6 +16,16 @@ Every task has a clean worktree and attempt-specific `CODEX_HOME`. Windows is
 limited to `C:\WebCodexWorkspace`; it is administration and recovery, not
 heavy execution.
 
+The K3s adapter binds every live operation to the durable task and attempt
+identity. It checks Job labels before observation, messaging, result retrieval,
+and cancellation; it also checks Pod labels and Job ownership before proxying a
+message or result request. During release, the Controller deletes the exact
+attempt Job and its Pods, waits until both are absent, and only then removes the
+worker Node. The Controller polls Proxmox for a bounded interval after Stop so
+status propagation does not turn a transient observation into an unsafe
+replay. A timeout or identity mismatch remains fail-closed and requires
+explicit reconciliation.
+
 ## ChatGPT MCP app boundary
 
 The optional ChatGPT interface uses the private MCP gateway and Secure MCP

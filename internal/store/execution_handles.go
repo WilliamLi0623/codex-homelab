@@ -15,6 +15,7 @@ var (
 
 type ExecutionHandle struct {
 	ID         string
+	TaskID     string
 	AttemptID  string
 	Executor   string
 	ExternalID string
@@ -22,20 +23,20 @@ type ExecutionHandle struct {
 	CreatedAt  time.Time
 }
 
-func (s *Store) RecordExecutionHandle(ctx context.Context, attemptID, executor, externalID, state string) (ExecutionHandle, bool, error) {
+func (s *Store) RecordExecutionHandle(ctx context.Context, taskID, attemptID, executor, externalID, state string) (ExecutionHandle, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ExecutionHandle{}, false, fmt.Errorf("begin execution handle: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	var exists int
-	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM task_attempts WHERE id = ?", attemptID).Scan(&exists); err == sql.ErrNoRows {
+	if err := tx.QueryRowContext(ctx, "SELECT 1 FROM task_attempts WHERE id = ? AND task_id = ?", attemptID, taskID).Scan(&exists); err == sql.ErrNoRows {
 		return ExecutionHandle{}, false, ErrAttemptNotFound
 	} else if err != nil {
 		return ExecutionHandle{}, false, fmt.Errorf("check attempt for execution handle: %w", err)
 	}
 	var existing ExecutionHandle
-	err = tx.QueryRowContext(ctx, "SELECT id, attempt_id, executor, external_id, state FROM execution_handles WHERE attempt_id = ? ORDER BY id LIMIT 1", attemptID).Scan(&existing.ID, &existing.AttemptID, &existing.Executor, &existing.ExternalID, &existing.State)
+	err = tx.QueryRowContext(ctx, "SELECT h.id, a.task_id, h.attempt_id, h.executor, h.external_id, h.state FROM execution_handles h JOIN task_attempts a ON a.id = h.attempt_id WHERE h.attempt_id = ? ORDER BY h.id LIMIT 1", attemptID).Scan(&existing.ID, &existing.TaskID, &existing.AttemptID, &existing.Executor, &existing.ExternalID, &existing.State)
 	if err == nil {
 		if existing.Executor != executor || existing.ExternalID != externalID {
 			return ExecutionHandle{}, false, ErrExecutionHandleConflict
@@ -46,7 +47,7 @@ func (s *Store) RecordExecutionHandle(ctx context.Context, attemptID, executor, 
 		return ExecutionHandle{}, false, fmt.Errorf("load execution handle: %w", err)
 	}
 	now := time.Now().UTC()
-	handle := ExecutionHandle{ID: newStoreID("execution"), AttemptID: attemptID, Executor: executor, ExternalID: externalID, State: state, CreatedAt: now}
+	handle := ExecutionHandle{ID: newStoreID("execution"), TaskID: taskID, AttemptID: attemptID, Executor: executor, ExternalID: externalID, State: state, CreatedAt: now}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO execution_handles(id,attempt_id,executor,external_id,state) VALUES (?,?,?,?,?)", handle.ID, handle.AttemptID, handle.Executor, handle.ExternalID, handle.State); err != nil {
 		return ExecutionHandle{}, false, fmt.Errorf("insert execution handle: %w", err)
 	}
@@ -66,7 +67,7 @@ func (s *Store) GetExecutionHandleByExternalID(ctx context.Context, externalID s
 
 func (s *Store) getExecutionHandle(ctx context.Context, clause, value string) (ExecutionHandle, error) {
 	var handle ExecutionHandle
-	err := s.db.QueryRowContext(ctx, "SELECT id, attempt_id, executor, external_id, state FROM execution_handles "+clause+" ORDER BY id LIMIT 1", value).Scan(&handle.ID, &handle.AttemptID, &handle.Executor, &handle.ExternalID, &handle.State)
+	err := s.db.QueryRowContext(ctx, "SELECT h.id, a.task_id, h.attempt_id, h.executor, h.external_id, h.state FROM execution_handles h JOIN task_attempts a ON a.id = h.attempt_id "+clause+" ORDER BY h.id LIMIT 1", value).Scan(&handle.ID, &handle.TaskID, &handle.AttemptID, &handle.Executor, &handle.ExternalID, &handle.State)
 	if err == sql.ErrNoRows {
 		return ExecutionHandle{}, ErrExecutionHandleNotFound
 	}

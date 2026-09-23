@@ -11,11 +11,11 @@ func TestExecutionHandleIsIdempotentAndDurable(t *testing.T) {
 	database := newTestStore(t)
 	task := failedTask(t, database, "task-handle")
 	insertAttempt(t, database, "attempt-handle", task.ID, 1, domain.AttemptCreated)
-	first, created, err := database.RecordExecutionHandle(context.Background(), "attempt-handle", "k3s", "job-1", "RUNNING")
+	first, created, err := database.RecordExecutionHandle(context.Background(), task.ID, "attempt-handle", "k3s", "job-1", "RUNNING")
 	if err != nil || !created {
 		t.Fatalf("first record = (%+v, %t, %v)", first, created, err)
 	}
-	second, created, err := database.RecordExecutionHandle(context.Background(), "attempt-handle", "k3s", "job-1", "RUNNING")
+	second, created, err := database.RecordExecutionHandle(context.Background(), task.ID, "attempt-handle", "k3s", "job-1", "RUNNING")
 	if err != nil || created || second.ID != first.ID {
 		t.Fatalf("second record = (%+v, %t, %v)", second, created, err)
 	}
@@ -26,7 +26,7 @@ func TestExecutionHandleIsIdempotentAndDurable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.State != "SUCCEEDED" || loaded.AttemptID != "attempt-handle" {
+	if loaded.State != "SUCCEEDED" || loaded.AttemptID != "attempt-handle" || loaded.TaskID != task.ID {
 		t.Fatalf("loaded = %+v", loaded)
 	}
 }

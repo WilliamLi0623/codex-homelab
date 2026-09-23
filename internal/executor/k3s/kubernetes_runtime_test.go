@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -283,6 +284,20 @@ func findEnv(envs []any, name string) (map[string]any, bool) {
 	return nil, false
 }
 
+func serveExecutionJobFixture(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, `{"metadata":{"name":"job","uid":"uid-1","labels":{"task_id":"task","attempt_id":"attempt","executor":"k3s"}},"status":{"active":1}}`)
+}
+
+func serveExecutionPodFixture(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, `{"items":[{"metadata":{"name":"pod","uid":"pod-uid","labels":{"task_id":"task","attempt_id":"attempt","executor":"k3s"},"ownerReferences":[{"kind":"Job","name":"job","uid":"uid-1"}]}}]}`)
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
+
 func TestKubernetesRuntimeConfigValidationAndFailClosed(t *testing.T) {
 	for _, config := range []KubernetesConfig{{}, {BaseURL: "ftp://host", Namespace: "ns", WorkerImage: "image", ServiceAccount: "sa", Token: "x"}, {BaseURL: "http://host", Namespace: "", WorkerImage: "image", ServiceAccount: "sa", Token: "x"}, {BaseURL: "http://host", Namespace: "ns", WorkerImage: "", ServiceAccount: "sa", Token: "x"}, {BaseURL: "http://host", Namespace: "ns", WorkerImage: "image", ServiceAccount: "sa", Token: ""}} {
 		if err := config.ValidateConfig(); err == nil {
@@ -293,13 +308,13 @@ func TestKubernetesRuntimeConfigValidationAndFailClosed(t *testing.T) {
 	if _, err := r.CreateJob(context.Background(), JobRequest{TaskID: "t", AttemptID: "a"}); err == nil {
 		t.Fatal("CreateJob accepted invalid config")
 	}
-	if _, err := r.Observe(context.Background(), "job"); err == nil {
+	if _, err := r.Observe(context.Background(), "job", "task", "attempt"); err == nil {
 		t.Fatal("Observe accepted invalid config")
 	}
-	if err := r.SendMessage(context.Background(), "job", "message"); err == nil {
+	if err := r.SendMessage(context.Background(), "job", "task", "attempt", "message"); err == nil {
 		t.Fatal("SendMessage accepted invalid config")
 	}
-	if _, err := r.CollectResult(context.Background(), "job"); err == nil {
+	if _, err := r.CollectResult(context.Background(), "job", "task", "attempt"); err == nil {
 		t.Fatal("CollectResult accepted invalid config")
 	}
 }
@@ -317,9 +332,60 @@ func TestKubernetesRuntimeObserveNotFoundIsUnknown(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) }))
 	defer server.Close()
 	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", WorkerImage: "image", ServiceAccount: "sa", Token: "token", HTTPClient: server.Client()})
-	_, err := r.Observe(context.Background(), "job")
+	_, err := r.Observe(context.Background(), "job", "task", "attempt")
 	if !errors.Is(err, ErrUnknown) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestKubernetesRuntimeCancelDoesNotTreatNetworkFailureAsNotFound(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, errors.New("network unavailable") })}
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: "http://kubernetes.invalid", Namespace: "ns", WorkerImage: "image", ServiceAccount: "sa", Token: "token", HTTPClient: client})
+	if err := r.Cancel(context.Background(), "job", "task", "attempt"); !errors.Is(err, ErrUnknown) {
+		t.Fatalf("Cancel() error = %v, want UNKNOWN for network failure", err)
+	}
+}
+
+func TestKubernetesRuntimeCancelTreatsExplicitNotFoundAsIdempotent(t *testing.T) {
+	var methods []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", WorkerImage: "image", ServiceAccount: "sa", Token: "token", HTTPClient: server.Client()})
+	if err := r.Cancel(context.Background(), "job", "task", "attempt"); err != nil {
+		t.Fatalf("Cancel() error = %v, want idempotent success for explicit 404", err)
+	}
+	if !reflect.DeepEqual(methods, []string{http.MethodGet}) {
+		t.Fatalf("methods = %v, want only identity GET", methods)
+	}
+}
+
+func TestKubernetesRuntimeCancelUsesJobUIDDeletePrecondition(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			serveExecutionJobFixture(w)
+			return
+		}
+		var options struct {
+			Preconditions struct {
+				UID string `json:"uid"`
+			} `json:"preconditions"`
+			PropagationPolicy string `json:"propagationPolicy"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&options); err != nil {
+			t.Errorf("decode Job DeleteOptions: %v", err)
+		}
+		if options.Preconditions.UID != "uid-1" || options.PropagationPolicy != "Foreground" {
+			t.Errorf("Job DeleteOptions = %+v", options)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", WorkerImage: "image", ServiceAccount: "sa", Token: "token", HTTPClient: server.Client()})
+	if err := r.Cancel(context.Background(), "job", "task", "attempt"); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -331,7 +397,7 @@ func TestKubernetesRuntimeFourXXDoesNotEchoResponseBody(t *testing.T) {
 	}))
 	defer server.Close()
 	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", WorkerImage: "image", ServiceAccount: "sa", Token: "token", HTTPClient: server.Client()})
-	_, err := r.Observe(context.Background(), "job")
+	_, err := r.Observe(context.Background(), "job", "task", "attempt")
 	if err == nil || !strings.Contains(err.Error(), "HTTP 403") || strings.Contains(err.Error(), secret) {
 		t.Fatalf("err=%v", err)
 	}
@@ -350,14 +416,25 @@ func TestKubernetesRuntimeRejectsInvalidLabelValues(t *testing.T) {
 
 func TestKubernetesRuntimeObserveMapsStates(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"metadata":{"name":"job"},"status":{"active":1}}`))
+		serveExecutionJobFixture(w)
 	}))
 	defer server.Close()
 	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", Token: "token", WorkerImage: "image", ServiceAccount: "sa", HTTPClient: server.Client()})
-	job, err := r.Observe(context.Background(), "job")
+	job, err := r.Observe(context.Background(), "job", "task", "attempt")
 	if err != nil || job.State != JobRunning {
 		t.Fatalf("job=%+v err=%v", job, err)
+	}
+}
+
+func TestKubernetesRuntimeObserveRejectsMismatchedJobLabels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"metadata":{"name":"job","uid":"uid-1","labels":{"task_id":"other-task","attempt_id":"attempt","executor":"k3s"}}}`))
+	}))
+	defer server.Close()
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", Token: "token", WorkerImage: "image", ServiceAccount: "sa", HTTPClient: server.Client()})
+	if _, err := r.Observe(context.Background(), "job", "task", "attempt"); err == nil || !strings.Contains(err.Error(), "identity mismatch") {
+		t.Fatalf("Observe() error = %v, want identity mismatch", err)
 	}
 }
 
@@ -368,7 +445,7 @@ func TestKubernetesRuntimeTimeoutIsUnknownAndTokenIsNotLeaked(t *testing.T) {
 	defer server.Close()
 	token := "super-secret-token"
 	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", Token: token, WorkerImage: "image", ServiceAccount: "sa", HTTPClient: &http.Client{Timeout: time.Millisecond}})
-	_, err := r.Observe(context.Background(), "job")
+	_, err := r.Observe(context.Background(), "job", "task", "attempt")
 	if !errors.Is(err, ErrUnknown) || strings.Contains(err.Error(), token) {
 		t.Fatalf("err=%v", err)
 	}
@@ -378,11 +455,13 @@ func TestKubernetesRuntimeCollectResultUsesPersistentResultProxy(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case r.URL.Path == "/apis/batch/v1/namespaces/ns/jobs/job":
+			serveExecutionJobFixture(w)
 		case r.URL.Path == "/api/v1/namespaces/ns/pods":
-			if r.Method != http.MethodGet || r.URL.Query().Get("labelSelector") != "job-name=job" {
+			if r.Method != http.MethodGet || r.URL.Query().Get("labelSelector") != "job-name=job,task_id=task,attempt_id=attempt" {
 				t.Errorf("pod list request: method=%s query=%s", r.Method, r.URL.RawQuery)
 			}
-			w.Write([]byte(`{"items":[{"metadata":{"name":"pod"}}]}`))
+			serveExecutionPodFixture(w)
 		case r.URL.Path == "/api/v1/namespaces/ns/pods/pod:8080/proxy/v1/result":
 			if r.Method != http.MethodGet {
 				t.Errorf("result proxy method=%s", r.Method)
@@ -394,7 +473,7 @@ func TestKubernetesRuntimeCollectResultUsesPersistentResultProxy(t *testing.T) {
 	}))
 	defer server.Close()
 	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", Token: "token", WorkerImage: "image", ServiceAccount: "sa", HTTPClient: server.Client()})
-	result, err := r.CollectResult(context.Background(), "job")
+	result, err := r.CollectResult(context.Background(), "job", "task", "attempt")
 	if err != nil || result.CommitSHA != "0123456789abcdef0123456789abcdef01234567" || !strings.Contains(result.Output, "thread-1") {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
@@ -402,11 +481,15 @@ func TestKubernetesRuntimeCollectResultUsesPersistentResultProxy(t *testing.T) {
 
 func TestKubernetesRuntimeFollowUpUnsupportedAndCancelNotFound(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/apis/batch/v1/namespaces/ns/jobs/job" {
+			serveExecutionJobFixture(w)
+			return
+		}
 		w.Write([]byte(`{"items":[]}`))
 	}))
 	defer server.Close()
 	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", Token: "token", WorkerImage: "image", ServiceAccount: "sa", HTTPClient: server.Client()})
-	if err := r.SendMessage(context.Background(), "job", "hi"); !errors.Is(err, ErrWorkerNotReady) {
+	if err := r.SendMessage(context.Background(), "job", "task", "attempt", "hi"); !errors.Is(err, ErrWorkerNotReady) {
 		t.Fatalf("err=%v", err)
 	}
 }
@@ -414,11 +497,15 @@ func TestKubernetesRuntimeFollowUpUnsupportedAndCancelNotFound(t *testing.T) {
 func TestKubernetesRuntimeSendMessageUsesPodProxy(t *testing.T) {
 	var gotPath, gotBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/apis/batch/v1/namespaces/ns/jobs/job" {
+			serveExecutionJobFixture(w)
+			return
+		}
 		if r.URL.Path == "/api/v1/namespaces/ns/pods" {
-			if r.Method != http.MethodGet || r.URL.Query().Get("labelSelector") != "job-name=job" {
+			if r.Method != http.MethodGet || r.URL.Query().Get("labelSelector") != "job-name=job,task_id=task,attempt_id=attempt" {
 				t.Errorf("pod list request: method=%s query=%s", r.Method, r.URL.RawQuery)
 			}
-			w.Write([]byte(`{"items":[{"metadata":{"name":"pod"}}]}`))
+			serveExecutionPodFixture(w)
 			return
 		}
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/namespaces/ns/pods/pod:8080/proxy/v1/messages" {
@@ -431,7 +518,7 @@ func TestKubernetesRuntimeSendMessageUsesPodProxy(t *testing.T) {
 	}))
 	defer server.Close()
 	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", Token: "token", WorkerImage: "image", ServiceAccount: "sa", HTTPClient: server.Client()})
-	if err := r.SendMessage(context.Background(), "job", "follow up"); err != nil {
+	if err := r.SendMessage(context.Background(), "job", "task", "attempt", "follow up"); err != nil {
 		t.Fatal(err)
 	}
 	if gotPath != "/api/v1/namespaces/ns/pods/pod:8080/proxy/v1/messages" || gotBody != `{"prompt":"follow up"}` {
@@ -439,13 +526,40 @@ func TestKubernetesRuntimeSendMessageUsesPodProxy(t *testing.T) {
 	}
 }
 
+func TestKubernetesRuntimeSendMessageRejectsPodWithWrongOwner(t *testing.T) {
+	proxied := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/apis/batch/v1/namespaces/ns/jobs/job" {
+			serveExecutionJobFixture(w)
+			return
+		}
+		if r.URL.Path == "/api/v1/namespaces/ns/pods" {
+			w.Write([]byte(`{"items":[{"metadata":{"name":"pod","labels":{"task_id":"task","attempt_id":"attempt","executor":"k3s"},"ownerReferences":[{"kind":"Job","name":"different-job","uid":"uid-1"}]}}]}`))
+			return
+		}
+		proxied = true
+	}))
+	defer server.Close()
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", Token: "token", WorkerImage: "image", ServiceAccount: "sa", HTTPClient: server.Client()})
+	if err := r.SendMessage(context.Background(), "job", "task", "attempt", "do not proxy"); err == nil || !strings.Contains(err.Error(), "owner mismatch") {
+		t.Fatalf("SendMessage() error = %v, want owner mismatch", err)
+	}
+	if proxied {
+		t.Fatal("SendMessage reached the Pod proxy for a mismatched owner")
+	}
+}
+
 func TestKubernetesRuntimeCollectResultRequiresCommitSHA(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/apis/batch/v1/namespaces/ns/jobs/job" {
+			serveExecutionJobFixture(w)
+			return
+		}
 		if r.URL.Path == "/api/v1/namespaces/ns/pods" {
-			if r.Method != http.MethodGet || r.URL.Query().Get("labelSelector") != "job-name=job" {
+			if r.Method != http.MethodGet || r.URL.Query().Get("labelSelector") != "job-name=job,task_id=task,attempt_id=attempt" {
 				t.Errorf("pod list request: method=%s query=%s", r.Method, r.URL.RawQuery)
 			}
-			w.Write([]byte(`{"items":[{"metadata":{"name":"pod"}}]}`))
+			serveExecutionPodFixture(w)
 			return
 		}
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/namespaces/ns/pods/pod:8080/proxy/v1/result" {
@@ -455,7 +569,7 @@ func TestKubernetesRuntimeCollectResultRequiresCommitSHA(t *testing.T) {
 	}))
 	defer server.Close()
 	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", Token: "token", WorkerImage: "image", ServiceAccount: "sa", HTTPClient: server.Client()})
-	if _, err := r.CollectResult(context.Background(), "job"); !errors.Is(err, ErrResultProtocol) {
+	if _, err := r.CollectResult(context.Background(), "job", "task", "attempt"); !errors.Is(err, ErrResultProtocol) {
 		t.Fatalf("err=%v", err)
 	}
 }
@@ -464,17 +578,156 @@ func TestKubernetesRuntimeCollectResultRejectsInvalidCommitSHA(t *testing.T) {
 	for _, commitSHA := range []string{"abc123", "0123456789abcdef0123456789abcdef0123456z"} {
 		t.Run(commitSHA, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/apis/batch/v1/namespaces/ns/jobs/job" {
+					serveExecutionJobFixture(w)
+					return
+				}
 				if r.URL.Path == "/api/v1/namespaces/ns/pods" {
-					w.Write([]byte(`{"items":[{"metadata":{"name":"pod"}}]}`))
+					serveExecutionPodFixture(w)
 					return
 				}
 				w.Write([]byte(`{"thread_id":"thread-1","events":["done"],"commit_sha":"` + commitSHA + `"}`))
 			}))
 			defer server.Close()
 			r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", Token: "token", WorkerImage: "image", ServiceAccount: "sa", HTTPClient: server.Client()})
-			if _, err := r.CollectResult(context.Background(), "job"); !errors.Is(err, ErrResultProtocol) {
+			if _, err := r.CollectResult(context.Background(), "job", "task", "attempt"); !errors.Is(err, ErrResultProtocol) {
 				t.Fatalf("err=%v", err)
 			}
 		})
+	}
+}
+
+func TestKubernetesRuntimeCleanupExecutionDeletesJobAndVerifiesPodsGone(t *testing.T) {
+	jobDeleted := false
+	podDeleted := false
+	jobID := jobName("task", "attempt")
+	jobPath := "/apis/batch/v1/namespaces/ns/jobs/" + jobID
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case jobPath:
+			if r.Method == http.MethodDelete {
+				var options struct {
+					Preconditions struct {
+						UID string `json:"uid"`
+					} `json:"preconditions"`
+					PropagationPolicy string `json:"propagationPolicy"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&options); err != nil {
+					t.Errorf("decode Job DeleteOptions: %v", err)
+				}
+				if options.Preconditions.UID != "uid-1" || options.PropagationPolicy != "Foreground" {
+					t.Errorf("Job DeleteOptions = %+v", options)
+				}
+				jobDeleted = true
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			if jobDeleted {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"metadata":{"name":"`+jobID+`","uid":"uid-1","labels":{"task_id":"task","attempt_id":"attempt","executor":"k3s"}}}`)
+		case "/api/v1/namespaces/ns/pods/pod":
+			if r.Method != http.MethodDelete {
+				t.Errorf("orphan Pod delete method = %s", r.Method)
+			}
+			var options struct {
+				Preconditions struct {
+					UID string `json:"uid"`
+				} `json:"preconditions"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&options); err != nil {
+				t.Errorf("decode Pod DeleteOptions: %v", err)
+			}
+			if options.Preconditions.UID != "pod-uid" {
+				t.Errorf("Pod DeleteOptions = %+v", options)
+			}
+			podDeleted = true
+			w.WriteHeader(http.StatusOK)
+		case "/api/v1/namespaces/ns/pods":
+			if r.URL.Query().Get("labelSelector") != "job-name="+jobID+",task_id=task,attempt_id=attempt" {
+				t.Errorf("Pod selector = %q", r.URL.Query().Get("labelSelector"))
+			}
+			if podDeleted {
+				w.Write([]byte(`{"items":[]}`))
+				return
+			}
+			w.Write([]byte(`{"items":[{"metadata":{"name":"pod","uid":"pod-uid","labels":{"task_id":"task","attempt_id":"attempt","executor":"k3s"},"ownerReferences":[{"kind":"Job","name":"` + jobID + `","uid":"uid-1"}]}}]}`))
+		default:
+			t.Errorf("unexpected cleanup request %s %s", r.Method, r.URL.String())
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", Token: "token", WorkerImage: "image", ServiceAccount: "sa", HTTPClient: server.Client(), DrainTimeout: time.Second, DrainPollInterval: time.Millisecond})
+	if err := r.CleanupExecution(context.Background(), "task", "attempt"); err != nil {
+		t.Fatal(err)
+	}
+	if !jobDeleted || !podDeleted {
+		t.Fatalf("cleanup jobDeleted=%t podDeleted=%t", jobDeleted, podDeleted)
+	}
+}
+
+func TestKubernetesRuntimeCleanupRejectsRecreatedJobUID(t *testing.T) {
+	jobID := jobName("task", "attempt")
+	jobPath := "/apis/batch/v1/namespaces/ns/jobs/" + jobID
+	gets, podDeletes := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case jobPath:
+			if r.Method == http.MethodDelete {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			gets++
+			uid := "uid-1"
+			if gets > 1 {
+				uid = "uid-2"
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"metadata":{"name":"`+jobID+`","uid":"`+uid+`","labels":{"task_id":"task","attempt_id":"attempt","executor":"k3s"}}}`)
+		case "/api/v1/namespaces/ns/pods":
+			w.Write([]byte(`{"items":[{"metadata":{"name":"pod","uid":"pod-uid","labels":{"task_id":"task","attempt_id":"attempt","executor":"k3s"},"ownerReferences":[{"kind":"Job","name":"` + jobID + `","uid":"uid-2"}]}}]}`))
+		case "/api/v1/namespaces/ns/pods/pod":
+			podDeletes++
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", WorkerImage: "image", ServiceAccount: "sa", Token: "token", HTTPClient: server.Client(), DrainTimeout: time.Second, DrainPollInterval: time.Millisecond})
+	if err := r.CleanupExecution(context.Background(), "task", "attempt"); err == nil || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("CleanupExecution() error = %v, want Job identity failure", err)
+	}
+	if podDeletes != 0 {
+		t.Fatalf("deleted %d Pod(s) owned by a recreated Job", podDeletes)
+	}
+}
+
+func TestKubernetesRuntimeCleanupDoesNotDeleteOrphanPodWithoutKnownJobUID(t *testing.T) {
+	jobID := jobName("task", "attempt")
+	podDeletes := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/apis/batch/v1/namespaces/ns/jobs/" + jobID:
+			w.WriteHeader(http.StatusNotFound)
+		case "/api/v1/namespaces/ns/pods":
+			w.Write([]byte(`{"items":[{"metadata":{"name":"pod","uid":"pod-uid","labels":{"task_id":"task","attempt_id":"attempt","executor":"k3s"},"ownerReferences":[{"kind":"Job","name":"` + jobID + `","uid":"unknown-original-uid"}]}}]}`))
+		case "/api/v1/namespaces/ns/pods/pod":
+			podDeletes++
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	r := NewKubernetesRuntime(KubernetesConfig{BaseURL: server.URL, Namespace: "ns", WorkerImage: "image", ServiceAccount: "sa", Token: "token", HTTPClient: server.Client(), DrainTimeout: 20 * time.Millisecond, DrainPollInterval: time.Millisecond})
+	if err := r.CleanupExecution(context.Background(), "task", "attempt"); err == nil {
+		t.Fatal("CleanupExecution() succeeded without evidence tying an orphan Pod to the original Job UID")
+	}
+	if podDeletes != 0 {
+		t.Fatalf("deleted %d orphan Pod(s) without a known Job UID", podDeletes)
 	}
 }

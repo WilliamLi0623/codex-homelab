@@ -37,6 +37,7 @@ type Node struct {
 	VMID        int
 	Generation  string
 	TaskID      string
+	AttemptID   string
 	KubeNode    string
 	State       NodeState
 	Drained     bool
