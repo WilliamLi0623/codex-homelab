@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"runtime"
 	"strings"
 
 	"golang.org/x/net/http2"
@@ -65,16 +67,72 @@ type chatResponse struct {
 // ChatHTTPClient presents an OpenAI-compatible Chat Completions endpoint as
 // the ResponsesClient used by the bounded Muse runner.
 type ChatHTTPClient struct {
-	BaseURL string
-	APIKey  string
-	HTTP    *http.Client
+	BaseURL   string
+	APIKey    string
+	UserAgent string
+	HTTP      *http.Client
 }
 
 func NewChatHTTPClient(baseURL, apiKey string, httpClient *http.Client) *ChatHTTPClient {
 	if httpClient == nil {
 		httpClient = &http.Client{Transport: &http2.Transport{}}
 	}
-	return &ChatHTTPClient{BaseURL: strings.TrimRight(baseURL, "/"), APIKey: strings.TrimSpace(apiKey), HTTP: httpClient}
+	return &ChatHTTPClient{BaseURL: strings.TrimRight(baseURL, "/"), APIKey: strings.TrimSpace(apiKey), UserAgent: codexCLIUserAgent(), HTTP: httpClient}
+}
+
+func codexCLIUserAgent() string {
+	version := cleanUserAgentPart(os.Getenv("CODEX_CLI_VERSION"))
+	if version == "" {
+		version = "0.155.0"
+	}
+	osName := cleanUserAgentPart(os.Getenv("CODEX_OS_NAME"))
+	osVersion := cleanUserAgentPart(os.Getenv("CODEX_OS_VERSION"))
+	if osName == "" || osVersion == "" {
+		if data, err := os.ReadFile("/etc/os-release"); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				key, value, ok := strings.Cut(line, "=")
+				if !ok {
+					continue
+				}
+				value = cleanUserAgentPart(strings.Trim(value, `"'`))
+				switch key {
+				case "NAME":
+					if osName == "" {
+						osName = value
+					}
+				case "VERSION_ID":
+					if osVersion == "" {
+						osVersion = value
+					}
+				}
+			}
+		}
+	}
+	if osName == "" {
+		osName = runtime.GOOS
+	}
+	if osVersion == "" {
+		osVersion = "unknown"
+	}
+	architecture := cleanUserAgentPart(os.Getenv("CODEX_ARCH"))
+	if architecture == "" {
+		architecture = runtime.GOARCH
+		switch architecture {
+		case "amd64":
+			architecture = "x86_64"
+		case "arm64":
+			architecture = "aarch64"
+		}
+	}
+	terminal := cleanUserAgentPart(os.Getenv("TERM"))
+	if terminal == "" {
+		terminal = "non-interactive"
+	}
+	return fmt.Sprintf("codex_cli_rs/%s (%s %s; %s) %s", version, osName, osVersion, architecture, terminal)
+}
+
+func cleanUserAgentPart(value string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 }
 
 func (c *ChatHTTPClient) CreateResponse(ctx context.Context, request Request) (Response, error) {
@@ -103,6 +161,7 @@ func (c *ChatHTTPClient) CreateResponse(ctx context.Context, request Request) (R
 	httpRequest.Header.Set("Authorization", "Bearer "+c.APIKey)
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("Accept", "application/json")
+	httpRequest.Header.Set("User-Agent", c.UserAgent)
 	response, err := c.HTTP.Do(httpRequest)
 	if err != nil {
 		return Response{}, fmt.Errorf("send Muse Chat request: %w", err)

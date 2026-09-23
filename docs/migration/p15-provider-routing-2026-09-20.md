@@ -116,3 +116,53 @@ commit contract. No unverified endpoint was added to production routing.
   imported after allocation. This is a remaining P19 bootstrap-independence
   item; the P17 probe was completed by importing the already-built image into
   its newly allocated node.
+
+## 2026-09-23 CC Hub coding-agent User-Agent and remote GLM adapter proof
+
+CC Hub requires requests to identify as a Codex coding-agent client. The
+`internal/muse.ChatHTTPClient` previously inherited Go's default
+`Go-http-client/1.1`, even though it correctly translated the existing bounded
+Responses-client interface to Chat Completions. The adapter now sets:
+
+```text
+codex_cli_rs/<Codex version> (<OS name> <OS version>; <architecture>) <terminal>
+```
+
+The version defaults to the repository-locked Codex CLI `0.155.0`; explicit
+`CODEX_CLI_VERSION`, `CODEX_OS_NAME`, `CODEX_OS_VERSION`, and `CODEX_ARCH`
+overrides are supported. Otherwise OS release, Go runtime architecture, and
+`TERM` are used, with a non-interactive terminal fallback. The key is never
+included in the User-Agent.
+
+Remote Linux verification on 2026-09-23:
+
+- A regression test first reproduced the old default User-Agent, then passed
+  with the exact configured value
+  `codex_cli_rs/0.155.0 (Ubuntu 24.04; x86_64) linux`.
+- `go test ./internal/muse ./cmd/agentd -count=1` passed on the remote PVE
+  Linux host, and the updated `codex-agentd` built successfully there. Binary
+  SHA256: `b88eb21e038737b11885d8a50f64b0049eee434510d0d89e0690e72cd4f707a2`.
+- A live GLM-5.3 Flash run through the current-source local Muse adapter used
+  `CODEX_WIRE_API=chat-completions` and reasoning effort `max`. It made two
+  sequential terminal calls, created and reread `adapter_probe.txt` containing
+  `GLM_ADAPTER_OK`, completed both tool-result continuations, passed validation,
+  and created a scratch-repository commit. Events were
+  `muse.response → muse.tool_call → muse.tool_result` (twice), then
+  `muse.completed`; scratch commit:
+  `2a33ddc4d5d10b629c7641402fde2fe9f5dcfc8f`.
+- Direct upstream probes with the same coding-agent User-Agent returned HTTP
+  200 for GLM Chat text, a standard `get_test_value` function call, and the
+  tool-result continuation.
+- The active Controller was read-only inspected and remains configured for
+  `glm-5.3-flash`, `chat-completions`, and `max`, with worker image
+  `localhost/codex-worker:agentd-glm-chat-p27-repo-normalize-0296fb99` and
+  template VMID 3900. This running image has not yet been rebuilt or rolled
+  into the persistent worker template; therefore this evidence proves the
+  current-source adapter and direct GLM tool loop, not a post-change
+  Controller-dispatched task. The Controller and templates were not modified.
+
+- A broad remote `go test ./internal/... ./cmd/agentd -count=1` passed except
+  for three existing `internal/git` tests that hard-code Windows
+  `C:\repo` paths and fail Linux `filepath.IsAbs` checks. These unrelated
+  platform-specific failures were not changed. The targeted remote packages
+  above passed.

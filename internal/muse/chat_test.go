@@ -52,6 +52,31 @@ func TestChatHTTPClientBridgesToolCallToResponses(t *testing.T) {
 	}
 }
 
+func TestChatHTTPClientSendsConfiguredCodexUserAgent(t *testing.T) {
+	t.Setenv("CODEX_CLI_VERSION", "0.155.0")
+	t.Setenv("CODEX_OS_NAME", "Ubuntu")
+	t.Setenv("CODEX_OS_VERSION", "24.04")
+	t.Setenv("CODEX_ARCH", "x86_64")
+	t.Setenv("TERM", "linux")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		const want = "codex_cli_rs/0.155.0 (Ubuntu 24.04; x86_64) linux"
+		if got := r.UserAgent(); got != want {
+			t.Errorf("User-Agent = %q, want %q", got, want)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chat-ua","choices":[{"finish_reason":"stop","message":{"content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	_, err := NewChatHTTPClient(server.URL, "test-key", server.Client()).CreateResponse(context.Background(), Request{
+		Model: "glm-5.3-flash", Input: []InputItem{{Role: "user", Text: "ping"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestChatHTTPClientEncodesExplicitReasoningEffort(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request chatRequest
