@@ -48,7 +48,7 @@
 - [ ] Create a disposable no-side-effect thread, resume it with the same thread ID and the fallback provider/model/effort, and verify the conversation marker is retained and the next turn reports the requested provider/model.
 - [ ] Create one disposable subagent in each configured mode and verify its effective provider/model/effort from runtime metadata, not merely TOML parsing.
 - [ ] Record whether a running thread can safely continue after an exhausted turn, whether only a completed turn can be resumed, and whether new subagents observe changed role defaults.
-- [ ] If provider switching or quota classification cannot be proven with the installed app-server, stop before enabling automatic fallback; report the exact failed capability rather than adding a status-code heuristic.
+- [x] If provider switching or quota classification cannot be proven with the installed app-server, stop before enabling automatic fallback; report the exact failed capability rather than adding a status-code heuristic. The remote CLI created a disposable thread, but its initial OpenAI Luna turn failed with an authentication-class error; no provider switch was attempted and fallback remains disabled.
 
 Run: `codex app-server generate-json-schema --experimental --out <unique-temp-dir>`
 

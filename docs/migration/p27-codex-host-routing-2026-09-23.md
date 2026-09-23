@@ -119,6 +119,20 @@ probe. No saved Codex configuration was changed.
 | Production P25 isolation/failure matrices | **Pending** | Full production E2E remains open. |
 | Automatic fallback enablement | **Disabled** | Remains disabled until the pending gates above pass. |
 
+### Remote same-thread probe attempt — 2026-09-24
+
+On LXC3006, Codex CLI `0.155.0` had the App Server create a disposable thread
+with the requested `openai` / `gpt-6-luna` route. Its first harmless turn
+completed with status `failed`; a second minimal diagnostic classified the
+structured turn error as authentication-related. The raw error text was not
+emitted or persisted. No GLM resume was attempted, so this is **not** evidence
+of a provider-switch or continuity result. The probe process was stopped after the
+failure; two disposable test threads remain in LXC3006's root Codex history.
+No credential was copied from the Windows host, and no remote config or
+service was changed. Automatic fallback remains disabled. The authentication-
+related error classification must be investigated before the same-thread
+acceptance probe can continue.
+
 Local Codex config was backed up to
 `%USERPROFILE%\.codex\config.toml.pre-p27-routing-20260924.bak`; only
 `agents.default_subagent_reasoning_effort` changed from `medium` to `high`.
