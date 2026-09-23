@@ -249,3 +249,59 @@ The first app-server launch from the restricted shell could not initialize SQLit
   same-thread OpenAI↔GLM routing, effective subagent provider/effort, clean
   three-call Codex streaming, file-edit coding-agent flow, and production P25
   isolation/failure E2E remain open. Automatic fallback remains disabled.
+
+## Linux bridge E2E checkpoint — 2026-09-24
+
+A fresh Linux run of the just-built bridge exposed a real SSE failure: the
+upstream stream was cancelled immediately after the HTTP response headers,
+although the client remained connected. Root cause was `HTTPUpstream.Do`
+deferring its timeout-context cancellation even though it returns the response
+body for the caller to read later. A focused transport test first failed with
+`context canceled`; the fix now keeps the timeout alive until response-body
+`Close`, while still cancelling on transport errors and non-2xx responses.
+
+After rebuilding from this worktree and running on LXC3006 behind loopback
+`127.0.0.1:17861`, direct Linux probes returned HTTP 200 for non-stream text
+(`BRIDGE_OK`) and SSE text (`STREAM_FIXED_OK`). The SSE emitted a stable
+response/message ID lifecycle and ended in `response.completed`. The bridge
+received the CC Hub key over the PVE-to-LXC stdin pipe; the key was not in
+arguments, files, Codex config, fixtures, or logs. The bridge process had a
+bounded timeout and bound only to loopback.
+
+Using Codex CLI `0.155.0`, an ephemeral `cch_bridge` Responses provider,
+GLM-5.3 Flash `max`, and `supports_websockets=false`:
+
+- A real `pwd` terminal call returned `/root` and completed normally.
+- Three sequential terminal calls (`pwd`, listing the returned `/root`, then
+  reading `/etc/hostname`) each ran once and completed in one turn.
+- Two independent terminal calls (`pwd` and `hostname`) both completed in one
+  turn with distinct call IDs.
+- Codex created and reread `marker.txt` with exact contents
+  `P27_FILE_EDIT_OK` in a disposable `/run` workspace.
+- In a disposable Git repository, Codex inspected an intentionally failing
+  Python implementation, changed only `main.py`, and the resulting
+  `python3 -m unittest -v` passed both tests. Independent inspection confirmed
+  the one-line parity fix and `git diff --check` passed.
+
+All those successful Codex turns completed without reconnect/retry warning
+lines; bridge logs reported successful upstream streams, with no prompts or
+tool contents. A later read-only Codex verification request exceeded its
+90-second client timeout after the bounded 300-second bridge test process had
+expired; this did not alter the disposable repo or invalidate the independently
+rerun passing tests. Temporary test files and binaries were placed under
+LXC/PVE `/run` (tmpfs); no prior test servers were stopped or removed.
+
+The remote quota RPC has a separate version gate: LXC3006's Codex CLI
+`0.155.0` login-status command succeeds, but its generated experimental App
+Server schema does not expose `account/rateLimits/read`; a direct RPC attempt
+returned JSON-RPC `-32600`. The main Windows Codex CLI is `0.156.1`, whose
+schema and live quota read were already verified above. The coordinator must
+run only against a CLI that supports the authoritative RPC; errors from the
+older remote CLI remain fail-closed and do not change routing mode.
+
+The live bridge text stream, actual Codex tool loop, three sequential calls,
+two independent calls, file edit, and bounded disposable coding task now pass
+on Linux. Same-thread OpenAI↔GLM routing, effective subagent route metadata,
+dynamic transition/recovery through the deployed coordinator, and production
+P25 isolation/failure matrices remain open. No persistent config or production
+service was changed, and automatic fallback remains disabled.

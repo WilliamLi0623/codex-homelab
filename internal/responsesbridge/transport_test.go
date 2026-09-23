@@ -3,10 +3,12 @@ package responsesbridge
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHTTPUpstreamMapsProviderFailuresWithoutRetry(t *testing.T) {
@@ -33,6 +35,35 @@ func TestHTTPUpstreamMapsProviderFailuresWithoutRetry(t *testing.T) {
 		if calls != 1 {
 			t.Fatalf("status %d was retried %d times", want.status, calls-1)
 		}
+	}
+}
+
+func TestHTTPUpstreamKeepsRequestContextUntilStreamingBodyIsClosed(t *testing.T) {
+	headersSent := make(chan struct{})
+	releaseBody := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		close(headersSent)
+		<-releaseBody
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	resp, err := (HTTPUpstream{URL: server.URL, Timeout: time.Second}).Do(context.Background(), ChatRequest{Model: DefaultModel, Stream: true})
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	<-headersSent
+	close(releaseBody)
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read stream body after Do() returned: %v", err)
+	}
+	if string(body) != "data: [DONE]\n\n" {
+		t.Fatalf("stream body = %q", body)
 	}
 }
 

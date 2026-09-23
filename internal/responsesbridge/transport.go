@@ -33,17 +33,20 @@ func (u HTTPUpstream) Do(ctx context.Context, request ChatRequest) (*http.Respon
 	if client == nil {
 		client = &http.Client{}
 	}
+	requestCtx := ctx
+	var cancel context.CancelFunc
 	if u.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, u.Timeout)
-		defer cancel()
+		requestCtx, cancel = context.WithTimeout(ctx, u.Timeout)
 	}
 	url := strings.TrimRight(u.URL, "/")
 	if !strings.HasSuffix(url, "/chat/completions") {
 		url += "/chat/completions"
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
 		return nil, fmt.Errorf("create upstream request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -55,10 +58,13 @@ func (u HTTPUpstream) Do(ctx context.Context, request ChatRequest) (*http.Respon
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+		if cancel != nil {
+			cancel()
+		}
+		if errors.Is(requestCtx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
 			return nil, &UpstreamError{Status: 499, Class: "client_cancelled"}
 		}
-		if errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(requestCtx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, &UpstreamError{Status: http.StatusGatewayTimeout, Class: "timeout"}
 		}
 		return nil, &UpstreamError{Status: http.StatusBadGateway, Class: "network"}
@@ -66,6 +72,9 @@ func (u HTTPUpstream) Do(ctx context.Context, request ChatRequest) (*http.Respon
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		_ = resp.Body.Close()
+		if cancel != nil {
+			cancel()
+		}
 		class := "provider_failure"
 		switch resp.StatusCode {
 		case 400:
@@ -77,5 +86,19 @@ func (u HTTPUpstream) Do(ctx context.Context, request ChatRequest) (*http.Respon
 		}
 		return nil, &UpstreamError{Status: resp.StatusCode, Class: class}
 	}
+	if cancel != nil {
+		resp.Body = &cancelOnCloseReadCloser{ReadCloser: resp.Body, cancel: cancel}
+	}
 	return resp, nil
+}
+
+type cancelOnCloseReadCloser struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelOnCloseReadCloser) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
 }
