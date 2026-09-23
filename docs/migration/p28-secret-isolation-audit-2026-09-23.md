@@ -1,8 +1,9 @@
 # P28 secret and isolation audit — 2026-09-23
 
 P28 source tests and two live cross-task probes passed. The updated Controller
-is deployed. The phase remains open until the two stopped worker containers
-are safely reconciled and released. No worker was destroyed during this audit.
+is deployed. The two explicitly authorized stopped worker containers have now
+been reconciled and released through the Controller. P28's cleanup gate is
+closed; no other VMID or historical UNKNOWN claim was touched.
 
 ## Secret scan
 
@@ -34,7 +35,8 @@ Both task records reached `SUCCEEDED`, and both validation rows are `PASSED`.
 The worker Nodes, Jobs, and Pods are absent. Proxmox reports LXC 3001 and 3003
 as `stopped`; their exact task/generation metadata matches these attempts.
 
-Release progress for both attempts is still `VERIFY_STOPPED/UNKNOWN`. The
+At the initial audit checkpoint, release progress for both attempts was
+`VERIFY_STOPPED/UNKNOWN`. The
 Controller recorded `worker VMID <id> is not stopped`; later read-only checks
 confirmed both containers are stopped. This is consistent with an immediate
 status check racing Proxmox state propagation. The containers and durable
@@ -67,8 +69,26 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/controller  PASS
 go test -race ./internal/executor/k3s ...          NOT RUN: cgo is disabled in this Go environment
 ```
 
-The P28 gate now requires explicit authorization to reconcile and destroy
-these exact stopped task workers, then verification that each worker Job/Pod,
-Node, LXC, and capacity claim is absent after release. Their task/generation
-metadata and Proxmox stopped state have been read-only verified; no other VMID
-is in scope.
+At the initial audit checkpoint, P28 required explicit authorization to
+reconcile and destroy these exact stopped task workers, then verification that
+each worker Job/Pod, Node, LXC, and capacity claim was absent after release.
+That authorization was subsequently provided; completion evidence follows.
+No other VMID was in scope.
+
+## Authorized release completion — 2026-09-23
+
+After explicit user authorization, both records were reconciled through the
+Controller's `/release/reconcile` endpoint using the durable task/attempt,
+VMID, generation, and Kubernetes node identity. The existing observer then
+resumed the persisted release workflow; no direct `pct destroy` or database
+claim deletion was used.
+
+| VMID | Task / attempt | Release | Capacity claim | Proxmox config | K3s Node / Job / Pod |
+| ---: | --- | --- | --- | --- | --- |
+| 3001 | `task-51d7e77031db4de9884c14aabe0aff78` / `attempt-2ea28962b78f57b2a0f9aecaa844e520` | `DONE/COMPLETED` | absent | absent | absent |
+| 3003 | `task-2f3e13cc6c588066869fcf53053f49a3` / `attempt-44c92ab228dfd21e258710b6a0d546ef` | `DONE/COMPLETED` | absent | absent | absent |
+
+Final live checks confirmed the Controller `/v1/ready` endpoint remains ready.
+The durable release rows retain the exact generations and node names above;
+their errors are empty. The historical VMID 3002 UNKNOWN claim and all other
+guests/claims remain untouched.
