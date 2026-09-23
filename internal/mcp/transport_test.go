@@ -104,6 +104,30 @@ func TestTransportWriteToolCallAndUnknownTool(t *testing.T) {
 	}
 }
 
+func TestTransportAcceptsStandardOptionalMCPFields(t *testing.T) {
+	transport := newTestTransport(t, nil)
+
+	list := callTransport(t, transport, `{"jsonrpc":"2.0","id":"list-meta","method":"tools/list","params":{"cursor":"page-2","_meta":{"progressToken":"p27"}}}`)
+	if list.Code != http.StatusOK {
+		t.Fatalf("tools/list with standard optional fields status = %d, body = %s", list.Code, list.Body.String())
+	}
+	var listBody rpcResponse
+	decodeJSON(t, list, &listBody)
+	if listBody.Error != nil {
+		t.Fatalf("tools/list with standard optional fields error = %+v", listBody.Error)
+	}
+
+	call := callTransport(t, transport, `{"jsonrpc":"2.0","id":"call-meta","method":"tools/call","params":{"name":"list_tasks","arguments":{},"_meta":{"progressToken":"p27"}}}`)
+	if call.Code != http.StatusOK {
+		t.Fatalf("tools/call with standard optional fields status = %d, body = %s", call.Code, call.Body.String())
+	}
+	var callBody rpcResponse
+	decodeJSON(t, call, &callBody)
+	if callBody.Error != nil {
+		t.Fatalf("tools/call with standard optional fields error = %+v", callBody.Error)
+	}
+}
+
 func TestTransportRejectsMalformedJSONAndMissingAuth(t *testing.T) {
 	transport := newTestTransport(t, tokenAuthenticator{token: "secret"})
 	missingAuth := callTransport(t, transport, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)

@@ -17,10 +17,21 @@ type ProfileState struct {
 	Healthy bool
 }
 
-type Model struct{ ID string }
+type WireAPI string
+
+const (
+	WireAPIResponses       WireAPI = "responses"
+	WireAPIChatCompletions WireAPI = "chat-completions"
+	WireAPICodingAgent     WireAPI = "coding-agent"
+)
+
+type Model struct {
+	ID      string
+	WireAPI WireAPI
+}
 
 var priority = map[Profile][]string{
-	ProfileFullCoding: {"openai-primary", "muse-spark-1.3-contributor", "glm-5.3-flash"},
+	ProfileFullCoding: {"openai-primary", "muse-spark-1.3-contributor"},
 	ProfileWorker:     {"glm-5.3-flash"},
 }
 
@@ -56,10 +67,17 @@ func (r *Router) Next(profile Profile) (Model, error) {
 		id := ordered[i]
 		if r.available(profile, id) {
 			r.next[profile] = i + 1
-			return Model{ID: id}, nil
+			return Model{ID: id, WireAPI: wireAPI(id)}, nil
 		}
 	}
 	return Model{}, &RouteError{Profile: profile, Code: ErrNoAvailableProfile}
+}
+
+func wireAPI(id string) WireAPI {
+	if id == "glm-5.3-flash" {
+		return WireAPIChatCompletions
+	}
+	return WireAPIResponses
 }
 
 func (r *Router) available(profile Profile, id string) bool {

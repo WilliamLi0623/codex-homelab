@@ -9,5 +9,5 @@ go=1.22.2
 controller_schema=1
 agentd=unreleased-blocks-deployment
 k3s=v1.37.0+k3s1
-kueue=unresolved-blocks-deployment
+kueue=v0.19.5
 container_image_digest=unresolved-blocks-deployment

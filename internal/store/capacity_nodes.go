@@ -59,6 +59,12 @@ func normalizeReservedVMIDs(values []int) (map[int]struct{}, error) {
 }
 
 func (s *Store) ClaimCapacity(ctx context.Context, request CapacityClaimRequest) (CapacityClaim, bool, error) {
+	return s.ClaimCapacityExcluding(ctx, request, nil)
+}
+
+// ClaimCapacityExcluding allocates a ledger VMID while skipping targets that
+// were observed as occupied outside the Controller ledger.
+func (s *Store) ClaimCapacityExcluding(ctx context.Context, request CapacityClaimRequest, excluded map[int]struct{}) (CapacityClaim, bool, error) {
 	if err := s.validateCapacityRequest(request); err != nil {
 		return CapacityClaim{}, false, err
 	}
@@ -67,7 +73,7 @@ func (s *Store) ClaimCapacity(ctx context.Context, request CapacityClaimRequest)
 		if err := ctx.Err(); err != nil {
 			return CapacityClaim{}, false, err
 		}
-		claim, created, err := s.claimCapacityOnce(ctx, request)
+		claim, created, err := s.claimCapacityOnce(ctx, request, excluded)
 		if err == nil {
 			return claim, created, nil
 		}
@@ -82,7 +88,7 @@ func (s *Store) ClaimCapacity(ctx context.Context, request CapacityClaimRequest)
 	return CapacityClaim{}, false, fmt.Errorf("capacity claim retry limit reached: %w", lastErr)
 }
 
-func (s *Store) claimCapacityOnce(ctx context.Context, request CapacityClaimRequest) (CapacityClaim, bool, error) {
+func (s *Store) claimCapacityOnce(ctx context.Context, request CapacityClaimRequest, excluded map[int]struct{}) (CapacityClaim, bool, error) {
 	s.capacityMu.Lock()
 	defer s.capacityMu.Unlock()
 
@@ -108,7 +114,7 @@ func (s *Store) claimCapacityOnce(ctx context.Context, request CapacityClaimRequ
 		return CapacityClaim{}, false, fmt.Errorf("read capacity claim: %w", err)
 	}
 
-	vmid, err := s.nextCapacityVMID(ctx, tx, request.VMID)
+	vmid, err := s.nextCapacityVMID(ctx, tx, request.VMID, excluded)
 	if err != nil {
 		return CapacityClaim{}, false, err
 	}
@@ -152,7 +158,7 @@ func (s *Store) validateCapacityRequest(request CapacityClaimRequest) error {
 	return nil
 }
 
-func (s *Store) nextCapacityVMID(ctx context.Context, tx *sql.Tx, requested int) (int, error) {
+func (s *Store) nextCapacityVMID(ctx context.Context, tx *sql.Tx, requested int, excluded map[int]struct{}) (int, error) {
 	if requested != 0 {
 		var exists int
 		err := tx.QueryRowContext(ctx, "SELECT 1 FROM capacity_nodes WHERE vmid = ?", requested).Scan(&exists)
@@ -184,11 +190,37 @@ func (s *Store) nextCapacityVMID(ctx context.Context, tx *sql.Tx, requested int)
 		if _, reserved := s.reservedVMIDs[vmid]; reserved {
 			continue
 		}
+		if _, blocked := excluded[vmid]; blocked {
+			continue
+		}
 		if _, used := occupied[vmid]; !used {
 			return vmid, nil
 		}
 	}
 	return 0, ErrCapacityClaimConflict
+}
+
+// DeleteCapacityClaimIfState removes a claim that has not reached an external
+// mutation. The exact state predicate prevents deleting a claim after another
+// goroutine has advanced it to CREATING or UNKNOWN.
+func (s *Store) DeleteCapacityClaimIfState(ctx context.Context, taskID, attemptID string, vmid int, state string) error {
+	if taskID == "" || attemptID == "" || vmid < 3000 || vmid > 3999 || state != CapacityClaimed && state != CapacityCreating {
+		return ErrCapacityClaimInvalid
+	}
+	s.capacityMu.Lock()
+	defer s.capacityMu.Unlock()
+	result, err := s.db.ExecContext(ctx, "DELETE FROM capacity_nodes WHERE task_id = ? AND attempt_id = ? AND vmid = ? AND state = ?", taskID, attemptID, vmid, state)
+	if err != nil {
+		return fmt.Errorf("delete capacity claim: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count deleted capacity claim: %w", err)
+	}
+	if count == 0 {
+		return ErrCapacityClaimConflict
+	}
+	return nil
 }
 
 func (s *Store) GetCapacityClaim(ctx context.Context, taskID, attemptID string) (CapacityClaim, error) {

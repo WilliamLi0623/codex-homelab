@@ -13,7 +13,7 @@ func TestRouterFullCodingPriority(t *testing.T) {
 		"glm-5.3-flash":              {Enabled: true, Healthy: true},
 	})
 
-	for _, want := range []string{"openai-primary", "muse-spark-1.3-contributor", "glm-5.3-flash"} {
+	for _, want := range []string{"openai-primary", "muse-spark-1.3-contributor"} {
 		got, err := r.Next(ProfileFullCoding)
 		if err != nil || got.ID != want {
 			t.Fatalf("Next() = %#v, %v; want %q", got, err, want)
@@ -125,12 +125,11 @@ func TestReportFailureIsProfileScopedAndDoesNotRegressOnDuplicateOrOutOfOrderRep
 	if err := r.ReportFailure(ProfileFullCoding, fullFirst.ID, ProviderError("duplicate old report")); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.ReportFailure(ProfileFullCoding, "glm-5.3-flash", ProviderError("out of order")); err != nil {
-		t.Fatal(err)
+	if err := r.ReportFailure(ProfileFullCoding, "glm-5.3-flash", ProviderError("out of order")); err == nil {
+		t.Fatal("coding-agent-only GLM was accepted in full-coding profile")
 	}
-	fullThird, _ := r.Next(ProfileFullCoding)
-	if fullThird.ID != "glm-5.3-flash" {
-		t.Fatalf("full route regressed/skipped = %q; want glm", fullThird.ID)
+	if _, err := r.Next(ProfileFullCoding); err == nil {
+		t.Fatal("full-coding unexpectedly selected coding-agent-only GLM")
 	}
 	scoped := New(map[string]ProfileState{
 		"openai-primary":             {Enabled: true, Healthy: true},
@@ -138,9 +137,8 @@ func TestReportFailureIsProfileScopedAndDoesNotRegressOnDuplicateOrOutOfOrderRep
 		"glm-5.3-flash":              {Enabled: true, Healthy: true},
 	})
 	_, _ = scoped.Next(ProfileFullCoding)
-	_, _ = scoped.Next(ProfileFullCoding)
-	if err := scoped.ReportFailure(ProfileFullCoding, "glm-5.3-flash", ProviderError("full only")); err != nil {
-		t.Fatal(err)
+	if err := scoped.ReportFailure(ProfileFullCoding, "glm-5.3-flash", ProviderError("full only")); err == nil {
+		t.Fatal("coding-agent-only GLM was accepted as a full-coding model")
 	}
 	workerAgain, err := scoped.Next(ProfileWorker)
 	if err != nil || workerAgain.ID != "glm-5.3-flash" {
@@ -168,7 +166,7 @@ func TestUnknownModelReportsStableErrorAndDoesNotAdvance(t *testing.T) {
 
 func TestProfilesExhaustWithStableNoAvailableError(t *testing.T) {
 	r := New(map[string]ProfileState{"openai-primary": {Enabled: true, Healthy: true}, "muse-spark-1.3-contributor": {Enabled: true, Healthy: true}, "glm-5.3-flash": {Enabled: true, Healthy: true}})
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 2; i++ {
 		if _, err := r.Next(ProfileFullCoding); err != nil {
 			t.Fatal(err)
 		}
@@ -234,5 +232,26 @@ func TestDisabledAndUnhealthyRemainFailClosedAcrossRepeatedNext(t *testing.T) {
 		if !errors.As(err, &routeErr) || routeErr.Code != ErrNoAvailableProfile {
 			t.Fatalf("Next() call %d = %v; want stable no-available", i+1, err)
 		}
+	}
+}
+
+func TestRouterFullCodingDoesNotSelectCodingAgentOnlyGLM(t *testing.T) {
+	r := New(map[string]ProfileState{
+		"openai-primary":             {Enabled: true, Healthy: true},
+		"muse-spark-1.3-contributor": {Enabled: true, Healthy: true},
+		"glm-5.3-flash":              {Enabled: true, Healthy: true},
+	})
+	_, _ = r.Next(ProfileFullCoding)
+	_, _ = r.Next(ProfileFullCoding)
+	if _, err := r.Next(ProfileFullCoding); err == nil {
+		t.Fatal("full-coding unexpectedly selected coding-agent-only GLM")
+	}
+}
+
+func TestRouterWorkerMarksGLMAsCodingAgent(t *testing.T) {
+	r := New(map[string]ProfileState{"glm-5.3-flash": {Enabled: true, Healthy: true}})
+	got, err := r.Next(ProfileWorker)
+	if err != nil || got.WireAPI != WireAPIChatCompletions {
+		t.Fatalf("Next(worker) wire API = %#v, %v; want chat-completions", got, err)
 	}
 }

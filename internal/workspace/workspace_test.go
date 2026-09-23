@@ -50,6 +50,40 @@ func TestPrepareClonesAndDetachesAttemptWorkspace(t *testing.T) {
 	}
 }
 
+func TestPrepareNormalizesGitHubRepositoryShorthand(t *testing.T) {
+	root := t.TempDir()
+	attemptID := "attempt-123"
+	workspace := filepath.Join(root, attemptID)
+	runner := &recordingRunner{}
+
+	if err := Prepare(context.Background(), "WilliamLi0623/codex-homelab", "codex-homelab-v3", workspace, attemptID, runner); err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if got, want := runner.calls[0].args[5], "https://github.com/WilliamLi0623/codex-homelab.git"; got != want {
+		t.Fatalf("clone source = %q, want %q", got, want)
+	}
+}
+
+func TestPreparePreservesExplicitCloneSources(t *testing.T) {
+	for _, repository := range []string{
+		"https://github.com/WilliamLi0623/codex-homelab.git",
+		"git@github.com:WilliamLi0623/codex-homelab.git",
+		"/srv/git/codex-homelab.git",
+	} {
+		t.Run(repository, func(t *testing.T) {
+			root := t.TempDir()
+			attemptID := "attempt-123"
+			runner := &recordingRunner{}
+			if err := Prepare(context.Background(), repository, "main", filepath.Join(root, attemptID), attemptID, runner); err != nil {
+				t.Fatalf("Prepare() error = %v", err)
+			}
+			if got := runner.calls[0].args[5]; got != repository {
+				t.Fatalf("clone source = %q, want %q", got, repository)
+			}
+		})
+	}
+}
+
 func TestPrepareRejectsInvalidOrNonIsolatedWorkspace(t *testing.T) {
 	root := t.TempDir()
 	valid := filepath.Join(root, "attempt-123")

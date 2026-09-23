@@ -113,6 +113,9 @@ func (r *ProxmoxRuntime) request(ctx context.Context, method, path string, form 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		defer response.Body.Close()
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		if response.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("%w: %s", ErrNotFound, strings.TrimSpace(string(body)))
+		}
 		if response.StatusCode >= http.StatusBadRequest && response.StatusCode < http.StatusInternalServerError {
 			return nil, fmt.Errorf("%w: %s: %s", ErrRejected, response.Status, strings.TrimSpace(string(body)))
 		}
@@ -151,6 +154,9 @@ func (r *ProxmoxRuntime) Create(ctx context.Context, request CreateRequest) (Nod
 	path := "/nodes/" + url.PathEscape(r.node) + "/lxc/" + strconv.Itoa(request.TemplateVMID) + "/clone"
 	response, err := r.request(ctx, http.MethodPost, path, form)
 	if err != nil {
+		if isVMIDOccupiedError(err, request.VMID) {
+			return Node{VMID: request.VMID, Generation: request.Generation, TaskID: request.TaskID, State: NodeStopped}, fmt.Errorf("%w: %v", ErrVMIDOccupied, err)
+		}
 		if errors.Is(err, ErrRejected) {
 			return Node{VMID: request.VMID, Generation: request.Generation, TaskID: request.TaskID, State: NodeStopped}, err
 		}
@@ -217,6 +223,9 @@ func (r *ProxmoxRuntime) Observe(ctx context.Context, vmid int) (Node, error) {
 	path := "/nodes/" + url.PathEscape(r.node) + "/lxc/" + strconv.Itoa(vmid) + "/status/current"
 	response, err := r.request(ctx, http.MethodGet, path, nil)
 	if err != nil {
+		if errors.Is(err, ErrNotFound) || isMissingVMIDError(err, vmid) {
+			return Node{}, ErrNotFound
+		}
 		return Node{}, ErrUnknown
 	}
 	defer response.Body.Close()
@@ -238,6 +247,46 @@ func (r *ProxmoxRuntime) Observe(ctx context.Context, vmid int) (Node, error) {
 		state = NodeStopped
 	}
 	return Node{VMID: envelope.Data.VMID, KubeNode: envelope.Data.Name, State: state}, nil
+}
+
+// TargetAvailable uses the cluster inventory endpoint because Proxmox may
+// report a missing per-guest status path as HTTP 500 with plain text.
+func (r *ProxmoxRuntime) TargetAvailable(ctx context.Context, vmid int) (bool, error) {
+	if err := r.validate(vmid); err != nil {
+		return false, err
+	}
+	response, err := r.request(ctx, http.MethodGet, "/cluster/resources?type=vm", nil)
+	if err != nil {
+		return false, fmt.Errorf("observe Proxmox VM inventory: %w", err)
+	}
+	defer response.Body.Close()
+	var envelope struct {
+		Data []struct {
+			VMID int
+		}
+	}
+	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+		return false, fmt.Errorf("decode Proxmox VM inventory: %w", err)
+	}
+	for _, resource := range envelope.Data {
+		if resource.VMID == vmid {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func isMissingVMIDError(err error, vmid int) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "configuration file") &&
+		strings.Contains(message, fmt.Sprintf("lxc/%d.conf", vmid)) &&
+		strings.Contains(message, "does not exist")
+}
+
+func isVMIDOccupiedError(err error, vmid int) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, fmt.Sprintf("ct %d already exists", vmid)) ||
+		strings.Contains(message, fmt.Sprintf("vmid %d already exists", vmid))
 }
 
 // VerifyIdentity performs a read-only exact identity check before any release

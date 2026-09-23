@@ -157,6 +157,32 @@ func TestReconcileRequiresOutcomeBeforeRequest(t *testing.T) {
 	}
 }
 
+func TestReconcileReleasePostsVerifiedIdentity(t *testing.T) {
+	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
+		assertRequest(t, request, http.MethodPost, "/v1/tasks/task-1/attempts/attempt-1/release/reconcile")
+		var got map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if got["vmid"] != float64(3010) || got["generation"] != "gen-1" || got["kube_node"] != "codex-3010-gen-1" || got["proof"] != "observed" {
+			t.Fatalf("request = %+v", got)
+		}
+		writeTestJSON(t, writer, http.StatusOK, map[string]string{"status": "reconciled"})
+	})
+	if got, want := runCommand(t, server, "reconcile-release", "task-1", "attempt-1", "--vmid", "3010", "--generation", "gen-1", "--kube-node", "codex-3010-gen-1", "--proof", "observed"), "release: reconciled\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestReconcileReleaseRequiresAllIdentityFieldsBeforeRequest(t *testing.T) {
+	server := newTestServer(t, func(http.ResponseWriter, *http.Request) { t.Fatal("unexpected HTTP request") })
+	var output bytes.Buffer
+	err := run(withEndpoint(server, "reconcile-release", "task-1", "attempt-1", "--proof", "observed"), &output, server.Client())
+	if err == nil || err.Error() != "--vmid, --generation, --kube-node, and --proof are required" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestControllerErrorIncludesStatusAndMessage(t *testing.T) {
 	server := newTestServer(t, func(writer http.ResponseWriter, request *http.Request) {
 		writeTestJSON(t, writer, http.StatusConflict, map[string]string{"error": "task cannot be retried"})

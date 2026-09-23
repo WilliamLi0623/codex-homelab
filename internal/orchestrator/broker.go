@@ -27,6 +27,7 @@ type Capacity interface {
 type Request struct {
 	TaskID            string
 	AttemptID         string
+	ModelProfile      string
 	Prompt            string
 	Repository        string
 	BaseRef           string
@@ -59,7 +60,7 @@ func (b *Broker) Dispatch(ctx context.Context, r Request) (Dispatch, error) {
 	if err != nil {
 		return Dispatch{}, err
 	}
-	job, err := b.executor.CreateJob(ctx, k3s.JobRequest{TaskID: r.TaskID, AttemptID: r.AttemptID, Prompt: r.Prompt, Repository: r.Repository, BaseRef: r.BaseRef, WorkspacePath: r.WorkspacePath, ValidationCommand: r.ValidationCommand})
+	job, err := b.executor.CreateJob(ctx, k3s.JobRequest{TaskID: r.TaskID, AttemptID: r.AttemptID, ModelProfile: r.ModelProfile, NodeName: claim.KubeNode, Prompt: r.Prompt, Repository: r.Repository, BaseRef: r.BaseRef, WorkspacePath: r.WorkspacePath, ValidationCommand: r.ValidationCommand})
 	if errors.Is(err, k3s.ErrUnknown) {
 		return Dispatch{Claim: claim}, err
 	}

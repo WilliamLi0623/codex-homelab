@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 )
 
@@ -27,6 +28,9 @@ type Process struct {
 func StartProcess(ctx context.Context, executable string, arguments, environment []string) (*Process, error) {
 	cmd := exec.CommandContext(ctx, executable, arguments...)
 	cmd.Env = append(os.Environ(), environment...)
+	if workspace := environmentValue(environment, "CODEX_WORKSPACE"); workspace != "" {
+		cmd.Dir = workspace
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("open App Server stdin: %w", err)
@@ -64,6 +68,16 @@ func hasEnvironmentVariable(environment []string, name string) bool {
 		}
 	}
 	return false
+}
+
+func environmentValue(environment []string, name string) string {
+	prefix := name + "="
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
 }
 
 func (p *Process) Done() <-chan struct{} {

@@ -9,6 +9,7 @@ import (
 type fakeRuntime struct {
 	createErr    error
 	observeNode  Node
+	observeErr   error
 	startCalls   []int
 	joinCalls    []int
 	stopCalls    []int
@@ -22,7 +23,7 @@ func (f *fakeRuntime) Create(context.Context, CreateRequest) (Node, error) {
 	return Node{VMID: 3001, Generation: "gen-1", State: NodeCreating}, nil
 }
 
-func (f *fakeRuntime) Observe(context.Context, int) (Node, error) { return f.observeNode, nil }
+func (f *fakeRuntime) Observe(context.Context, int) (Node, error) { return f.observeNode, f.observeErr }
 func (f *fakeRuntime) Start(_ context.Context, vmid int) error {
 	f.startCalls = append(f.startCalls, vmid)
 	return nil
@@ -101,5 +102,19 @@ func TestManagerReconcileResolvesUnknownFromObservedState(t *testing.T) {
 	}
 	if node.State != NodeRunning {
 		t.Fatalf("reconciled state = %q, want %q", node.State, NodeRunning)
+	}
+}
+
+func TestManagerReportsTargetAvailabilityFromObservation(t *testing.T) {
+	manager := newTestManager(&fakeRuntime{observeErr: ErrNotFound})
+	available, err := manager.TargetAvailable(context.Background(), 3001)
+	if err != nil || !available {
+		t.Fatalf("TargetAvailable(absent) = (%t, %v), want true, nil", available, err)
+	}
+
+	manager = newTestManager(&fakeRuntime{observeNode: Node{VMID: 3001, State: NodeStopped}})
+	available, err = manager.TargetAvailable(context.Background(), 3001)
+	if err != nil || available {
+		t.Fatalf("TargetAvailable(present) = (%t, %v), want false, nil", available, err)
 	}
 }

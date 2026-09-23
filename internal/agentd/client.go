@@ -33,7 +33,7 @@ func (c *Client) Initialize(ctx context.Context) error {
 		return nil
 	}
 	if _, err := c.call(ctx, "initialize", map[string]any{
-		"clientInfo": map[string]string{"name": "codex-homelab-agentd", "version": "0.1.0"},
+		"clientInfo": map[string]string{"name": "codex-homelab-agentd", "title": "Codex Homelab Agent", "version": "0.1.0"},
 	}); err != nil {
 		return err
 	}

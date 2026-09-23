@@ -46,18 +46,25 @@ func TestDispatchTask(t *testing.T) {
 	d := &fakeDispatcher{}
 	server := NewServerWithDispatcher(db, d)
 	task := submitTestTask(t, server)
-	got := call[DispatchTaskResult](t, server, "dispatch_task", raw(map[string]any{"task_id": task.Task.ID, "attempt_id": "attempt-1", "prompt": "run"}))
-	if got.TaskID != task.Task.ID || got.AttemptID != "attempt-1" || got.ClaimID != "claim-1" || got.JobID != "job-1" || got.VMID != 3010 || got.State != "RUNNING" {
+	started := call[RetryTaskResult](t, server, "start_attempt", raw(map[string]any{"task_id": task.Task.ID, "profile": "openai-primary"}))
+	got := call[DispatchTaskResult](t, server, "dispatch_task", raw(map[string]any{"task_id": task.Task.ID, "attempt_id": started.Attempt.ID, "prompt": "run", "validation_command": []string{"sh", "-c", "printf ok"}}))
+	if got.TaskID != task.Task.ID || got.AttemptID != started.Attempt.ID || got.ClaimID != "claim-1" || got.JobID != "job-1" || got.VMID != 3010 || got.State != "RUNNING" {
 		t.Fatalf("result=%+v", got)
+	}
+	if d.request.ModelProfile != "openai-primary" {
+		t.Fatalf("model profile=%q", d.request.ModelProfile)
 	}
 	if d.request.Prompt != "run" {
 		t.Fatalf("prompt=%q", d.request.Prompt)
+	}
+	if len(d.request.ValidationCommand) != 3 || d.request.ValidationCommand[2] != "printf ok" {
+		t.Fatalf("validation command=%q", d.request.ValidationCommand)
 	}
 }
 func TestDispatchTaskErrors(t *testing.T) {
 	server := newTestServer(t)
 	task := submitTestTask(t, server)
-	_, err := server.CallTool(context.Background(), "dispatch_task", raw(map[string]any{"task_id": task.Task.ID, "attempt_id": "a", "prompt": "p"}))
+	_, err := server.CallTool(context.Background(), "dispatch_task", raw(map[string]any{"task_id": task.Task.ID, "attempt_id": "a", "prompt": "p", "validation_command": []string{"sh", "-c", "true"}}))
 	if !errors.Is(err, ErrDispatcherUnavailable) {
 		t.Fatal(err)
 	}
@@ -67,7 +74,7 @@ func TestDispatchTaskErrors(t *testing.T) {
 	}
 	defer db.Close()
 	server = NewServerWithDispatcher(db, &fakeDispatcher{})
-	_, err = server.CallTool(context.Background(), "dispatch_task", raw(map[string]any{"task_id": "missing", "attempt_id": "a", "prompt": "p"}))
+	_, err = server.CallTool(context.Background(), "dispatch_task", raw(map[string]any{"task_id": "missing", "attempt_id": "a", "prompt": "p", "validation_command": []string{"sh", "-c", "true"}}))
 	if !errors.Is(err, store.ErrTaskNotFound) {
 		t.Fatal(err)
 	}

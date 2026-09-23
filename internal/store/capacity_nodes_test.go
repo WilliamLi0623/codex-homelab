@@ -44,6 +44,17 @@ func TestClaimCapacitySkipsReservedVMIDAndChoosesLowestFree(t *testing.T) {
 	}
 }
 
+func TestClaimCapacityExcludesObservedExternalVMID(t *testing.T) {
+	s := openCapacityTestStore(t)
+	claim, created, err := s.ClaimCapacityExcluding(context.Background(), capacityRequest("task-1", "attempt-1", "gen-1", 10), map[int]struct{}{3000: {}})
+	if err != nil || !created {
+		t.Fatalf("ClaimCapacityExcluding() = (%+v, %t, %v)", claim, created, err)
+	}
+	if claim.VMID != 3001 {
+		t.Fatalf("VMID = %d, want externally occupied 3000 to be skipped", claim.VMID)
+	}
+}
+
 func TestClaimCapacityIsIdempotentAcrossRestartAndPreservesGeneration(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "capacity.sqlite")
 	s, err := Open(dbPath)

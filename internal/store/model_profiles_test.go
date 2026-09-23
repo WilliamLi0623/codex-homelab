@@ -12,7 +12,7 @@ func TestUpsertModelProfilePersistsNonSecretDiscoveryState(t *testing.T) {
 		t.Fatalf("UpsertModelProfile() error = %v", err)
 	}
 	if err := database.UpsertModelProfile(context.Background(), ModelProfile{ID: "glm-flash-worker", Provider: "cch", ModelID: "glm-5.3-flash", Enabled: false}); err != nil {
-		t.Fatalf("UpsertModelProfile() disabled profile error = %v", err)
+		t.Fatalf("UpsertModelProfile() disabled GLM profile error = %v", err)
 	}
 
 	profiles, err := database.ListModelProfiles(context.Background())

@@ -19,7 +19,7 @@ func (f *fakeCapacity) Create(_ context.Context, r ClaimRequest) (Claim, error) 
 	if f.createErr != nil {
 		return Claim{}, f.createErr
 	}
-	c := Claim{ID: r.AttemptID, VMID: 3010}
+	c := Claim{ID: r.AttemptID, VMID: 3010, KubeNode: "codex-node"}
 	f.claims = append(f.claims, c)
 	return c, nil
 }
@@ -48,12 +48,15 @@ func TestDispatchCarriesRepositoryBaseRefAndWorkspaceContract(t *testing.T) {
 	capacity := &fakeCapacity{}
 	executor := &fakeExecutor{}
 	broker := New(capacity, executor)
-	_, err := broker.Dispatch(context.Background(), Request{TaskID: "task-1", AttemptID: "attempt-1", Prompt: "change", Repository: "owner/repo", BaseRef: "main", WorkspacePath: "/workspace/attempt-1", ValidationCommand: []string{"go", "test", "./..."}})
+	_, err := broker.Dispatch(context.Background(), Request{TaskID: "task-1", AttemptID: "attempt-1", ModelProfile: "muse-spark-1.3-contributor", Prompt: "change", Repository: "owner/repo", BaseRef: "main", WorkspacePath: "/workspace/attempt-1", ValidationCommand: []string{"go", "test", "./..."}})
 	if err != nil {
 		t.Fatalf("Dispatch() error = %v", err)
 	}
-	if len(executor.jobs) != 1 || executor.jobs[0].Repository != "owner/repo" || executor.jobs[0].BaseRef != "main" || executor.jobs[0].WorkspacePath != "/workspace/attempt-1" || strings.Join(executor.jobs[0].ValidationCommand, " ") != "go test ./..." {
+	if len(executor.jobs) != 1 || executor.jobs[0].ModelProfile != "muse-spark-1.3-contributor" || executor.jobs[0].Repository != "owner/repo" || executor.jobs[0].BaseRef != "main" || executor.jobs[0].WorkspacePath != "/workspace/attempt-1" || strings.Join(executor.jobs[0].ValidationCommand, " ") != "go test ./..." {
 		t.Fatalf("job request = %+v, want repository/base_ref/workspace contract", executor.jobs)
+	}
+	if executor.jobs[0].NodeName != "codex-node" {
+		t.Fatalf("job node = %q, want codex-node", executor.jobs[0].NodeName)
 	}
 }
 func (f *fakeExecutor) SendMessage(_ context.Context, id, msg string) error {

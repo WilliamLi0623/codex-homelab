@@ -99,7 +99,36 @@ func (c *ResultConsumer) ObserveAndCompleteStored(ctx context.Context, taskID, a
 	if err != nil {
 		return k3s.Job{}, store.CompletionRecord{}, err
 	}
-	return c.ObserveAndComplete(ctx, CompletionInput{TaskID: taskID, AttemptID: attemptID, Branch: spec.Branch, ValidationCommand: spec.ValidationCommand})
+	input := CompletionInput{TaskID: taskID, AttemptID: attemptID, Branch: spec.Branch, ValidationCommand: spec.ValidationCommand}
+	completion, completionErr := c.loadExistingCompletion(ctx, input, "completion-"+attemptID, strings.Join(spec.ValidationCommand, " "))
+	if completionErr == nil {
+		if err := c.releaseCompletedAttempt(ctx, input); err != nil {
+			return k3s.Job{}, completion, err
+		}
+		return k3s.Job{ID: attemptID, AttemptID: attemptID, State: k3s.JobSucceeded}, completion, nil
+	}
+	if !errors.Is(completionErr, store.ErrValidationResultNotFound) {
+		return k3s.Job{}, store.CompletionRecord{}, completionErr
+	}
+	return c.ObserveAndComplete(ctx, input)
+}
+
+// releaseCompletedAttempt resumes only the cleanup half of a durable
+// completion. It must not observe or recollect the worker result: the worker
+// Job may already have been removed while release was in an UNKNOWN state.
+func (c *ResultConsumer) releaseCompletedAttempt(ctx context.Context, input CompletionInput) error {
+	claim, err := c.store.GetCapacityClaim(ctx, input.TaskID, input.AttemptID)
+	if err != nil {
+		return fmt.Errorf("load capacity claim for completed release: %w", err)
+	}
+	kubeNode, err := capacity.DynamicHostname(claim.VMID, claim.Generation)
+	if err != nil {
+		return fmt.Errorf("derive worker identity for completed release: %w", err)
+	}
+	if err := c.capacity.Release(ctx, Claim{ID: claim.ID, VMID: claim.VMID, TaskID: claim.TaskID, AttemptID: claim.AttemptID, Generation: claim.Generation, KubeNode: kubeNode}); err != nil {
+		return fmt.Errorf("%w: %v", ErrCompletionReleasePending, err)
+	}
+	return nil
 }
 
 // Complete collects one durable worker result, atomically records validation

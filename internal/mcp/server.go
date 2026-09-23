@@ -154,7 +154,7 @@ func (s *Server) Tools() []Tool {
 		tool("cancel_task", "Persist cancellation intent for a task.", taskIDSchema()),
 		tool("retry_task", "Create a new append-only attempt. The Controller rejects unresolved UNKNOWN outcomes.", taskIDSchema()),
 		tool("get_task_events", "List observable task events without hidden chain-of-thought.", taskIDSchema()),
-		tool("dispatch_task", "Dispatch a task attempt to the configured executor.", objectSchema([]string{"task_id", "attempt_id", "prompt"}, map[string]any{"task_id": stringSchema(), "attempt_id": stringSchema(), "prompt": stringSchema()})),
+		tool("dispatch_task", "Dispatch a task attempt to the configured executor with its explicit validation command.", objectSchema([]string{"task_id", "attempt_id", "prompt", "validation_command"}, map[string]any{"task_id": stringSchema(), "attempt_id": stringSchema(), "prompt": stringSchema(), "validation_command": stringArraySchema()})),
 	}
 }
 
@@ -285,8 +285,8 @@ func (s *Server) CallTool(ctx context.Context, name string, arguments json.RawMe
 		if err := decodeArguments(arguments, &input); err != nil {
 			return nil, err
 		}
-		if empty(input.TaskID, input.AttemptID, input.Prompt) {
-			return nil, fmt.Errorf("%w: task_id, attempt_id, and prompt are required", ErrInvalidArguments)
+		if empty(input.TaskID, input.AttemptID, input.Prompt) || len(input.ValidationCommand) == 0 {
+			return nil, fmt.Errorf("%w: task_id, attempt_id, prompt, and validation_command are required", ErrInvalidArguments)
 		}
 		if s.dispatcher == nil {
 			return nil, ErrDispatcherUnavailable
@@ -295,7 +295,11 @@ func (s *Server) CallTool(ctx context.Context, name string, arguments json.RawMe
 		if err != nil {
 			return nil, err
 		}
-		dispatch, err := s.dispatcher.Dispatch(ctx, orchestrator.Request{TaskID: task.ID, AttemptID: input.AttemptID, Prompt: input.Prompt})
+		attempt, err := s.store.GetAttempt(ctx, task.ID, input.AttemptID)
+		if err != nil {
+			return nil, err
+		}
+		dispatch, err := s.dispatcher.Dispatch(ctx, orchestrator.Request{TaskID: task.ID, AttemptID: input.AttemptID, ModelProfile: attempt.ModelProfile, Prompt: input.Prompt, ValidationCommand: input.ValidationCommand})
 		if err != nil {
 			return nil, err
 		}
@@ -343,9 +347,10 @@ type taskArguments struct {
 }
 
 type dispatchTaskArguments struct {
-	TaskID    string `json:"task_id"`
-	AttemptID string `json:"attempt_id"`
-	Prompt    string `json:"prompt"`
+	TaskID            string   `json:"task_id"`
+	AttemptID         string   `json:"attempt_id"`
+	Prompt            string   `json:"prompt"`
+	ValidationCommand []string `json:"validation_command"`
 }
 
 type sendMessageArguments struct {
@@ -418,4 +423,8 @@ func objectSchema(required []string, properties map[string]any) map[string]any {
 
 func stringSchema() map[string]any {
 	return map[string]any{"type": "string", "minLength": 1}
+}
+
+func stringArraySchema() map[string]any {
+	return map[string]any{"type": "array", "minItems": 1, "items": stringSchema()}
 }

@@ -9,7 +9,9 @@ Authenticated `GET /v1/models` completed with HTTP 200. The exact discovered
 model IDs include:
 
 - `muse-spark-1.3-contributor`
-- `glm-5.3-flash`
+- `mimo-v2.5`
+- `xiaomi/mimo-v2.5` (alias; canonical route uses `mimo-v2.5`)
+- `glm-5.3-flash` (current low-cost worker replacement for MiMo)
 
 ## Minimal Responses probes
 
@@ -19,8 +21,8 @@ limit and `store: false`.
 | Profile | Model ID | Result | Routing state |
 | --- | --- | --- | --- |
 | Muse failover | `muse-spark-1.3-contributor` | HTTP 200 with a response ID | discovered; requires P7 completion validation |
-| GLM Flash worker | `glm-5.3-flash` | HTTP 503 `no_available_providers` | disabled; do not route tasks |
+| GLM Flash worker | `glm-5.3-flash` | Chat Completions/tool-call compatibility verified; adapter still pending | disabled; fail closed |
 
-The GLM profile remains recorded so a later P6/P7 re-probe can safely enable
-it only after a successful compatibility result. This replaces the superseded
-MiMo role in V3 routing.
+GLM-5.3 Flash is the current replacement for the former MiMo worker position.
+It uses coding-agent/Chat Completions semantics and remains disabled until the
+production adapter and worker-task gate pass.

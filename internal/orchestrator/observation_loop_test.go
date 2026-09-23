@@ -15,14 +15,14 @@ func TestObservationLoopSkipsRunningAndCompletesSucceededOnce(t *testing.T) {
 	if _, _, err := database.EnsureAttemptExecutionSpec(context.Background(), store.AttemptExecutionSpec{TaskID: task.ID, AttemptID: attempt.ID, Branch: "refs/heads/codex/task/attempt", ValidationCommand: []string{"go", "test"}}); err != nil {
 		t.Fatal(err)
 	}
-	results := observingResults{result: k3s.Result{CommitSHA: resultTestCommitSHA}, job: k3s.Job{AttemptID: attempt.ID, State: k3s.JobRunning}}
+	results := observingResults{job: k3s.Job{AttemptID: attempt.ID, State: k3s.JobRunning}}
 	consumer := NewResultConsumer(database, results, &releaseCapacity{})
 	loop := NewObservationLoop(database, consumer)
 	report, err := loop.RunOnce(context.Background())
 	if err != nil || report.Inspected != 1 || report.NotReady != 1 || report.Completed != 0 {
 		t.Fatalf("running report = (%+v, %v)", report, err)
 	}
-	results.job.State = k3s.JobSucceeded
+	results = observingResults{result: k3s.Result{CommitSHA: resultTestCommitSHA}, job: k3s.Job{AttemptID: attempt.ID, State: k3s.JobRunning}}
 	consumer = NewResultConsumer(database, results, &releaseCapacity{})
 	loop = NewObservationLoop(database, consumer)
 	report, err = loop.RunOnce(context.Background())

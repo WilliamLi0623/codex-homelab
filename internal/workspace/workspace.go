@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,13 +57,46 @@ func Prepare(ctx context.Context, repository, baseRef, workspace, attemptID stri
 		runner = commandRunner{}
 	}
 
-	if _, err := runner.Run(ctx, filepath.Dir(workspace), "git", "clone", "--no-checkout", "--branch", baseRef, "--", repository, workspace); err != nil {
-		return errors.New("workspace clone failed")
+	if output, err := runner.Run(ctx, filepath.Dir(workspace), "git", "clone", "--no-checkout", "--branch", baseRef, "--", cloneSource(repository), workspace); err != nil {
+		return fmt.Errorf("workspace clone failed: %w%s", err, diagnosticSuffix(output))
 	}
-	if _, err := runner.Run(ctx, workspace, "git", "-C", workspace, "checkout", "--detach", baseRef); err != nil {
-		return errors.New("workspace checkout failed")
+	if output, err := runner.Run(ctx, workspace, "git", "-C", workspace, "checkout", "--detach", baseRef); err != nil {
+		return fmt.Errorf("workspace checkout failed: %w%s", err, diagnosticSuffix(output))
 	}
 	return nil
+}
+
+func cloneSource(repository string) string {
+	repository = strings.TrimSpace(repository)
+	parts := strings.Split(repository, "/")
+	if len(parts) == 2 && validRepositoryPart(parts[0]) && validRepositoryPart(parts[1]) {
+		return "https://github.com/" + parts[0] + "/" + parts[1] + ".git"
+	}
+	return repository
+}
+
+func validRepositoryPart(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') &&
+			(char < '0' || char > '9') && char != '-' && char != '_' && char != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+func diagnosticSuffix(output string) string {
+	output = strings.TrimSpace(output)
+	if output == "" || strings.Contains(strings.ToLower(output), "token") || strings.Contains(strings.ToLower(output), "password") || strings.Contains(strings.ToLower(output), "secret") {
+		return ""
+	}
+	if len(output) > 512 {
+		output = output[:512]
+	}
+	return ": " + output
 }
 
 func safeAttemptID(value string) bool {

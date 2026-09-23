@@ -90,6 +90,9 @@ func TestListPendingAttemptExecutionSpecsRequeuesIncompleteRelease(t *testing.T)
 	if _, err := s.RecordValidationResult(context.Background(), ValidationResult{ID: "completion-" + attempt.ID, AttemptID: attempt.ID, Command: "go test", State: "PASSED", CreatedAt: time.Now().UTC()}, ""); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.db.Exec("UPDATE task_attempts SET state = ? WHERE id = ?", domain.AttemptCompleted, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := s.EnsureReleaseProgress(context.Background(), ReleaseProgressRequest{TaskID: task.ID, AttemptID: attempt.ID, VMID: 3010, Generation: "gen", KubeNode: "node"}); err != nil {
 		t.Fatal(err)
 	}

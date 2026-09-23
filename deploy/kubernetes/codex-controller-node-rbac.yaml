@@ -1,0 +1,27 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: codex-controller-node-lifecycle
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "patch", "delete"]
+  # Drain enumerates pods by spec.nodeName and deletes only ordinary
+  # non-terminal pods. DaemonSet and mirror pods are explicitly preserved by
+  # the controller implementation.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: codex-controller-node-lifecycle
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: codex-controller-node-lifecycle
+subjects:
+  - kind: ServiceAccount
+    name: codex-controller
+    namespace: codex

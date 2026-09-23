@@ -15,6 +15,8 @@ type adapterRuntime struct {
 	createCalls  int
 	startCalls   int
 	createErr    error
+	createErrs   []error
+	occupied     map[int]bool
 	destroyCalls int
 	lastCreate   capacity.CreateRequest
 }
@@ -58,13 +60,23 @@ var _ Capacity = (*CapacityAdapter)(nil)
 func (r *adapterRuntime) Create(_ context.Context, request capacity.CreateRequest) (capacity.Node, error) {
 	r.createCalls++
 	r.lastCreate = request
+	if len(r.createErrs) > 0 {
+		err := r.createErrs[0]
+		r.createErrs = r.createErrs[1:]
+		if err != nil {
+			return capacity.Node{}, err
+		}
+	}
 	if r.createErr != nil {
 		return capacity.Node{}, r.createErr
 	}
 	return capacity.Node{VMID: request.VMID, Generation: request.Generation, TaskID: request.TaskID, State: capacity.NodeCreating}, nil
 }
-func (r *adapterRuntime) Observe(context.Context, int) (capacity.Node, error) {
-	return capacity.Node{}, nil
+func (r *adapterRuntime) Observe(_ context.Context, vmid int) (capacity.Node, error) {
+	if r.occupied != nil && r.occupied[vmid] {
+		return capacity.Node{VMID: vmid, State: capacity.NodeStopped}, nil
+	}
+	return capacity.Node{}, capacity.ErrNotFound
 }
 func (r *adapterRuntime) Start(context.Context, int) error   { r.startCalls++; return nil }
 func (r *adapterRuntime) Join(context.Context, int) error    { return nil }
@@ -95,6 +107,65 @@ func TestCapacityAdapterRecordsUnknownAndDoesNotReplayCreateOrRelease(t *testing
 	}
 	if runtime.destroyCalls != 0 {
 		t.Fatalf("destroy calls = %d, want 0", runtime.destroyCalls)
+	}
+}
+
+func TestCapacityAdapterSkipsExternallyOccupiedVMID(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "capacity.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	runtime := &adapterRuntime{occupied: map[int]bool{3000: true}}
+	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3999}), 3005)
+	claim, err := adapter.Claim(context.Background(), CapacityClaimRequest{TaskID: "task", AttemptID: "attempt", Generation: "gen", Priority: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claim.VMID != 3001 || runtime.lastCreate.VMID != 3001 {
+		t.Fatalf("claim=%+v create=%+v, want externally occupied 3000 skipped", claim, runtime.lastCreate)
+	}
+}
+
+func TestCapacityAdapterRetriesDeterministicVMIDCollision(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "capacity.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	runtime := &adapterRuntime{createErrs: []error{capacity.ErrVMIDOccupied, nil}}
+	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3999}), 3005)
+	claim, err := adapter.Claim(context.Background(), CapacityClaimRequest{TaskID: "task", AttemptID: "attempt", Generation: "gen", Priority: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claim.VMID != 3001 || runtime.createCalls != 2 {
+		t.Fatalf("claim=%+v createCalls=%d, want collision retry on next VMID", claim, runtime.createCalls)
+	}
+}
+
+func TestCapacityAdapterRemovesRejectedCreateClaimSoRetryCanProceed(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "capacity.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	runtime := &adapterRuntime{createErrs: []error{capacity.ErrRejected, nil}}
+	adapter := NewCapacityAdapter(db, capacity.NewManager(runtime, capacity.VMIDRange{Min: 3000, Max: 3999}), 3005)
+	req := CapacityClaimRequest{TaskID: "task", AttemptID: "attempt", Generation: "gen", Priority: 10}
+	claim, err := adapter.Claim(context.Background(), req)
+	if !errors.Is(err, capacity.ErrRejected) || claim.VMID != 3000 {
+		t.Fatalf("first claim = %+v, %v; want rejected VMID 3000", claim, err)
+	}
+	if _, err := db.GetCapacityClaim(context.Background(), req.TaskID, req.AttemptID); !errors.Is(err, store.ErrCapacityClaimNotFound) {
+		t.Fatalf("rejected claim remains in ledger: %v", err)
+	}
+	retried, err := adapter.Claim(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.VMID != 3000 || runtime.createCalls != 2 {
+		t.Fatalf("retry claim = %+v createCalls=%d, want VMID 3000 and two creates", retried, runtime.createCalls)
 	}
 }
 
@@ -172,6 +243,13 @@ func TestCapacityAdapterReleasePersistsOrderAndIsIdempotent(t *testing.T) {
 	progress, err := db.GetReleaseProgress(context.Background(), claim.TaskID, claim.AttemptID)
 	if err != nil || progress.Step != store.ReleaseStepDone || progress.State != store.ReleaseStateCompleted {
 		t.Fatalf("progress = (%+v, %v)", progress, err)
+	}
+	if _, err := db.GetCapacityClaim(context.Background(), claim.TaskID, claim.AttemptID); !errors.Is(err, store.ErrCapacityClaimNotFound) {
+		t.Fatalf("released capacity claim error = %v, want not found", err)
+	}
+	reused, created, err := db.ClaimCapacity(context.Background(), store.CapacityClaimRequest{TaskID: "task-reuse", AttemptID: "attempt-reuse", Generation: "gen-reuse", Priority: 1})
+	if err != nil || !created || reused.VMID != claim.VMID {
+		t.Fatalf("reused claim = (%+v, %t, %v), want VMID %d", reused, created, err, claim.VMID)
 	}
 }
 

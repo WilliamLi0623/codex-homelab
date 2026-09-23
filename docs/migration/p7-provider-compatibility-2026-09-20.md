@@ -11,17 +11,17 @@ persisting its value.
 
 - `glm-5.3-flash` — current replacement for the former MiMo worker/second-failover role
 - `muse-spark-1.3-contributor` and `meta/muse-spark-1.3-contributor`
-- `mimo-v2.5` and `xiaomi/mimo-v2.5` (discovery only; not the current routing target)
+- `mimo-v2.5` and `xiaomi/mimo-v2.5` — canonical MiMo ID and alias
 
-Minimal `POST /v1/responses` probes with `store=false` returned HTTP 503
-`service_unavailable_error` for all three relevant models: GLM-5.3 Flash,
-Muse Spark 1.3 Contributor, and MiMo v2.5. The responses contained no model
-output or completed response ID.
+The current compatibility result is protocol-specific. `glm-5.3-flash` is
+coding-agent-only, so `/v1/responses` is not a valid GLM compatibility route.
+A live `/v1/chat/completions` request returns HTTP 200 and an explicit function
+probe returns a tool call with the requested function name. `/v1/messages`
+remains 503. The verified GLM wire contract is OpenAI Chat Completions with
+tool calls; the local adapter is still required before production enablement.
 
 ## Routing decision
 
-This is classified as a CC Hub gateway outage, not as a model-specific
-failure. GLM-5.3 Flash remains the canonical replacement in configuration, but
-both CC Hub routes remain disabled until a fresh completed Responses probe
-succeeds. No provider failover or authenticated P13 task was started from this
-probe.
+GLM is configured only as a worker candidate with `wire_api=coding-agent`.
+The raw endpoint is verified, but the local adapter is not implemented, so the
+worker path remains fail-closed. Full-coding remains OpenAI then Muse.

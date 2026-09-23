@@ -53,6 +53,19 @@ type observingResults struct {
 	job    k3s.Job
 }
 
+type countingObservingResults struct {
+	observes int
+	job      k3s.Job
+}
+
+func (o *countingObservingResults) CollectResult(context.Context, string) (k3s.Result, error) {
+	return k3s.Result{}, nil
+}
+func (o *countingObservingResults) Observe(context.Context, string) (k3s.Job, error) {
+	o.observes++
+	return o.job, nil
+}
+
 func (o observingResults) CollectResult(context.Context, string) (k3s.Result, error) {
 	return o.result, nil
 }
@@ -167,6 +180,32 @@ func TestResultConsumerDoesNotRecollectAfterDurableCompletionWhenReleaseWasUnkno
 	}
 	if collector.calls != 1 {
 		t.Fatalf("collector calls after replay = %d, want 1", collector.calls)
+	}
+}
+
+func TestObserveAndCompleteStoredRetriesOnlyReleaseAfterDurableCompletion(t *testing.T) {
+	database, task, attempt := resultConsumerFixture(t)
+	if _, _, err := database.EnsureAttemptExecutionSpec(context.Background(), store.AttemptExecutionSpec{TaskID: task.ID, AttemptID: attempt.ID, Branch: "refs/heads/task-1", ValidationCommand: []string{"go", "test"}}); err != nil {
+		t.Fatal(err)
+	}
+	collector := &resultCollector{result: k3s.Result{CommitSHA: resultTestCommitSHA}}
+	releaser := &releaseCapacity{err: errors.New("release outcome unknown")}
+	consumer := NewResultConsumer(database, collector, releaser)
+	input := CompletionInput{TaskID: task.ID, AttemptID: attempt.ID, Branch: "refs/heads/task-1", ValidationCommand: []string{"go", "test"}}
+	if _, err := consumer.Complete(context.Background(), input); !errors.Is(err, ErrCompletionReleasePending) {
+		t.Fatalf("initial Complete() error = %v, want release pending", err)
+	}
+	observer := &countingObservingResults{job: k3s.Job{State: k3s.JobUnknown}}
+	releaser.err = nil
+	consumer = NewResultConsumer(database, observer, releaser)
+	if _, _, err := consumer.ObserveAndCompleteStored(context.Background(), task.ID, attempt.ID); err != nil {
+		t.Fatalf("stored release retry error = %v", err)
+	}
+	if observer.observes != 0 {
+		t.Fatalf("worker observes = %d, want 0 for durable completion", observer.observes)
+	}
+	if collector.calls != 1 || releaser.calls != 2 {
+		t.Fatalf("collector calls=%d release calls=%d, want 1 and 2", collector.calls, releaser.calls)
 	}
 }
 

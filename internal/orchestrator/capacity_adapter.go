@@ -86,66 +86,96 @@ func (a *CapacityAdapter) Claim(ctx context.Context, request CapacityClaimReques
 }
 
 func (a *CapacityAdapter) claim(ctx context.Context, request CapacityClaimRequest) (store.CapacityClaim, error) {
-	claim, created, err := a.store.ClaimCapacity(ctx, store.CapacityClaimRequest{
-		TaskID: request.TaskID, AttemptID: request.AttemptID, Generation: request.Generation,
-		Priority: request.Priority, VMID: request.VMID,
-	})
-	if err != nil {
-		return store.CapacityClaim{}, err
-	}
-	if !created {
-		if claim.State == store.CapacityUnknown {
-			return claim, ErrCapacityUnknown
+	blocked := map[int]struct{}{}
+	for tries := 0; tries < 1000; tries++ {
+		claim, created, err := a.store.ClaimCapacityExcluding(ctx, store.CapacityClaimRequest{
+			TaskID: request.TaskID, AttemptID: request.AttemptID, Generation: request.Generation,
+			Priority: request.Priority, VMID: request.VMID,
+		}, blocked)
+		if err != nil {
+			return store.CapacityClaim{}, err
 		}
-		if claim.State == store.CapacityCreating {
-			// CREATING is ambiguous after interruption or failed ledger
-			// persistence. It requires reconciliation and is never success.
-			return claim, fmt.Errorf("%w: claim remains CREATING", ErrCapacityLedgerReconciliation)
+		if !created {
+			if claim.State == store.CapacityUnknown {
+				return claim, ErrCapacityUnknown
+			}
+			if claim.State == store.CapacityCreating {
+				return claim, fmt.Errorf("%w: claim remains CREATING", ErrCapacityLedgerReconciliation)
+			}
+			return claim, nil
 		}
+
+		available, err := a.manager.TargetAvailable(ctx, claim.VMID)
+		if err != nil {
+			_ = a.store.UpdateCapacityClaimState(ctx, claim.TaskID, claim.AttemptID, store.CapacityUnknown)
+			claim.State = store.CapacityUnknown
+			return claim, fmt.Errorf("%w: target VMID preflight: %v", capacity.ErrUnknown, err)
+		}
+		if !available {
+			if request.VMID != 0 {
+				_ = a.store.DeleteCapacityClaimIfState(ctx, claim.TaskID, claim.AttemptID, claim.VMID, store.CapacityClaimed)
+				return claim, capacity.ErrVMIDOccupied
+			}
+			if err := a.store.DeleteCapacityClaimIfState(ctx, claim.TaskID, claim.AttemptID, claim.VMID, store.CapacityClaimed); err != nil {
+				return claim, err
+			}
+			blocked[claim.VMID] = struct{}{}
+			continue
+		}
+		if err := a.store.UpdateCapacityClaimState(ctx, claim.TaskID, claim.AttemptID, store.CapacityCreating); err != nil {
+			return store.CapacityClaim{}, err
+		}
+		claim.State = store.CapacityCreating
+		templateVMID := request.TemplateVMID
+		if templateVMID == 0 {
+			templateVMID = a.config.TemplateVMID
+		}
+		createdNode, err := a.manager.Create(ctx, capacity.CreateRequest{
+			VMID: claim.VMID, Generation: claim.Generation, TaskID: claim.TaskID,
+			TemplateVMID: templateVMID, Hostname: workerHostname(claim.VMID, claim.Generation),
+			Storage: request.Storage, Bridge: request.Bridge, Cores: request.Cores, MemoryMiB: request.MemoryMiB, DiskGiB: request.DiskGiB,
+			Metadata: workerMetadata(claim),
+		})
+		if errors.Is(err, capacity.ErrVMIDOccupied) && request.VMID == 0 {
+			if deleteErr := a.store.DeleteCapacityClaimIfState(ctx, claim.TaskID, claim.AttemptID, claim.VMID, store.CapacityCreating); deleteErr != nil {
+				return claim, deleteErr
+			}
+			blocked[claim.VMID] = struct{}{}
+			continue
+		}
+		if errors.Is(err, capacity.ErrUnknown) {
+			if persistErr := a.store.UpdateCapacityClaimState(ctx, claim.TaskID, claim.AttemptID, store.CapacityUnknown); persistErr != nil {
+				claim.State = store.CapacityCreating
+				return claim, fmt.Errorf("%w: %w: persist UNKNOWN claim: %w", capacity.ErrUnknown, ErrCapacityLedgerReconciliation, persistErr)
+			}
+			claim.State = store.CapacityUnknown
+			return claim, err
+		}
+		if err != nil {
+			if errors.Is(err, capacity.ErrRejected) {
+				if deleteErr := a.store.DeleteCapacityClaimIfState(ctx, claim.TaskID, claim.AttemptID, claim.VMID, store.CapacityCreating); deleteErr != nil {
+					return claim, fmt.Errorf("%w: rejected capacity claim cleanup: %w", ErrCapacityLedgerReconciliation, deleteErr)
+				}
+			}
+			return claim, err
+		}
+		if err := a.manager.Start(ctx, createdNode); errors.Is(err, capacity.ErrUnknown) {
+			if persistErr := a.store.UpdateCapacityClaimState(ctx, claim.TaskID, claim.AttemptID, store.CapacityUnknown); persistErr != nil {
+				claim.State = store.CapacityCreating
+				return claim, fmt.Errorf("%w: %w: persist UNKNOWN claim: %w", capacity.ErrUnknown, ErrCapacityLedgerReconciliation, persistErr)
+			}
+			claim.State = store.CapacityUnknown
+			return claim, err
+		} else if err != nil {
+			return claim, err
+		}
+		if err := a.store.UpdateCapacityClaimState(ctx, claim.TaskID, claim.AttemptID, store.CapacityClaimed); err != nil {
+			return claim, fmt.Errorf("%w: persist completed capacity claim: %w", ErrCapacityLedgerReconciliation, err)
+		}
+		claim.State = store.CapacityClaimed
 		return claim, nil
 	}
-	if err := a.store.UpdateCapacityClaimState(ctx, claim.TaskID, claim.AttemptID, store.CapacityCreating); err != nil {
-		return store.CapacityClaim{}, err
-	}
-	claim.State = store.CapacityCreating
-	templateVMID := request.TemplateVMID
-	if templateVMID == 0 {
-		templateVMID = a.config.TemplateVMID
-	}
-	createdNode, err := a.manager.Create(ctx, capacity.CreateRequest{
-		VMID: claim.VMID, Generation: claim.Generation, TaskID: claim.TaskID,
-		TemplateVMID: templateVMID, Hostname: workerHostname(claim.VMID, claim.Generation),
-		Storage: request.Storage, Bridge: request.Bridge, Cores: request.Cores, MemoryMiB: request.MemoryMiB, DiskGiB: request.DiskGiB,
-		Metadata: workerMetadata(claim),
-	})
-	if errors.Is(err, capacity.ErrUnknown) {
-		if persistErr := a.store.UpdateCapacityClaimState(ctx, claim.TaskID, claim.AttemptID, store.CapacityUnknown); persistErr != nil {
-			// The durable row can still be CREATING here. Report reconciliation
-			// explicitly; never treat this as success or replay Create later.
-			claim.State = store.CapacityCreating
-			return claim, fmt.Errorf("%w: %w: persist UNKNOWN claim: %w", capacity.ErrUnknown, ErrCapacityLedgerReconciliation, persistErr)
-		}
-		claim.State = store.CapacityUnknown
-		return claim, err
-	}
-	if err != nil {
-		return claim, err
-	}
-	if err := a.manager.Start(ctx, createdNode); errors.Is(err, capacity.ErrUnknown) {
-		if persistErr := a.store.UpdateCapacityClaimState(ctx, claim.TaskID, claim.AttemptID, store.CapacityUnknown); persistErr != nil {
-			claim.State = store.CapacityCreating
-			return claim, fmt.Errorf("%w: %w: persist UNKNOWN claim: %w", capacity.ErrUnknown, ErrCapacityLedgerReconciliation, persistErr)
-		}
-		claim.State = store.CapacityUnknown
-		return claim, err
-	} else if err != nil {
-		return claim, err
-	}
-	if err := a.store.UpdateCapacityClaimState(ctx, claim.TaskID, claim.AttemptID, store.CapacityClaimed); err != nil {
-		return claim, fmt.Errorf("%w: persist completed capacity claim: %w", ErrCapacityLedgerReconciliation, err)
-	}
-	claim.State = store.CapacityClaimed
-	return claim, nil
+	return store.CapacityClaim{}, fmt.Errorf("%w: no externally available dynamic VMID", store.ErrCapacityClaimConflict)
 }
 
 func workerHostname(vmid int, generation string) string {
@@ -174,6 +204,13 @@ func (a *CapacityAdapter) Release(ctx context.Context, claim Claim) error {
 		return ErrCapacityReleaseUnsafe
 	}
 	stored, err := a.store.GetCapacityClaim(ctx, claim.TaskID, claim.AttemptID)
+	if errors.Is(err, store.ErrCapacityClaimNotFound) {
+		progress, progressErr := a.store.GetReleaseProgress(ctx, claim.TaskID, claim.AttemptID)
+		if progressErr == nil && releaseProgressMatchesClaim(progress, claim) && progress.Step == store.ReleaseStepDone && progress.State == store.ReleaseStateCompleted {
+			return nil
+		}
+		return ErrCapacityReleaseUnsafe
+	}
 	if err != nil || stored.ID != claim.ID || stored.VMID != claim.VMID || stored.Generation != claim.Generation || stored.State != store.CapacityClaimed {
 		return ErrCapacityReleaseUnsafe
 	}
@@ -182,7 +219,7 @@ func (a *CapacityAdapter) Release(ctx context.Context, claim Claim) error {
 		return ErrCapacityReleaseUnsafe
 	}
 	if progress.Step == store.ReleaseStepDone && progress.State == store.ReleaseStateCompleted {
-		return nil
+		return a.deleteReleasedClaim(ctx, claim)
 	}
 	start := capacity.ReleaseStepCordon
 	if progress.Step != store.ReleaseStepNone {
@@ -198,7 +235,10 @@ func (a *CapacityAdapter) Release(ctx context.Context, claim Claim) error {
 			return err
 		}
 		if start == "" {
-			return a.store.UpdateReleaseProgress(ctx, claim.TaskID, claim.AttemptID, store.ReleaseStepDone, store.ReleaseStateCompleted, "")
+			if err := a.store.UpdateReleaseProgress(ctx, claim.TaskID, claim.AttemptID, store.ReleaseStepDone, store.ReleaseStateCompleted, ""); err != nil {
+				return err
+			}
+			return a.deleteReleasedClaim(ctx, claim)
 		}
 	}
 	node := capacity.Node{VMID: claim.VMID, Generation: claim.Generation, TaskID: claim.TaskID, KubeNode: claim.KubeNode, State: capacity.NodeStopped}
@@ -217,7 +257,21 @@ func (a *CapacityAdapter) Release(ctx context.Context, claim Claim) error {
 	if err := capacity.ReleaseWorkerFromStep(ctx, node, a.releaseOps, start, checkpoint); err != nil {
 		return err
 	}
-	return a.store.UpdateReleaseProgress(ctx, claim.TaskID, claim.AttemptID, store.ReleaseStepDone, store.ReleaseStateCompleted, "")
+	if err := a.store.UpdateReleaseProgress(ctx, claim.TaskID, claim.AttemptID, store.ReleaseStepDone, store.ReleaseStateCompleted, ""); err != nil {
+		return err
+	}
+	return a.deleteReleasedClaim(ctx, claim)
+}
+
+func releaseProgressMatchesClaim(progress store.ReleaseProgress, claim Claim) bool {
+	return progress.TaskID == claim.TaskID && progress.AttemptID == claim.AttemptID && progress.VMID == claim.VMID && progress.Generation == claim.Generation && progress.KubeNode == claim.KubeNode
+}
+
+func (a *CapacityAdapter) deleteReleasedClaim(ctx context.Context, claim Claim) error {
+	if err := a.store.DeleteCapacityClaimIfState(ctx, claim.TaskID, claim.AttemptID, claim.VMID, store.CapacityClaimed); err != nil && !errors.Is(err, store.ErrCapacityClaimConflict) {
+		return fmt.Errorf("%w: released claim cleanup: %v", ErrCapacityLedgerReconciliation, err)
+	}
+	return nil
 }
 
 // ReconcileRelease records an explicit external observation before a later

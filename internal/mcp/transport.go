@@ -81,6 +81,12 @@ type toolsListResult struct {
 type toolCallParams struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
+	Meta      map[string]any  `json:"_meta"`
+}
+
+type toolsListParams struct {
+	Cursor string         `json:"cursor"`
+	Meta   map[string]any `json:"_meta"`
 }
 
 type toolCallResult struct {
@@ -153,7 +159,8 @@ func (t *Transport) handle(request *http.Request, input rpcRequest) (any, *rpcEr
 	case "ping":
 		return map[string]any{}, nil
 	case "tools/list":
-		if err := decodeParams(input.Params, &struct{}{}); err != nil {
+		var params toolsListParams
+		if err := decodeParams(input.Params, &params); err != nil {
 			return nil, &rpcError{Code: -32602, Message: "Invalid params"}
 		}
 		if t.Server == nil {

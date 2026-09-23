@@ -4,7 +4,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
+
+func TestNewGatewayHTTPServerUsesBoundedLongOperationTimeout(t *testing.T) {
+	server := newGatewayHTTPServer("127.0.0.1:8090", http.NewServeMux())
+	if server.WriteTimeout < 2*time.Minute {
+		t.Fatalf("WriteTimeout = %s, want at least 2m for dynamic dispatch", server.WriteTimeout)
+	}
+	if server.WriteTimeout > 5*time.Minute {
+		t.Fatalf("WriteTimeout = %s, want a bounded timeout no longer than 5m", server.WriteTimeout)
+	}
+}
 
 func TestLoadGatewayConfigDefaultsToLoopback(t *testing.T) {
 	config, err := loadGatewayConfig(func(name string) string {

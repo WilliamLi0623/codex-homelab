@@ -2,14 +2,27 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
+	"github.com/WilliamLi0623/codex-homelab/internal/orchestrator"
 	"github.com/WilliamLi0623/codex-homelab/internal/store"
 )
+
+type fakeReleaseReconciler struct {
+	claim orchestrator.Claim
+	proof string
+}
+
+func (f *fakeReleaseReconciler) ReconcileRelease(_ context.Context, claim orchestrator.Claim, proof string) error {
+	f.claim = claim
+	f.proof = proof
+	return nil
+}
 
 func TestHealthReportsControllerReady(t *testing.T) {
 	server := newTestServer(t)
@@ -229,6 +242,91 @@ func TestReconcileAttemptRejectsUnknownOutcome(t *testing.T) {
 	}
 }
 
+func TestReconcileReleaseUsesDurableClaimIdentity(t *testing.T) {
+	base := newTestServer(t)
+	taskID := createTestTask(t, base)
+	claim, _, err := base.store.ClaimCapacity(context.Background(), store.CapacityClaimRequest{
+		TaskID: taskID, AttemptID: "attempt-release", Generation: "gen-release", Priority: 1, VMID: 3010,
+	})
+	if err != nil {
+		t.Fatalf("claim capacity: %v", err)
+	}
+	if _, _, err := base.store.EnsureReleaseProgress(context.Background(), store.ReleaseProgressRequest{TaskID: taskID, AttemptID: "attempt-release", VMID: 3010, Generation: "gen-release", KubeNode: "codex-3010"}); err != nil {
+		t.Fatalf("ensure release progress: %v", err)
+	}
+	if err := base.store.UpdateReleaseProgress(context.Background(), taskID, "attempt-release", store.ReleaseStepCordon, store.ReleaseStateUnknown, "external outcome unknown"); err != nil {
+		t.Fatalf("mark release unknown: %v", err)
+	}
+	reconciler := &fakeReleaseReconciler{}
+	server := NewServerWithDispatcherCompletionAndRelease(base.store, nil, nil, reconciler)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost,
+		"/v1/tasks/"+taskID+"/attempts/attempt-release/release/reconcile",
+		bytes.NewBufferString(`{"vmid":3010,"generation":"gen-release","kube_node":"codex-3010","proof":"observed node and guest identity"}`)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if reconciler.claim.ID != claim.ID || reconciler.claim.VMID != 3010 || reconciler.claim.Generation != "gen-release" || reconciler.claim.KubeNode != "codex-3010" {
+		t.Fatalf("reconciled claim = %+v, want durable identity", reconciler.claim)
+	}
+	if reconciler.proof != "observed node and guest identity" {
+		t.Fatalf("proof = %q", reconciler.proof)
+	}
+}
+
+func TestReconcileReleaseRejectsClaimIdentityMismatch(t *testing.T) {
+	base := newTestServer(t)
+	taskID := createTestTask(t, base)
+	if _, _, err := base.store.ClaimCapacity(context.Background(), store.CapacityClaimRequest{
+		TaskID: taskID, AttemptID: "attempt-release", Generation: "gen-release", Priority: 1, VMID: 3010,
+	}); err != nil {
+		t.Fatalf("claim capacity: %v", err)
+	}
+	reconciler := &fakeReleaseReconciler{}
+	server := NewServerWithDispatcherCompletionAndRelease(base.store, nil, nil, reconciler)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost,
+		"/v1/tasks/"+taskID+"/attempts/attempt-release/release/reconcile",
+		bytes.NewBufferString(`{"vmid":3011,"generation":"gen-release","kube_node":"codex-3010","proof":"observed node and guest identity"}`)))
+	if recorder.Code != http.StatusConflict || reconciler.claim.ID != "" {
+		t.Fatalf("status = %d, body = %s, reconciler = %+v; want conflict without call", recorder.Code, recorder.Body.String(), reconciler)
+	}
+}
+
+func TestReconcileReleaseRequiresProof(t *testing.T) {
+	base := newTestServer(t)
+	server := NewServerWithDispatcherCompletionAndRelease(base.store, nil, nil, &fakeReleaseReconciler{})
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost,
+		"/v1/tasks/task-1/attempts/attempt-release/release/reconcile",
+		bytes.NewBufferString(`{"vmid":3010,"generation":"gen-release","kube_node":"codex-3010","proof":" "}`)))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s; want bad request", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestReconcileReleaseRequiresUnknownDurableProgress(t *testing.T) {
+	base := newTestServer(t)
+	taskID := createTestTask(t, base)
+	if _, _, err := base.store.ClaimCapacity(context.Background(), store.CapacityClaimRequest{
+		TaskID: taskID, AttemptID: "attempt-release", Generation: "gen-release", Priority: 1, VMID: 3010,
+	}); err != nil {
+		t.Fatalf("claim capacity: %v", err)
+	}
+	if _, _, err := base.store.EnsureReleaseProgress(context.Background(), store.ReleaseProgressRequest{TaskID: taskID, AttemptID: "attempt-release", VMID: 3010, Generation: "gen-release", KubeNode: "codex-3010"}); err != nil {
+		t.Fatalf("ensure release progress: %v", err)
+	}
+	reconciler := &fakeReleaseReconciler{}
+	server := NewServerWithDispatcherCompletionAndRelease(base.store, nil, nil, reconciler)
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost,
+		"/v1/tasks/"+taskID+"/attempts/attempt-release/release/reconcile",
+		bytes.NewBufferString(`{"vmid":3010,"generation":"gen-release","kube_node":"codex-3010","proof":"observed"}`)))
+	if recorder.Code != http.StatusConflict || reconciler.claim.ID != "" {
+		t.Fatalf("status = %d, body = %s, reconciler = %+v; want conflict without call", recorder.Code, recorder.Body.String(), reconciler)
+	}
+}
+
 func TestDispatchRejectsUnknownAttemptBeforeDispatcher(t *testing.T) {
 	base := newTestServer(t)
 	dispatcher := &fakeDispatcher{}
@@ -238,6 +336,22 @@ func TestDispatchRejectsUnknownAttemptBeforeDispatcher(t *testing.T) {
 	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/tasks/"+taskID+"/dispatch", bytes.NewBufferString(`{"attempt_id":"missing","prompt":"run"}`)))
 	if recorder.Code < http.StatusBadRequest || recorder.Code >= http.StatusInternalServerError || len(dispatcher.requests) != 0 {
 		t.Fatalf("status = %d, requests = %d, body = %s; want 4xx and no dispatch", recorder.Code, len(dispatcher.requests), recorder.Body.String())
+	}
+}
+
+func TestDispatchRejectsMissingValidationCommandBeforeDispatcher(t *testing.T) {
+	base := newTestServer(t)
+	dispatcher := &fakeDispatcher{}
+	server := NewServerWithDispatcher(base.store, dispatcher)
+	taskID := createTestTask(t, server)
+	_, started, err := base.store.StartAttempt(context.Background(), taskID, "attempt-validation-required")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/tasks/"+taskID+"/dispatch", bytes.NewBufferString(`{"attempt_id":"`+started.ID+`","prompt":"run"}`)))
+	if recorder.Code != http.StatusBadRequest || len(dispatcher.requests) != 0 {
+		t.Fatalf("status = %d, requests = %d, body = %s; want 400 and no dispatch", recorder.Code, len(dispatcher.requests), recorder.Body.String())
 	}
 }
 

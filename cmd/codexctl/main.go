@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -49,7 +50,7 @@ func main() {
 
 func run(arguments []string, output io.Writer, client *http.Client) error {
 	if len(arguments) == 0 {
-		return fmt.Errorf("usage: codexctl <doctor|status|run|list|show|send|cancel|retry|reconcile|logs> [options]")
+		return fmt.Errorf("usage: codexctl <doctor|status|run|list|show|send|cancel|retry|reconcile|reconcile-release|logs> [options]")
 	}
 	command := arguments[0]
 	parsed, err := parseOptions(arguments[1:])
@@ -107,6 +108,11 @@ func run(arguments []string, output io.Writer, client *http.Client) error {
 			return err
 		}
 		return reconcileAttempt(output, client, endpoint, parsed.positionals[0], parsed.positionals[1], parsed.values["outcome"])
+	case "reconcile-release":
+		if err := validateOptions(command, parsed, 2, "endpoint", "vmid", "generation", "kube-node", "proof"); err != nil {
+			return err
+		}
+		return reconcileRelease(output, client, endpoint, parsed.positionals[0], parsed.positionals[1], parsed.values)
 	case "logs":
 		if err := validateOptions(command, parsed, 1, "endpoint"); err != nil {
 			return err
@@ -306,6 +312,26 @@ func reconcileAttempt(output io.Writer, client *http.Client, endpoint, taskID, a
 		return err
 	}
 	return printAttempt(output, response)
+}
+
+func reconcileRelease(output io.Writer, client *http.Client, endpoint, taskID, attemptID string, values map[string]string) error {
+	if strings.TrimSpace(values["vmid"]) == "" || strings.TrimSpace(values["generation"]) == "" || strings.TrimSpace(values["kube-node"]) == "" || strings.TrimSpace(values["proof"]) == "" {
+		return fmt.Errorf("--vmid, --generation, --kube-node, and --proof are required")
+	}
+	vmid, err := strconv.Atoi(values["vmid"])
+	if err != nil || vmid < 3000 || vmid > 3999 {
+		return fmt.Errorf("--vmid must be an integer in 3000-3999")
+	}
+	path := taskPath(taskID) + "/attempts/" + url.PathEscape(attemptID) + "/release/reconcile"
+	input := map[string]any{"vmid": vmid, "generation": values["generation"], "kube_node": values["kube-node"], "proof": values["proof"]}
+	var response struct {
+		Status string `json:"status"`
+	}
+	if err := requestJSON(client, http.MethodPost, endpoint, path, input, &response); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(output, "release: %s\n", response.Status)
+	return err
 }
 
 func taskLogs(output io.Writer, client *http.Client, endpoint, taskID string) error {

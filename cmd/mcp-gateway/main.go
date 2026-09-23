@@ -18,6 +18,8 @@ import (
 
 const defaultListenAddress = "127.0.0.1:8090"
 
+const gatewayWriteTimeout = 2 * time.Minute
+
 type gatewayConfig struct {
 	ListenAddress   string
 	DatabasePath    string
@@ -44,18 +46,22 @@ func main() {
 	}
 	defer closeStore()
 
-	server := &http.Server{
-		Addr:              config.ListenAddress,
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    16 << 10,
-	}
+	server := newGatewayHTTPServer(config.ListenAddress, handler)
 	log.Printf("MCP gateway listening on %s", config.ListenAddress)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
+	}
+}
+
+func newGatewayHTTPServer(address string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              address,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      gatewayWriteTimeout,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10,
 	}
 }
 

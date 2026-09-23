@@ -76,6 +76,25 @@ func TestProxmoxRuntimeDoesNotMarkRejectedCloneAsUnknown(t *testing.T) {
 	}
 }
 
+func TestProxmoxRuntimeClassifiesExistingTargetAsOccupied(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api2/json/nodes/pve-node/lxc/3013/clone" {
+			t.Fatalf("clone path = %q", r.URL.Path)
+		}
+		http.Error(w, "CT 3010 already exists on node 'pve-node'", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3999}, Client: server.Client()})
+	_, err := runtime.Create(context.Background(), CreateRequest{VMID: 3010, TemplateVMID: 3013, Generation: "gen-1", Hostname: "codex-3010"})
+	if !errors.Is(err, ErrVMIDOccupied) {
+		t.Fatalf("Create() error = %v, want ErrVMIDOccupied", err)
+	}
+	if errors.Is(err, ErrUnknown) {
+		t.Fatalf("Create() error = %v, must not be ErrUnknown", err)
+	}
+}
+
 func TestProxmoxRuntimeRejectsProtectedActionBeforeHTTP(t *testing.T) {
 	called := false
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
@@ -110,6 +129,45 @@ func TestProxmoxRuntimeObservesStatusWithoutExposingToken(t *testing.T) {
 	}
 	if node.VMID != 3010 || node.State != NodeRunning || node.KubeNode != "codex-3010" {
 		t.Fatalf("observed node = %+v", node)
+	}
+}
+
+func TestProxmoxRuntimeTreatsMissingConfigAsAbsentTarget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api2/json/nodes/pve-node/lxc/3012/status/current" {
+			t.Fatalf("status path = %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"data":null,"message":"Configuration file 'nodes/pve-node/lxc/3012.conf' does not exist\n"}`)
+	}))
+	defer server.Close()
+
+	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3999}, Client: server.Client()})
+	_, err := runtime.Observe(context.Background(), 3012)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Observe() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestProxmoxRuntimeTargetAvailableUsesClusterInventory(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api2/json/cluster/resources" || r.URL.Query().Get("type") != "vm" {
+			t.Fatalf("inventory request = %s %s", r.Method, r.URL.RequestURI())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"type":"lxc","vmid":3013,"name":"template"},{"type":"lxc","vmid":3011,"name":"worker"}]}`)
+	}))
+	defer server.Close()
+
+	runtime := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "secret", Range: VMIDRange{Min: 3000, Max: 3999}, Client: server.Client()})
+	available, err := runtime.TargetAvailable(context.Background(), 3014)
+	if err != nil || !available {
+		t.Fatalf("TargetAvailable(absent) = (%t, %v), want true, nil", available, err)
+	}
+	available, err = runtime.TargetAvailable(context.Background(), 3013)
+	if err != nil || available {
+		t.Fatalf("TargetAvailable(present) = (%t, %v), want false, nil", available, err)
 	}
 }
 

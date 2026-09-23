@@ -8,6 +8,8 @@ import (
 
 var (
 	ErrVMIDOutsideRange  = errors.New("vmid is outside the dynamic range")
+	ErrNotFound          = errors.New("external resource not found")
+	ErrVMIDOccupied      = errors.New("target VMID is already occupied")
 	ErrLifecycleNotReady = errors.New("worker lifecycle is not ready for this operation")
 	ErrUnknown           = errors.New("external operation outcome is unknown")
 	ErrUnknownUnresolved = errors.New("unknown external outcome must be reconciled before mutation")
@@ -69,6 +71,10 @@ type Manager struct {
 	range_  VMIDRange
 }
 
+type targetAvailability interface {
+	TargetAvailable(context.Context, int) (bool, error)
+}
+
 func NewManager(runtime Runtime, vmidRange VMIDRange) *Manager {
 	return &Manager{runtime: runtime, range_: vmidRange}
 }
@@ -86,7 +92,7 @@ func (m *Manager) Create(ctx context.Context, request CreateRequest) (Node, erro
 	}
 	node, err := m.runtime.Create(ctx, request)
 	if errors.Is(err, ErrUnknown) {
-		return Node{VMID: request.VMID, Generation: request.Generation, TaskID: request.TaskID, State: NodeUnknown}, ErrUnknown
+		return Node{VMID: request.VMID, Generation: request.Generation, TaskID: request.TaskID, State: NodeUnknown}, err
 	}
 	if err != nil {
 		return Node{}, fmt.Errorf("create vmid %d: %w", request.VMID, err)
@@ -106,7 +112,7 @@ func (m *Manager) Reconcile(ctx context.Context, node Node) (Node, error) {
 	}
 	observed, err := m.runtime.Observe(ctx, node.VMID)
 	if errors.Is(err, ErrUnknown) {
-		return node, ErrUnknown
+		return node, err
 	}
 	if err != nil {
 		return Node{}, fmt.Errorf("observe vmid %d: %w", node.VMID, err)
@@ -117,6 +123,24 @@ func (m *Manager) Reconcile(ctx context.Context, node Node) (Node, error) {
 	return observed, nil
 }
 
+// TargetAvailable performs a read-only preflight for a VMID before a clone.
+func (m *Manager) TargetAvailable(ctx context.Context, vmid int) (bool, error) {
+	if err := m.validate(vmid); err != nil {
+		return false, err
+	}
+	if inventory, ok := m.runtime.(targetAvailability); ok {
+		return inventory.TargetAvailable(ctx, vmid)
+	}
+	_, err := m.runtime.Observe(ctx, vmid)
+	if errors.Is(err, ErrNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("observe target vmid %d: %w", vmid, err)
+	}
+	return false, nil
+}
+
 func (m *Manager) Start(ctx context.Context, node Node) error {
 	if err := m.validate(node.VMID); err != nil {
 		return err
@@ -125,7 +149,7 @@ func (m *Manager) Start(ctx context.Context, node Node) error {
 		return ErrUnknownUnresolved
 	}
 	if err := m.runtime.Start(ctx, node.VMID); errors.Is(err, ErrUnknown) {
-		return ErrUnknown
+		return err
 	} else if err != nil {
 		return fmt.Errorf("start vmid %d: %w", node.VMID, err)
 	}
@@ -140,7 +164,7 @@ func (m *Manager) Join(ctx context.Context, node Node) error {
 		return ErrUnknownUnresolved
 	}
 	if err := m.runtime.Join(ctx, node.VMID); errors.Is(err, ErrUnknown) {
-		return ErrUnknown
+		return err
 	} else if err != nil {
 		return fmt.Errorf("join vmid %d: %w", node.VMID, err)
 	}
@@ -158,7 +182,7 @@ func (m *Manager) Stop(ctx context.Context, node Node) error {
 		return ErrLifecycleNotReady
 	}
 	if err := m.runtime.Stop(ctx, node.VMID); errors.Is(err, ErrUnknown) {
-		return ErrUnknown
+		return err
 	} else if err != nil {
 		return fmt.Errorf("stop vmid %d: %w", node.VMID, err)
 	}
@@ -176,7 +200,7 @@ func (m *Manager) Destroy(ctx context.Context, node Node) error {
 		return ErrLifecycleNotReady
 	}
 	if err := m.runtime.Destroy(ctx, node.VMID); errors.Is(err, ErrUnknown) {
-		return ErrUnknown
+		return err
 	} else if err != nil {
 		return fmt.Errorf("destroy vmid %d: %w", node.VMID, err)
 	}

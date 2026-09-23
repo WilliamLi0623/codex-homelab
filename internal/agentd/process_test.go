@@ -66,11 +66,15 @@ func TestStartCodexAppServerUsesStdioProtocol(t *testing.T) {
 		TestAgentdHelperProcess(t)
 		return
 	}
-	process, err := StartCodexAppServer(context.Background(), os.Args[0], []string{"GO_WANT_AGENTD_HELPER=1", "CODEX_HOME=test-attempt-home"})
+	workspace := t.TempDir()
+	process, err := StartCodexAppServer(context.Background(), os.Args[0], []string{"GO_WANT_AGENTD_HELPER=1", "CODEX_HOME=test-attempt-home", "CODEX_WORKSPACE=" + workspace})
 	if err != nil {
 		t.Fatalf("StartCodexAppServer() error = %v", err)
 	}
 	t.Cleanup(func() { _ = process.Close() })
+	if process.cmd.Dir != workspace {
+		t.Fatalf("App Server working directory = %q, want %q", process.cmd.Dir, workspace)
+	}
 	if err := process.Client.Initialize(context.Background()); err != nil {
 		t.Fatalf("Client.Initialize() error = %v", err)
 	}

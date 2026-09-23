@@ -90,6 +90,20 @@ The Controller owns Proxmox lifecycle, workspace isolation, credentials,
 validation, commit, and cleanup. Do not SSH into a worker to run Codex or to
 manually create a commit.
 
+### Dynamic VMID allocation safety
+
+The SQLite `capacity_nodes` ledger is not the only source of truth for a
+dynamic VMID: stopped or manually-created Proxmox guests can exist outside the
+ledger. Before cloning, the Controller performs a read-only Proxmox status
+check and skips any VMID that is already present. If a VMID is acquired by a
+different external operation in the small preflight-to-clone window, an exact
+`CT <vmid> already exists` response is treated as a deterministic collision;
+the uncreated ledger claim is removed and the next candidate is selected.
+
+Network failures, timeouts, malformed responses, and other ambiguous provider
+errors remain `UNKNOWN` and are never automatically replayed. This distinction
+prevents a collision fix from weakening the no-duplicate-side-effect rule.
+
 ## Interacting with Codex after dispatch
 
 Use the task and event APIs, rather than an interactive shell in the worker:
