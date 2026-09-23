@@ -157,6 +157,9 @@ User-Agent, `codex_cli_rs/0.155.0 (Debian 13; x86_64) non-interactive`:
 
 - Muse Spark with `reasoning.effort=xhigh` returned HTTP 200 in the tool-loop
   probes above.
+- A streaming Muse Responses text probe returned HTTP 200, emitted
+  `response.created` and `response.output_text.delta`, ended with
+  `response.completed`, and reconstructed the exact text `MUSE_SSE_OK`.
 - GLM-5.3-Flash with `reasoning.effort=max` returned HTTP 503
   `no_available_providers` for a standard function-tool request.
 - DeepSeek V4.1 Flash returned HTTP 503 `no_available_providers` for the same
