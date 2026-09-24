@@ -187,6 +187,19 @@ default Windows Go build-cache path returned access denied, so the same test
 command was rerun successfully with a unique temporary `GOCACHE`; no repository
 cache or production configuration was changed.
 
+A broader read-only regression pass also succeeded:
+`go test -timeout 90s ./... -count=1` and `go vet ./...` both exited 0 using
+separate unique temporary Go build caches. `git diff --check` passed before
+this documentation-only update. These are local code gates only; they do not
+clear Task 1's live provider-switch gate or authorize coordinator deployment.
+
+An independent source audit confirmed that the current `internal/agentd`
+client receives App Server event parameters but `service.go` persists only the
+event method name. The current worker route fields are requested configuration,
+not a provider/model/effort acceptance receipt. Therefore the existing agentd
+event path cannot prove effective subagent routing; that matrix item remains
+pending until an actual runtime source exposes correlated effective metadata.
+
 Local Codex config was backed up to
 `%USERPROFILE%\.codex\config.toml.pre-p27-routing-20260924.bak`; only
 `agents.default_subagent_reasoning_effort` changed from `medium` to `high`.
