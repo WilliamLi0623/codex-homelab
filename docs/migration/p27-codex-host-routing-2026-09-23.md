@@ -133,6 +133,29 @@ service was changed. Automatic fallback remains disabled. The authentication-
 related error classification must be investigated before the same-thread
 acceptance probe can continue.
 
+### Read-only access and login-state follow-up — 2026-09-24
+
+The configured direct SSH alias for LXC3006 resolves to hostname `lxc3006`,
+which did not resolve from the Windows host during this follow-up. The
+configured `proxmox-pve` alias resolved to tailnet address `100.64.2.121` and
+worked; Proxmox reported VMID 3006 running. Read-only `pct exec` checks inside
+the container confirmed `/usr/local/bin/codex` is CLI `0.155.0`.
+
+The current `codex login status` invocation reported an unauthenticated state
+and exited with status 1. `/root/.codex/auth.json` was absent, and the
+`OPENAI_API_KEY`, `CODEX_API_KEY`, and `CODEX_HOME` environment variable names
+were absent from that `pct exec` environment. No auth/config file contents were
+read. A bounded check of `/root` and immediate `/home/*` directories found
+only the root Codex home and no auth file. The earlier note that the remote
+login-status command “succeeds” is not proof of an authenticated state and
+cannot be reconciled with this current result without its original sanitized
+output. Absent remote auth is a plausible explanation for the first-turn
+error, not yet a proven root cause.
+No login, model request, thread resume, credential transfer, or remote
+configuration change was performed. The next remote model probe is gated on an
+authorized login being established inside LXC3006 and then rechecking status.
+Automatic fallback remains disabled.
+
 Local Codex config was backed up to
 `%USERPROFILE%\.codex\config.toml.pre-p27-routing-20260924.bak`; only
 `agents.default_subagent_reasoning_effort` changed from `medium` to `high`.
