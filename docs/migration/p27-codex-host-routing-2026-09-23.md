@@ -152,10 +152,40 @@ login-status command “succeeds” is not proof of an authenticated state and
 cannot be reconciled with this current result without its original sanitized
 output. Absent remote auth is a plausible explanation for the first-turn
 error, not yet a proven root cause.
-No login, model request, thread resume, credential transfer, or remote
-configuration change was performed. The next remote model probe is gated on an
-authorized login being established inside LXC3006 and then rechecking status.
-Automatic fallback remains disabled.
+At that checkpoint, no login, model request, thread resume, credential
+transfer, or remote configuration change had been performed. The login gate
+was subsequently cleared as recorded below. Automatic fallback remains
+disabled.
+
+### Remote login recovery and same-thread history check — 2026-09-24
+
+The user completed Codex device authorization directly. A sanitized
+`codex login status` check inside LXC3006 now exits 0 and reports only
+`authenticated`; no account details or credential contents were emitted.
+The installed CLI's App Server schema confirms `thread/resume` accepts
+`modelProvider` and `model` fields.
+
+A harmless, read-only `gpt-6-luna` turn completed with the exact marker
+`P27_AUTH_OK` and no tool calls. Resuming that same disposable thread through
+`codex exec resume` returned the same marker when asked to recall it, proving
+that authentication and same-thread history continuation work on this host.
+The first resume attempt was rejected because the process was outside a
+trusted Git directory; retrying with the explicit `--skip-git-repo-check`
+option succeeded. No existing user thread was touched.
+
+Provider switching is still **unverified** on LXC3006. Its current
+`/root/.codex/config.toml` contains no custom `model_providers` entries, so the
+target CC Hub/Responses bridge route is not configured there. The CC Hub key
+was not copied or exposed to the container, and no remote configuration or
+service was changed. The remaining same-thread route test needs a secure,
+already-approved provider/secret path; do not create a second plaintext key
+store. Automatic fallback remains disabled.
+
+Local verification after this checkpoint: `go test
+./internal/responsesbridge ./internal/codexrouting -count=1` passed. The
+default Windows Go build-cache path returned access denied, so the same test
+command was rerun successfully with a unique temporary `GOCACHE`; no repository
+cache or production configuration was changed.
 
 Local Codex config was backed up to
 `%USERPROFILE%\.codex\config.toml.pre-p27-routing-20260924.bak`; only
