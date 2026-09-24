@@ -143,7 +143,8 @@ the container confirmed `/usr/local/bin/codex` is CLI `0.155.0`.
 
 The current `codex login status` invocation reported an unauthenticated state
 and exited with status 1. `/root/.codex/auth.json` was absent, and the
-`OPENAI_API_KEY`, `CODEX_API_KEY`, and `CODEX_HOME` environment variable names
+`OPENAI_API_KEY`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`,
+`OPENAI_IDENTITY_TOKEN_FILE`, and `CODEX_HOME` environment variable names
 were absent from that `pct exec` environment. No auth/config file contents were
 read. A bounded check of `/root` and immediate `/home/*` directories found
 only the root Codex home and no auth file. The earlier note that the remote
