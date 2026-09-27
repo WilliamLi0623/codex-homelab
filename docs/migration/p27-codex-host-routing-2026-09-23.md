@@ -449,3 +449,19 @@ Responses replacement. The prior Spark probes remain: a reduced tool surface
 including terminal/exec completed, while the full Codex tool inventory was
 rejected for recursive JSON Schema. No repository files, saved Codex
 configuration, or production services were changed by these probes.
+
+The locally installed Codex CLI 0.156.1's generated experimental App Server
+schema also defines `ThreadStartParams.modelProvider` and `model`. This confirms
+the protocol can request a provider/model when starting a new thread; it does
+not prove the desktop thread-creation path consumes current quota state or
+automatically selects those values. No automatic fallback is enabled on this
+evidence alone.
+
+MCP route-snapshot persistence was repaired in commit `8bbf83c`. Controller-
+forwarded MCP `start_attempt` and `retry_task` now use the existing Controller
+attempt APIs; Controller remains the only route resolver, while local-only MCP
+construction preserves its existing store path. The main agent reran
+`go test ./internal/mcp ./cmd/mcp-gateway ./internal/api -count=1` successfully,
+and the commit passes `git diff --check`. This closes the MCP gateway route-
+snapshot implementation gate, not the separate live Codex route-selection,
+quota-transition, or production P25 gates.

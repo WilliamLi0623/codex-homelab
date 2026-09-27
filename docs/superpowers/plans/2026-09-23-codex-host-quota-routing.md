@@ -203,16 +203,21 @@ route metadata.
   remains fail-closed for production dispatch.
 - Do not put route secrets in MCP arguments, responses, or logs.
 
-- [ ] Add a regression test proving an MCP-created attempt and retry receive a
+- [x] Add a regression test proving an MCP-created attempt and retry receive a
   frozen route through the Controller API, then dispatch with that exact stored
   route; verify the test fails before the implementation.
-- [ ] Keep the direct/local MCP mode tests passing and confirm no provider
+- [x] Keep the direct/local MCP mode tests passing and confirm no provider
   routing policy was duplicated in the Gateway.
 
 Run: go test ./internal/mcp ./cmd/mcp-gateway ./internal/api -count=1
 
 Expected: routed MCP start/retry/dispatch uses the Controller snapshot; no
 route-less production attempt can reach the executor.
+
+Completed in commit `8bbf83c` (base `b839dd8`). The regression was first run
+RED (`attempt route snapshot not found`), then passed after routing Controller-
+forwarded start/retry through the existing API. Main-agent verification reran
+the required command successfully; `git diff --check 8bbf83c^ 8bbf83c` passed.
 
 ---
 
