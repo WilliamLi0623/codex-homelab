@@ -51,7 +51,7 @@
 - [ ] Separately prove that the actual Codex Desktop/new-thread path consumes authoritative quota state. Schema and explicit App Server requests alone are not that proof.
 - [ ] Create one disposable subagent in each configured mode and verify its effective provider/model/effort from runtime metadata, not merely TOML parsing.
 - [ ] Record whether a running thread can safely continue after an exhausted turn and whether new subagents observe changed role defaults; never change an existing thread's provider to continue it.
-- [x] If provider switching or quota classification cannot be proven with the installed app-server, stop before enabling automatic fallback; report the exact failed capability rather than adding a status-code heuristic. Follow-up on 2026-09-24: the LXC3006 device login, OpenAI/Luna request, and same-thread history recall passed. An ephemeral stdin-only key injection allowed OpenAI/Luna → CC Hub/Spark Responses xhigh on the same thread, but a full tool inventory gets CC Hub 503 for recursive JSON schemas and the reduced tool-surface return-to-OpenAI leg gets HTTP 400 on Spark's provider-specific reasoning item ID. No key/config was persisted. Full-tool compatibility, round-trip history, effective subagent metadata, and remote quota RPC remain unresolved; automatic fallback stays disabled.
+- [x] If provider switching or quota classification cannot be proven with the installed app-server, stop before enabling automatic fallback; report the exact failed capability rather than adding a status-code heuristic. Follow-up on 2026-09-24: the LXC3006 device login, OpenAI/Luna request, and same-thread history recall passed. An ephemeral stdin-only key injection allowed OpenAI/Luna → CC Hub/Spark Responses xhigh on the same thread, but a full tool inventory gets CC Hub 503 for recursive JSON schemas and the reduced tool-surface return-to-OpenAI leg gets HTTP 400 on Spark's provider-specific reasoning item ID. No key/config was persisted. Full-tool compatibility, same-thread round-trip, effective subagent metadata, and Desktop quota-driven new-thread integration remain unresolved; a 2026-09-27 initialized read-only quota RPC did succeed in the LXC3006 root `pct exec` context (see migration evidence). Automatic fallback stays disabled.
 
 Run: `codex app-server generate-json-schema --experimental --out <unique-temp-dir>`
 
@@ -148,7 +148,7 @@ Expected: configuration validates, direct OpenAI remains selectable, and both ro
 - Every reachable remote uses the same fixed normal/fallback mappings and the same quota state semantics.
 - An unreachable host is left unchanged and reported by its exact SSH failure; no guessed host or destructive SSH fallback is permitted.
 
-- [ ] Resolve configured SSH aliases using `ssh -G` and confirm the target host identity before connecting.
+- [x] Resolve configured SSH aliases using `ssh -G` and confirm the target host identity before connecting. `proxmox-pve` is reachable; `codex-worker` resolves to VM101 but SSH auth is denied; the direct LXC3006 alias does not resolve from Windows, so LXC3006 was checked through PVE `pct exec` instead.
 - [ ] Read only sanitized remote model/provider/agent settings and Codex version; do not print auth state, tokens, or full config.
 - [ ] Back up the remote config on the remote host, merge only approved fields, and run remote strict config validation.
 - [ ] Verify one harmless normal-mode turn and one fallback-mode route selection on the remote runtime, then restore normal mode if the live account quota is not exhausted.

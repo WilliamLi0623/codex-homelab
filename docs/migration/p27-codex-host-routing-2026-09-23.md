@@ -112,9 +112,9 @@ probe. No saved Codex configuration was changed.
 | Two parallel independent Codex calls | **Verified for this E2E** | Both completed in one turn with distinct call IDs. |
 | File creation and reread | **Verified for this E2E** | `marker.txt` round-tripped exact contents. |
 | Disposable coding task and independent test rerun | **Verified for this E2E** | The one-line parity fix passed an independent `python3 -m unittest -v` rerun and `git diff --check`. |
-| Same-thread OpenAI↔GLM routing | **Pending** | A disposable same-ID `thread/resume` and follow-up turn must prove provider selection and history continuity. |
+| Same-thread cross-provider routing | **Not supported by the accepted policy** | Keep threads pinned. The observed Spark → OpenAI resume failed on provider-specific reasoning history; this is not a remaining success gate. |
 | Effective subagent provider/model/effort metadata | **Pending** | Runtime route metadata is not yet authoritative. |
-| Authoritative quota App Server live transport | **Pending** | The coordinator must use a CLI supporting the RPC; fallback stays disabled. |
+| Authoritative quota App Server live transport | **Partially verified** | Local CLI 0.156.1 and LXC3006 CLI 0.155.0 root `pct exec` context both returned a sanitized live quota result; the actual service user's `CODEX_HOME`/runtime remains unverified. |
 | Coordinator deployment/transition recovery | **Pending** | Not deployed or enabled. |
 | Production P25 isolation/failure matrices | **Pending** | Full production E2E remains open. |
 | Automatic fallback enablement | **Disabled** | Remains disabled until the pending gates above pass. |
@@ -413,22 +413,38 @@ expired; this did not alter the disposable repo or invalidate the independently
 rerun passing tests. Temporary test files and binaries were placed under
 LXC/PVE `/run` (tmpfs); no prior test servers were stopped or removed.
 
-The remote quota RPC has a separate version gate: LXC3006's Codex CLI
-`0.155.0` login-status command succeeds, but its generated experimental App
-Server schema does not expose `account/rateLimits/read`; a direct RPC attempt
-returned JSON-RPC `-32600`. The main Windows Codex CLI is `0.156.1`, whose
-schema and live quota read were already verified above. The coordinator must
-run only against a CLI that supports the authoritative RPC; errors from the
-older remote CLI remain fail-closed and do not change routing mode.
+As measured on 2026-09-24, the remote quota RPC appeared unsupported: the
+LXC3006 CLI `0.155.0` schema probe did not find `account/rateLimits/read`, and
+the attempted RPC returned JSON-RPC `-32600`. A fresh re-probe on 2026-09-27
+corrected that conclusion: the same `/usr/local/bin/codex` symlink still
+resolves to CLI `0.155.0`, the regenerated experimental schema contains the
+RPC, and a correctly initialized App Server call succeeded. The sanitized
+result in the root `pct exec` context was `ordinaryUsageAllowed=true`.
+The previous `-32600` cause has not been established; it must not be described
+as a version limitation. This does not yet prove that the production worker's
+service account or `CODEX_HOME` uses the same auth/config context, nor does it
+prove that a model turn works. The Windows `codex-worker` SSH alias still has
+an authentication failure; LXC3006 was reached through the verified PVE host.
+The `codex-agentd.service` queried inside LXC3006 is currently inactive, so
+this success is only a disposable root `pct exec` App Server read, not proof
+for an active worker service. No remote service, config, or credential file
+was changed.
 
 The live bridge text stream, actual Codex tool loop, three sequential calls,
 two independent calls, file edit, and bounded disposable coding task now pass
-on Linux. Same-thread OpenAI↔GLM routing, effective subagent route metadata,
+on Linux. Effective subagent route metadata,
 dynamic transition/recovery through the deployed coordinator, and production
 P25 isolation/failure matrices remain open. No persistent config or production
 service was changed, and automatic fallback remains disabled.
 
 ## Routing decision and Responses re-probe — 2026-09-27
+
+Same-thread provider round-trip is no longer a success gate: provider-specific
+history makes the observed Spark → OpenAI continuation fail, so threads are
+pinned to one provider. The remaining local fallback gate is automatic
+quota-driven provider selection for a newly created Codex Desktop thread; an
+explicit App Server `thread/start` request works, but Desktop has not been
+shown to consult the coordinator.
 
 At the user's direction, keep the existing direct OpenAI path and direct
 CC Hub Responses path for Spark. Do not add a second Spark proxy. A Spark

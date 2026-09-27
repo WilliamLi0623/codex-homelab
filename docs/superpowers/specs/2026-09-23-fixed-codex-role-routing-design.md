@@ -26,7 +26,7 @@ The switch is permitted only on an authoritative signal that the shared Codex ac
 
 The implementation must identify and validate an available structured quota signal before enabling automatic switching on a host. If the Codex runtime or account status source on that host does not expose a reliable signal, automatic switching on that host remains disabled and the quota failure is surfaced clearly; it must not infer exhaustion from generic HTTP status alone.
 
-When a fresh authoritative status reports that the exhausted quota window has reset, routing returns to the normal state for new work. A state transition is recorded without secrets or prompt content. One transition applies consistently to newly started main-session turns, newly spawned subagents, and newly created task attempts. Already-running requests or subagents are not replayed or silently restarted; whether the active main session can continue in the same thread is gated on proving a supported runtime settings update that preserves conversation history.
+When a fresh authoritative status reports that the exhausted quota window has reset, routing returns to the normal state for new work. A state transition is recorded without secrets or prompt content. One transition applies consistently to newly started main-session turns, newly spawned subagents, and newly created task attempts. Already-running requests or subagents are not replayed or silently restarted. Each conversation thread remains pinned to its selected provider; route changes apply only to newly created threads. Do not resume a thread on another provider because provider-specific reasoning/history has already been rejected by OpenAI during the observed Spark → OpenAI continuation.
 
 ## Components and boundaries
 
