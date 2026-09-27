@@ -173,13 +173,34 @@ The first resume attempt was rejected because the process was outside a
 trusted Git directory; retrying with the explicit `--skip-git-repo-check`
 option succeeded. No existing user thread was touched.
 
-Provider switching is still **unverified** on LXC3006. Its current
-`/root/.codex/config.toml` contains no custom `model_providers` entries, so the
-target CC Hub/Responses bridge route is not configured there. The CC Hub key
-was not copied or exposed to the container, and no remote configuration or
-service was changed. The remaining same-thread route test needs a secure,
-already-approved provider/secret path; do not create a second plaintext key
-store. Automatic fallback remains disabled.
+The same-thread provider test then used process-scoped Codex overrides for
+`cch` / `muse-spark-1.3-contributor` / Responses / `xhigh`. With the full
+Codex tool inventory, CC Hub returned HTTP 503: `Recursive JSON schemas are
+not currently supported`. With optional tool families disabled, the same
+thread successfully produced `P27_SPARK_OK` and recalled `P27_AUTH_OK`. A
+separate reduced-surface probe kept the terminal/exec tool available; Spark
+executed `printf TOOL_SCHEMA_OK`, Codex returned its exact output, and the
+turn completed. These calls establish one-way OpenAI → Spark text and terminal
+use only under a reduced tool inventory; they do not pass the round-trip gate.
+
+Switching that same thread back to OpenAI/Luna failed with HTTP 400 because
+the request history contained a Spark-generated reasoning item ID in the
+provider-specific `rs_<id>:rs_<id>` form, which OpenAI rejected as an invalid
+item ID. No tool ran on the failed return attempt. A future recovery switch
+cannot be called safe until this provider-specific history state is handled
+without losing required conversation continuity. The exact offending ID and
+CC Hub session ID are intentionally not persisted.
+
+The CC Hub key came from the root-only PVE source (mode 0600) and was streamed
+over stdin into each one-shot LXC process. It was not placed in argv, config,
+files, fixtures, or logs. No persistent LXC configuration or service was
+changed. Automatic fallback remains disabled.
+
+An independent source audit also found that the current `internal/agentd`
+client receives App Server event parameters but `service.go` persists only
+the event method name. Worker route fields are requested configuration, not a
+provider/model/effort acceptance receipt. Effective subagent route metadata
+therefore remains unverified.
 
 Local verification after this checkpoint: `go test
 ./internal/responsesbridge ./internal/codexrouting -count=1` passed. The
