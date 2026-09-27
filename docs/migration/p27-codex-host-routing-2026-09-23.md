@@ -465,3 +465,13 @@ construction preserves its existing store path. The main agent reran
 and the commit passes `git diff --check`. This closes the MCP gateway route-
 snapshot implementation gate, not the separate live Codex route-selection,
 quota-transition, or production P25 gates.
+
+The existing `TestQuotaCoordinatorToFrozenAttemptRouteIntegration` exercises
+the coordinator against a mocked quota reader and an in-process authenticated
+Controller endpoint: fallback generation 1 is frozen into an attempt, a
+recovery publishes normal generation 2 without rewriting the old attempt, a
+new attempt uses the normal route, and a simulated upstream 503 leaves the
+state unchanged. On 2026-09-27, on the Windows development host with Codex CLI
+0.156.1, the main agent ran `go test ./... -count=1` and `go vet ./...`; both
+passed. These are local simulated integration/code gates, not live desktop
+routing or production P25 isolation evidence.

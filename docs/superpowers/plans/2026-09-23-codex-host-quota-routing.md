@@ -168,12 +168,12 @@ Expected: each reachable host reports verified effective role routing; unreachab
 - The primary and secondary account windows are both honored; reset is accepted only from a fresh authoritative account response.
 - Already-running requests and agents keep their original route; only new turns and newly spawned workers adopt the new state.
 
-- [ ] Use mocked app-server quota responses to test both exhaustion and reset without consuming reset credits or exhausting the real account.
+- [x] Use mocked app-server quota responses to test both exhaustion and reset without consuming reset credits or exhausting the real account; `internal/api/routing_integration_test.go` verifies fallback → normal publication and frozen attempts.
 - [ ] Test that a generic 429, 503 overload, authentication failure, timeout, or bridge crash leaves the routing state unchanged.
 - [ ] In an opt-in live smoke test, read current usage and exercise the route selection with a non-destructive prompt; do not attempt to exhaust quota.
 - [ ] Verify provider pinning across a quota transition: existing threads do not change or replay calls, while a fresh thread can select the new route only through a proven thread-creation integration.
-- [ ] Run `go test ./internal/responsesbridge ./internal/codexrouting -count=1` and record the exact host/CLI versions.
-- [ ] Document current limitations, exact rollback, and current local/remote completion matrix.
+- [x] Run `go test ./internal/responsesbridge ./internal/codexrouting -count=1` and record the exact host/CLI versions. Full `go test ./... -count=1` and `go vet ./...` also passed in the main worktree on 2026-09-27.
+- [x] Document current limitations, exact rollback, and current local/remote completion matrix; remaining live thread-selection and remote gates are listed in the migration report.
 
 Run: `go test ./internal/responsesbridge ./internal/codexrouting -count=1`
 
