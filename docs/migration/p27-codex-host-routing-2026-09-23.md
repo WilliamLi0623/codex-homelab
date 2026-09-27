@@ -457,6 +457,14 @@ not prove the desktop thread-creation path consumes current quota state or
 automatically selects those values. No automatic fallback is enabled on this
 evidence alone.
 
+On 2026-09-27, an isolated local CLI 0.156.1 App Server session created two
+`ephemeral=true` threads without starting turns. Their `thread/start` responses
+reported `openai / gpt-6-luna` and `osc / muse-spark-1.3-contributor`, matching
+the requested provider/model pairs. The temporary App Server process exited
+afterward. This verifies explicit App Server new-thread selection only; it
+does not verify that Codex Desktop or the quota coordinator automatically
+chooses a provider for a user's new thread.
+
 MCP route-snapshot persistence was repaired in commit `8bbf83c`. Controller-
 forwarded MCP `start_attempt` and `retry_task` now use the existing Controller
 attempt APIs; Controller remains the only route resolver, while local-only MCP
