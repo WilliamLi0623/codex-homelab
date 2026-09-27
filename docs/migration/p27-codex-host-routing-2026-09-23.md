@@ -427,3 +427,25 @@ on Linux. Same-thread OpenAI↔GLM routing, effective subagent route metadata,
 dynamic transition/recovery through the deployed coordinator, and production
 P25 isolation/failure matrices remain open. No persistent config or production
 service was changed, and automatic fallback remains disabled.
+
+## Routing decision and Responses re-probe — 2026-09-27
+
+At the user's direction, keep the existing direct OpenAI path and direct
+CC Hub Responses path for Spark. Do not add a second Spark proxy. A Spark
+thread remains pinned to Spark for its lifetime; do not attempt a same-thread
+switch back to OpenAI because the Codex request history currently contains a
+Spark reasoning item ID that OpenAI rejects. After authoritative quota
+recovery, OpenAI is the normal route for newly created threads. This is a
+safe per-thread policy, not proof that local Codex automatically applies
+quota state when creating threads; that integration remains an acceptance
+gate, and automatic fallback remains disabled.
+
+A fresh minimal, non-streaming PVE probe used the existing root-only CC Hub key
+transiently and the documented coding-agent User-Agent. Both
+glm-5.3-flash and deepseek/deepseek-v4.1-flash returned HTTP 503
+no_available_providers from /v1/responses. The response session identifier
+was deliberately not retained. Neither model is a currently usable direct
+Responses replacement. The prior Spark probes remain: a reduced tool surface
+including terminal/exec completed, while the full Codex tool inventory was
+rejected for recursive JSON Schema. No repository files, saved Codex
+configuration, or production services were changed by these probes.

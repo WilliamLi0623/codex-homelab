@@ -179,6 +179,43 @@ Expected: mocked transitions pass; live smoke never alters quota credits; normal
 
 ---
 
+### Task 7: Preserve frozen route snapshots through the MCP Gateway
+
+The production MCP Gateway uses the authoritative Controller database and
+forwards dispatch through the Controller HTTP API. When that HTTP client is
+configured, attempt creation and retries must also go through the Controller
+API so its current fixed-routing state is resolved and frozen atomically.
+The MCP layer must not independently resolve provider policy or reconstruct
+route metadata.
+
+**Files:**
+- Modify: internal/mcp/server.go
+- Modify: internal/mcp/controller_client.go
+- Modify: cmd/mcp-gateway/main.go only if needed to wire the existing client
+- Test: internal/mcp/*_test.go, cmd/mcp-gateway/*_test.go
+
+**Invariants:**
+- The Controller remains the sole authority for quota state, route resolution,
+  and immutable attempt route snapshots.
+- With a Controller client configured, MCP start/retry uses the existing
+  Controller endpoints and a later dispatch consumes the persisted snapshot.
+- Preserve local-only behavior when no Controller client is configured; it
+  remains fail-closed for production dispatch.
+- Do not put route secrets in MCP arguments, responses, or logs.
+
+- [ ] Add a regression test proving an MCP-created attempt and retry receive a
+  frozen route through the Controller API, then dispatch with that exact stored
+  route; verify the test fails before the implementation.
+- [ ] Keep the direct/local MCP mode tests passing and confirm no provider
+  routing policy was duplicated in the Gateway.
+
+Run: go test ./internal/mcp ./cmd/mcp-gateway ./internal/api -count=1
+
+Expected: routed MCP start/retry/dispatch uses the Controller snapshot; no
+route-less production attempt can reach the executor.
+
+---
+
 ## Execution dependency
 
 Task 1 is a hard gate. Task 2 can be built independently after its unit-test contract is written. Tasks 3–6 require Task 1's quota and thread-switch evidence plus the authenticated state endpoint from the worker plan. Do not edit user or remote Codex configuration before the adapter, state channel, and safe switch path are tested.
