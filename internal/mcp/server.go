@@ -120,20 +120,34 @@ type AttemptMessageSender interface {
 	SendMessageForAttempt(context.Context, string, string) error
 }
 
+type AttemptCreator interface {
+	StartAttempt(context.Context, string, string) (domain.Task, domain.Attempt, error)
+	RetryTask(context.Context, string) (domain.Task, domain.Attempt, error)
+}
+
 type Server struct {
-	store         *store.Store
-	dispatcher    Dispatcher
-	messageSender AttemptMessageSender
+	store          *store.Store
+	dispatcher     Dispatcher
+	messageSender  AttemptMessageSender
+	attemptCreator AttemptCreator
 }
 
 func NewServer(database *store.Store) *Server { return NewServerWithDispatcher(database, nil) }
 
 func NewServerWithDispatcher(database *store.Store, dispatcher Dispatcher) *Server {
-	return &Server{store: database, dispatcher: dispatcher}
+	return newServer(database, dispatcher, nil)
 }
 
 func NewServerWithDispatcherAndMessageSender(database *store.Store, dispatcher Dispatcher, messageSender AttemptMessageSender) *Server {
-	return &Server{store: database, dispatcher: dispatcher, messageSender: messageSender}
+	return newServer(database, dispatcher, messageSender)
+}
+
+func newServer(database *store.Store, dispatcher Dispatcher, messageSender AttemptMessageSender) *Server {
+	server := &Server{store: database, dispatcher: dispatcher, messageSender: messageSender}
+	if creator, ok := dispatcher.(AttemptCreator); ok {
+		server.attemptCreator = creator
+	}
+	return server
 }
 
 func (s *Server) Tools() []Tool {
@@ -187,7 +201,14 @@ func (s *Server) CallTool(ctx context.Context, name string, arguments json.RawMe
 		if profile == "" {
 			profile = "openai-primary"
 		}
-		task, attempt, err := s.store.StartAttempt(ctx, input.TaskID, profile)
+		var task domain.Task
+		var attempt domain.Attempt
+		var err error
+		if s.attemptCreator != nil {
+			task, attempt, err = s.attemptCreator.StartAttempt(ctx, input.TaskID, profile)
+		} else {
+			task, attempt, err = s.store.StartAttempt(ctx, input.TaskID, profile)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -274,7 +295,14 @@ func (s *Server) CallTool(ctx context.Context, name string, arguments json.RawMe
 		if empty(input.TaskID) {
 			return nil, fmt.Errorf("%w: task_id is required", ErrInvalidArguments)
 		}
-		task, attempt, err := s.store.RetryTask(ctx, input.TaskID)
+		var task domain.Task
+		var attempt domain.Attempt
+		var err error
+		if s.attemptCreator != nil {
+			task, attempt, err = s.attemptCreator.RetryTask(ctx, input.TaskID)
+		} else {
+			task, attempt, err = s.store.RetryTask(ctx, input.TaskID)
+		}
 		if err != nil {
 			return nil, err
 		}

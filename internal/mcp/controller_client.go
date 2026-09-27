@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/WilliamLi0623/codex-homelab/internal/domain"
 	"github.com/WilliamLi0623/codex-homelab/internal/executor/k3s"
 	"github.com/WilliamLi0623/codex-homelab/internal/orchestrator"
 	"github.com/WilliamLi0623/codex-homelab/internal/store"
@@ -36,6 +37,22 @@ func NewControllerClient(rawURL, token string, database *store.Store) (*Controll
 		return nil, fmt.Errorf("controller client requires the authoritative store")
 	}
 	return &ControllerClient{baseURL: parsed, token: strings.TrimSpace(token), httpClient: http.DefaultClient, store: database}, nil
+}
+
+func (c *ControllerClient) StartAttempt(ctx context.Context, taskID, profile string) (domain.Task, domain.Attempt, error) {
+	var response controllerAttemptResponse
+	if err := c.postJSON(ctx, "/v1/tasks/"+url.PathEscape(taskID)+"/attempts", map[string]string{"profile": profile}, &response); err != nil {
+		return domain.Task{}, domain.Attempt{}, err
+	}
+	return response.domainValues(taskID)
+}
+
+func (c *ControllerClient) RetryTask(ctx context.Context, taskID string) (domain.Task, domain.Attempt, error) {
+	var response controllerAttemptResponse
+	if err := c.postJSON(ctx, "/v1/tasks/"+url.PathEscape(taskID)+"/retry", struct{}{}, &response); err != nil {
+		return domain.Task{}, domain.Attempt{}, err
+	}
+	return response.domainValues(taskID)
 }
 
 func (c *ControllerClient) Dispatch(ctx context.Context, request orchestrator.Request) (orchestrator.Dispatch, error) {
@@ -137,4 +154,34 @@ func (c *ControllerClient) postJSON(ctx context.Context, path string, input, out
 
 func newContinuationKey(attemptID string) string {
 	return fmt.Sprintf("mcp-continuation-%s-%d", attemptID, time.Now().UnixNano())
+}
+
+type controllerAttemptResponse struct {
+	Task struct {
+		ID             string `json:"id"`
+		Repository     string `json:"repository"`
+		BaseRef        string `json:"base_ref"`
+		Objective      string `json:"objective"`
+		ExecutionClass string `json:"execution_class"`
+		State          string `json:"state"`
+	} `json:"task"`
+	Attempt struct {
+		ID           string `json:"id"`
+		Number       int    `json:"number"`
+		ModelProfile string `json:"model_profile"`
+		State        string `json:"state"`
+	} `json:"attempt"`
+}
+
+func (r controllerAttemptResponse) domainValues(expectedTaskID string) (domain.Task, domain.Attempt, error) {
+	if r.Task.ID != expectedTaskID || r.Attempt.ID == "" {
+		return domain.Task{}, domain.Attempt{}, fmt.Errorf("controller returned an invalid attempt response")
+	}
+	return domain.Task{
+		ID: r.Task.ID, Repository: r.Task.Repository, BaseRef: r.Task.BaseRef, Objective: r.Task.Objective,
+		ExecutionClass: domain.ExecutionClass(r.Task.ExecutionClass), State: domain.TaskState(r.Task.State),
+	}, domain.Attempt{
+		ID: r.Attempt.ID, TaskID: r.Task.ID, Number: r.Attempt.Number, ModelProfile: r.Attempt.ModelProfile,
+		State: domain.AttemptState(r.Attempt.State),
+	}, nil
 }

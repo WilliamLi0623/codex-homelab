@@ -5,10 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/WilliamLi0623/codex-homelab/internal/api"
 	"github.com/WilliamLi0623/codex-homelab/internal/executor/k3s"
+	"github.com/WilliamLi0623/codex-homelab/internal/modelrouter"
 	"github.com/WilliamLi0623/codex-homelab/internal/orchestrator"
 	"github.com/WilliamLi0623/codex-homelab/internal/store"
 )
@@ -61,6 +65,68 @@ func TestDispatchTask(t *testing.T) {
 		t.Fatalf("validation command=%q", d.request.ValidationCommand)
 	}
 }
+
+func TestControllerForwardingCreatesFrozenRoutesForStartAndRetry(t *testing.T) {
+	database, err := store.Open(filepath.Join(t.TempDir(), "controller.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	controllerDispatcher := &fakeDispatcher{}
+	controller := api.NewServerWithRoutingStateAndRoutes(database, controllerDispatcher, nil, nil, nil, "routing-token", controllerTestRoutes(), true)
+	controllerServer := httptest.NewServer(controller)
+	defer controllerServer.Close()
+	controllerClient, err := NewControllerClient(controllerServer.URL, "controller-token", database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithDispatcherAndMessageSender(database, controllerClient, controllerClient)
+	created := submitTestTask(t, server)
+	observed := time.Now().UTC().Truncate(time.Millisecond)
+	if err := database.SetRoutingState(context.Background(), store.RoutingState{Mode: "normal", ObservedAt: observed, Generation: 4}); err != nil {
+		t.Fatal(err)
+	}
+
+	started := call[RetryTaskResult](t, server, "start_attempt", raw(map[string]any{"task_id": created.Task.ID, "profile": "openai-primary"}))
+	startedRoute, err := database.GetAttemptRoute(context.Background(), created.Task.ID, started.Attempt.ID)
+	if err != nil {
+		t.Fatalf("start route = %v", err)
+	}
+	if startedRoute.Mode != "normal" || startedRoute.Generation != 4 || startedRoute.Model != "gpt-6-luna" {
+		t.Fatalf("start route = %+v, want Controller-resolved normal generation 4 route", startedRoute)
+	}
+	call[DispatchTaskResult](t, server, "dispatch_task", raw(map[string]any{"task_id": created.Task.ID, "attempt_id": started.Attempt.ID, "prompt": "run", "validation_command": []string{"go", "test"}}))
+	if controllerDispatcher.request.Route == nil || controllerDispatcher.request.Route.Generation != 4 || controllerDispatcher.request.Route.Mode != modelrouter.ModeNormal {
+		t.Fatalf("start dispatch route = %+v, want exact frozen start route", controllerDispatcher.request.Route)
+	}
+
+	retryTask := submitTestTaskWithKey(t, server, "retry-request-1")
+	call[CancelTaskResult](t, server, "cancel_task", raw(map[string]any{"task_id": retryTask.Task.ID}))
+	if err := database.SetRoutingState(context.Background(), store.RoutingState{Mode: "quota_fallback", ObservedAt: observed.Add(time.Second), Generation: 5}); err != nil {
+		t.Fatal(err)
+	}
+	retried := call[RetryTaskResult](t, server, "retry_task", raw(map[string]any{"task_id": retryTask.Task.ID}))
+	retriedRoute, err := database.GetAttemptRoute(context.Background(), retryTask.Task.ID, retried.Attempt.ID)
+	if err != nil {
+		t.Fatalf("retry route = %v", err)
+	}
+	if retriedRoute.Mode != "quota_fallback" || retriedRoute.Generation != 5 || retriedRoute.Model != "glm-5.3-flash" {
+		t.Fatalf("retry route = %+v, want Controller-resolved quota generation 5 route", retriedRoute)
+	}
+	call[DispatchTaskResult](t, server, "dispatch_task", raw(map[string]any{"task_id": retryTask.Task.ID, "attempt_id": retried.Attempt.ID, "prompt": "retry", "validation_command": []string{"go", "test"}}))
+	if controllerDispatcher.request.Route == nil || controllerDispatcher.request.Route.Generation != 5 || controllerDispatcher.request.Route.Mode != modelrouter.ModeQuotaFallback {
+		t.Fatalf("retry dispatch route = %+v, want exact frozen retry route", controllerDispatcher.request.Route)
+	}
+}
+
+func controllerTestRoutes() modelrouter.RouteConfig {
+	return modelrouter.RouteConfig{
+		OpenAI: modelrouter.RouteSettings{Provider: "openai", Model: "gpt-6-luna", WireAPI: modelrouter.WireAPIResponses, ReasoningEffort: "high", BaseURL: "https://api.openai.com/v1", SecretName: "openai-route", SecretKey: "api-key"},
+		Spark:  modelrouter.RouteSettings{Provider: "cch", Model: "muse-spark-1.3-contributor", WireAPI: modelrouter.WireAPIResponses, ReasoningEffort: "xhigh", BaseURL: "https://cch-jp.zenkexi.com/v1", SecretName: "cch-route", SecretKey: "api-key"},
+		GLM:    modelrouter.RouteSettings{Provider: "cch", Model: "glm-5.3-flash", WireAPI: modelrouter.WireAPIChatCompletions, ReasoningEffort: "max", BaseURL: "https://cch-jp.zenkexi.com/v1", SecretName: "cch-route", SecretKey: "api-key"},
+	}
+}
+
 func TestDispatchTaskErrors(t *testing.T) {
 	server := newTestServer(t)
 	task := submitTestTask(t, server)
@@ -187,8 +253,12 @@ func TestCallToolRejectsUnknownFieldsAndUnknownTools(t *testing.T) {
 }
 
 func submitTestTask(t *testing.T, server *Server) SubmitTaskResult {
+	return submitTestTaskWithKey(t, server, "request-1")
+}
+
+func submitTestTaskWithKey(t *testing.T, server *Server, key string) SubmitTaskResult {
 	t.Helper()
-	return call[SubmitTaskResult](t, server, "submit_task", json.RawMessage(`{"repository":"owner/repository","base_ref":"main","objective":"Fix the failing tests","idempotency_key":"request-1"}`))
+	return call[SubmitTaskResult](t, server, "submit_task", raw(map[string]string{"repository": "owner/repository", "base_ref": "main", "objective": "Fix the failing tests", "idempotency_key": key}))
 }
 
 func call[T any](t *testing.T, server *Server, name string, arguments json.RawMessage) T {
