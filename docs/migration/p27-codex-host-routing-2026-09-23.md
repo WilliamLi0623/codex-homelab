@@ -465,6 +465,12 @@ afterward. This verifies explicit App Server new-thread selection only; it
 does not verify that Codex Desktop or the quota coordinator automatically
 chooses a provider for a user's new thread.
 
+A fresh read-only `account/rateLimits/read` on 2026-09-27 returned
+`ordinaryUsageAllowed=true`; the local CLI reports `0.156.1`, and
+`codex --strict-config doctor --json` exits successfully. The read is a current
+snapshot only and does not change the routing policy; no quota fallback should
+be active from this signal.
+
 MCP route-snapshot persistence was repaired in commit `8bbf83c`. Controller-
 forwarded MCP `start_attempt` and `retry_task` now use the existing Controller
 attempt APIs; Controller remains the only route resolver, while local-only MCP
