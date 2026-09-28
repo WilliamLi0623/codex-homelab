@@ -16,7 +16,7 @@ Spec: `docs/superpowers/specs/2026-09-28-local-codex-session-ui-design.md`
 
 - Task 1: partial. CLI 0.156.1 schema and three ephemeral no-turn main-thread routes verified in temporary `CODEX_HOME`; authenticated calls, subagent inheritance, persistent resume and bridge runtime remain open. Fallback gate remains disabled.
 - Task 2: complete. `Coordinator.RefreshAndDecide` and tests added; package tests and `go vet` pass. Race validation unavailable because CGO is disabled.
-- Task 3: not started.
+- Task 3: partial. Multiplexed JSON-RPC, App Server lifecycle methods, route metadata verification, thread-history paging, and isolated child-process lifecycle are implemented and fake-server tests pass. Approval decision validation, session event fan-out/pin metadata, and end-to-end turn/approval history tests remain open.
 - Task 4: not started.
 - Task 5: not started.
 - Task 6: not started.

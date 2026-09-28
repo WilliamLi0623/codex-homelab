@@ -70,14 +70,14 @@
 
 **Files:** Add `internal/codexsession/protocol.go`, `process.go`, `manager.go`, `thread.go`, and focused tests under `internal/codexsession/`; reuse `internal/agentd` process launch safely where compatibility permits.
 
-- [ ] Add protocol tests first for JSONL request/response ID correlation, notifications/events, server-initiated approval requests, response errors, malformed/oversized lines, cancellation, process exit, and concurrent calls.
-- [ ] Implement one reader loop and serialized writer with request-ID multiplexing; never have concurrent consumers read App Server stdout.
-- [ ] Implement initialize/initialized handshake and explicit methods for `thread/start`, `thread/resume`, `turn/start`, `turn/interrupt`, and supported approval replies. Use only schema-verified method names/fields from Task 1.
-- [ ] For turn/start, omit approval/sandbox overrides unless the verified App Server contract requires echoing existing policy. Never use `approvalPolicy: never`; preserve CODEX_HOME policy.
-- [ ] Support server-initiated approval requests while calls/events are active and deliver them to the UI for user response. Reject unknown approval request types explicitly rather than auto-accepting.
-- [ ] Manage bounded App Server process lifetime, graceful stdin close then bounded termination, context cancellation and redacted diagnostics. Do not kill native Desktop or unrelated Codex processes.
+- [x] Add protocol tests first for JSONL request/response ID correlation, notifications/events, server-initiated approval requests, response errors, malformed/oversized lines, cancellation, and concurrent calls.
+- [x] Implement one reader loop and serialized writer with request-ID multiplexing; never have concurrent consumers read App Server stdout.
+- [x] Implement initialize/initialized and schema-verified `thread/start`, `thread/resume`, `thread/list`, `thread/turns/list`, `thread/items/list`, `turn/start`, `turn/interrupt`, and explicit server-request response methods.
+- [x] For turn/start, omit approval/sandbox overrides. Never use `approvalPolicy: never`; thread start/turn tests preserve `on-request` defaults.
+- [ ] Route server-initiated approval requests to UI consumers and validate method-specific allowed decisions. The protocol queue and explicit generic response method exist; approval policy/decision validation is not yet implemented.
+- [x] Manage App Server process environment and lifecycle: explicit CODEX_HOME, API-key env exclusion, proxy pass-through without logging, graceful stdin close, bounded termination, cancellation and stderr discard. The local App Server SQLite startup issue remains unresolved; do not claim live user-home availability.
 - [ ] Store only minimal thread pin metadata (thread ID, route, provider/model/effort, generation, creation time) in process memory unless App Server history provides a reliable recovery source. Do not store prompt or tool output.
-- [ ] Add fake-server tests for create → turn events → approval → resume → second turn, interruption, and process restart. Confirm history is fetched from App Server rather than locally duplicated.
+- [ ] Add fake-server tests for create → streamed turn events → approval → resume → second turn, interruption, and process restart. Confirm history is fetched from App Server rather than locally duplicated.
 
 **Run:** `go test ./internal/codexsession -count=1`; `go test -race ./internal/codexsession -count=1`.
 

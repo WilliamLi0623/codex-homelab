@@ -538,3 +538,14 @@ must remain disabled until effective subagent provider/model/effort is
 verified from runtime metadata. Do not interpret this probe as closing the
 P27 quota-driven routing gate. No global Codex config or remote host was
 changed.
+
+A follow-up no-turn probe in a credential-free temporary CODEX_HOME confirmed
+that `thread/start` accepts `threadSource="codex-session-ui"` and returns that
+marker together with the requested OpenAI/Luna/high metadata. `thread/list`
+must explicitly filter `sourceKinds=["appServer"]`; its default interactive
+source filter returned no App Server test threads. The disposable persistent
+no-turn thread was not returned by `thread/list` before any turn/history was
+written. The UI therefore cannot rely on App Server listing alone for a newly
+created, not-yet-turned session; a minimal local thread-ID/route registry is
+needed for restart recovery. No prompt or turn was sent and no current-home
+history was created.
