@@ -216,6 +216,34 @@ func (c *ProtocolClient) Respond(ctx context.Context, id json.RawMessage, result
 	}{ID: id, Result: result})
 }
 
+// RespondError explicitly rejects a server-initiated request. It is used for
+// approval request shapes the UI cannot safely represent; it never grants
+// permissions or executes a command.
+func (c *ProtocolClient) RespondError(ctx context.Context, id json.RawMessage, code int, message string) error {
+	if err := c.Start(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(id) == 0 || !json.Valid(id) || string(id) == "null" {
+		return errors.New("App Server server-request ID is invalid")
+	}
+	if code == 0 || message == "" {
+		return errors.New("App Server rejection requires an error code and message")
+	}
+	return c.writeJSON(struct {
+		ID    json.RawMessage `json:"id"`
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}{ID: id, Error: struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}{Code: code, Message: message}})
+}
+
 func (c *ProtocolClient) Close() error {
 	c.closeOnce.Do(func() {
 		c.mu.Lock()

@@ -549,3 +549,21 @@ written. The UI therefore cannot rely on App Server listing alone for a newly
 created, not-yet-turned session; a minimal local thread-ID/route registry is
 needed for restart recovery. No prompt or turn was sent and no current-home
 history was created.
+
+The session client now multiplexes App Server events and server-initiated
+approval callbacks to the matching `codex-session-ui` thread. Command approval
+choices are restricted to the server-advertised one-shot `accept`, `decline`,
+or `cancel`; file-change choices use the same one-shot set. Session-wide
+acceptance, persistent policy amendments, permission-profile grants, and
+unknown approval methods are not supported. Unsupported requests are rejected
+with an explicit JSON-RPC error rather than accepted or left pending. Fake
+App Server tests cover create/turn/approval/resume/second turn/interrupt and
+history-based recovery; no live authenticated turn was attempted.
+
+Route pins remain in process memory only. After a process restart, the client
+can reconstruct only recognized provider/model/effort tuples from App Server
+threads marked `threadSource="codex-session-ui"`; the quota generation is
+unknown and recorded as zero. The installed App Server did not list a
+persistent no-turn thread, so a thread created before its first turn cannot
+currently be recovered through this history-based path. The user CODEX_HOME
+SQLite startup failure remains unresolved and blocks live session acceptance.

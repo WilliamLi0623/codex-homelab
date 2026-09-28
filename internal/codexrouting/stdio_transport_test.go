@@ -95,8 +95,8 @@ func TestCodexAppServerTransportStopsChildAfterSuccessfulCall(t *testing.T) {
 	if _, err := transport.Call(context.Background(), accountRateLimitsReadMethod, struct{}{}); err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}
-	if !markerContains(t, marker, "exiting") {
-		t.Fatalf("helper did not reach exit after successful response: %s", readMarker(t, marker))
+	if !markerContains(t, marker, "exit-response-ready") {
+		t.Fatalf("helper did not reach successful response path before shutdown: %s", readMarker(t, marker))
 	}
 }
 
@@ -225,8 +225,8 @@ func main() {
 					time.Sleep(time.Second)
 				}
 			case "exit":
+				appendMarker("exit-response-ready")
 				write(map[string]any{"id": request.ID, "result": map[string]any{"ordinaryUsageAllowed": true, "rateLimits": map[string]any{}}})
-				appendMarker("exiting")
 				return
 			default:
 				write(map[string]any{"id": request.ID, "result": map[string]any{"ordinaryUsageAllowed": true, "rateLimits": map[string]any{}}})

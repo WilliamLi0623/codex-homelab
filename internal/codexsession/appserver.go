@@ -272,6 +272,10 @@ func (c *AppServerClient) Respond(ctx context.Context, request ServerRequest, re
 	return c.protocol.Respond(ctx, request.ID, result)
 }
 
+func (c *AppServerClient) Reject(ctx context.Context, request ServerRequest, code int, message string) error {
+	return c.protocol.RespondError(ctx, request.ID, code, message)
+}
+
 type Turn struct {
 	ID     string          `json:"id"`
 	Status json.RawMessage `json:"status"`

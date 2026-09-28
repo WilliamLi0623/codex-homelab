@@ -74,10 +74,10 @@
 - [x] Implement one reader loop and serialized writer with request-ID multiplexing; never have concurrent consumers read App Server stdout.
 - [x] Implement initialize/initialized and schema-verified `thread/start`, `thread/resume`, `thread/list`, `thread/turns/list`, `thread/items/list`, `turn/start`, `turn/interrupt`, and explicit server-request response methods.
 - [x] For turn/start, omit approval/sandbox overrides. Never use `approvalPolicy: never`; thread start/turn tests preserve `on-request` defaults.
-- [ ] Route server-initiated approval requests to UI consumers and validate method-specific allowed decisions. The protocol queue and explicit generic response method exist; approval policy/decision validation is not yet implemented.
+- [x] Route server-initiated approval requests to the owning session and validate method-specific decisions. Only request-scoped `accept`/`decline`/`cancel` are supported; decisions must be offered by the server for command approvals. Session-wide approval, policy amendments and permission-profile grants are rejected; unsupported request methods receive an explicit JSON-RPC error and are never auto-approved.
 - [x] Manage App Server process environment and lifecycle: explicit CODEX_HOME, API-key env exclusion, proxy pass-through without logging, graceful stdin close, bounded termination, cancellation and stderr discard. The local App Server SQLite startup issue remains unresolved; do not claim live user-home availability.
-- [ ] Store only minimal thread pin metadata (thread ID, route, provider/model/effort, generation, creation time) in process memory unless App Server history provides a reliable recovery source. Do not store prompt or tool output.
-- [ ] Add fake-server tests for create → streamed turn events → approval → resume → second turn, interruption, and process restart. Confirm history is fetched from App Server rather than locally duplicated.
+- [x] Keep minimal thread pin metadata and pending approvals in process memory; conversation history stays in App Server. On restart, reconstruct only recognized routes from `thread/list` entries marked `threadSource=codex-session-ui`; generation is unknown/zero. A persistent no-turn thread may not appear in history and cannot yet be recovered after a process restart.
+- [x] Add fake-server tests for create → turn events → approval → resume → second turn, interruption, and history-based manager recovery. The manager does not duplicate history. Live authenticated App Server/model-turn behavior remains unverified because the current user CODEX_HOME fails SQLite initialization.
 
 **Run:** `go test ./internal/codexsession -count=1`; `go test -race ./internal/codexsession -count=1`.
 
