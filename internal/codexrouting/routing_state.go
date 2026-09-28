@@ -15,6 +15,20 @@ type RoutingState struct {
 	Generation int64
 }
 
+// RouteDecision is the safe route to use for a newly created local session.
+// ObservedMode is ModeUnknown when the latest quota read was unavailable or
+// ambiguous; Mode then contains the last authoritative route, or the
+// conservative normal route if no state has ever been published.
+type RouteDecision struct {
+	Mode         Mode
+	ObservedMode Mode
+	ObservedAt   time.Time
+	Generation   int64
+	Fresh        bool
+	Published    bool
+	CanStart     bool
+}
+
 // RoutingStateStore persists the last successfully published routing state.
 // Implementations must make Save durable before returning nil.
 type RoutingStateStore interface {

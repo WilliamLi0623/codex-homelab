@@ -140,6 +140,127 @@ func TestCoordinatorPublishesTransitionsAndPersistsGeneration(t *testing.T) {
 	}
 }
 
+func TestCoordinatorRefreshAndDecideReturnsPublishedFreshRoute(t *testing.T) {
+	reader := &testReader{snaps: []QuotaSnapshot{{OrdinaryUsageAllowed: quotaAllowed(false)}}}
+	sink := &testSink{}
+	store := &testStore{}
+	c := newCoordinatorForTest(t, reader, sink, store)
+
+	decision, err := c.RefreshAndDecide(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Mode != ModeQuotaFallback || decision.ObservedMode != ModeQuotaFallback {
+		t.Fatalf("decision modes = %q/%q, want quota_fallback/quota_fallback", decision.Mode, decision.ObservedMode)
+	}
+	if !decision.Fresh || !decision.Published {
+		t.Fatalf("decision freshness/publication = %t/%t, want true/true", decision.Fresh, decision.Published)
+	}
+	if decision.Generation != 1 || !decision.ObservedAt.Equal(c.Now()) {
+		t.Fatalf("decision generation/time = %d/%s, want 1/%s", decision.Generation, decision.ObservedAt, c.Now())
+	}
+	if len(store.saves) != 1 || len(sink.states) != 1 || store.saves[0] != sink.states[0] {
+		t.Fatalf("persisted/published state mismatch: saved=%+v published=%+v", store.saves, sink.states)
+	}
+}
+
+func TestCoordinatorRefreshAndDecideUsesConservativeNormalWhenQuotaUnknownWithoutState(t *testing.T) {
+	c := newCoordinatorForTest(t, &testReader{snaps: []QuotaSnapshot{{RateLimitReachedType: "unrecognized"}}}, &testSink{}, &testStore{})
+
+	decision, err := c.RefreshAndDecide(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Mode != ModeNormal || decision.ObservedMode != ModeUnknown {
+		t.Fatalf("decision modes = %q/%q, want normal/unknown", decision.Mode, decision.ObservedMode)
+	}
+	if decision.Fresh || decision.Published || decision.Generation != 0 || !decision.ObservedAt.IsZero() {
+		t.Fatalf("unknown decision claims an observation or publication: %+v", decision)
+	}
+}
+
+func TestCoordinatorRefreshAndDecidePreservesLastPublishedModeWhenQuotaUnknown(t *testing.T) {
+	reader := &testReader{snaps: []QuotaSnapshot{{OrdinaryUsageAllowed: quotaAllowed(false)}, {RateLimitReachedType: "unrecognized"}}}
+	sink := &testSink{}
+	c := newCoordinatorForTest(t, reader, sink, &testStore{})
+	if _, err := c.RefreshAndDecide(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	decision, err := c.RefreshAndDecide(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Mode != ModeQuotaFallback || decision.ObservedMode != ModeUnknown || decision.Fresh || !decision.Published {
+		t.Fatalf("unknown observation did not preserve published route: %+v", decision)
+	}
+	if decision.Generation != 1 || len(sink.states) != 1 {
+		t.Fatalf("unknown observation changed generation/publication: decision=%+v published=%+v", decision, sink.states)
+	}
+}
+
+func TestCoordinatorRefreshAndDecideDoesNotReturnUsableRouteWhenPublicationFails(t *testing.T) {
+	sink := &testSink{err: errors.New("controller unavailable")}
+	c := newCoordinatorForTest(t, &testReader{snaps: []QuotaSnapshot{{OrdinaryUsageAllowed: quotaAllowed(false)}}}, sink, &testStore{})
+
+	decision, err := c.RefreshAndDecide(context.Background())
+	if err == nil {
+		t.Fatal("expected publication failure")
+	}
+	if decision.Published {
+		t.Fatalf("failed publication yielded a published route: %+v", decision)
+	}
+	if len(sink.calls) != 1 || sink.calls[0].Generation != 1 {
+		t.Fatalf("expected one attempted publication, got %+v", sink.calls)
+	}
+}
+
+func TestCoordinatorRefreshAndDecideSharesPollSerializationGate(t *testing.T) {
+	reader := &testReader{snaps: []QuotaSnapshot{{OrdinaryUsageAllowed: quotaAllowed(true)}}, started: make(chan struct{}, 1), release: make(chan struct{})}
+	c := newCoordinatorForTest(t, reader, &testSink{}, &testStore{})
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := c.RefreshAndDecide(context.Background())
+		firstDone <- err
+	}()
+	<-reader.started
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := c.RefreshAndDecide(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("second refresh error=%v, want context cancellation", err)
+	}
+	close(reader.release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCoordinatorRefreshAndDecidePropagatesCallerCancellationDuringQuotaRead(t *testing.T) {
+	reader := &testReader{started: make(chan struct{}, 1), release: make(chan struct{})}
+	c := newCoordinatorForTest(t, reader, &testSink{}, &testStore{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct {
+		decision RouteDecision
+		err      error
+	}, 1)
+	go func() {
+		decision, err := c.RefreshAndDecide(ctx)
+		done <- struct {
+			decision RouteDecision
+			err      error
+		}{decision, err}
+	}()
+	<-reader.started
+	cancel()
+	result := <-done
+	if !errors.Is(result.err, context.Canceled) {
+		t.Fatalf("refresh error=%v, want caller cancellation", result.err)
+	}
+	if result.decision.CanStart {
+		t.Fatalf("caller cancellation returned a usable route: %+v", result.decision)
+	}
+}
+
 func TestCoordinatorRestartReadsCurrentQuotaBeforePublishing(t *testing.T) {
 	state := RoutingState{Mode: ModeQuotaFallback, Generation: 7, ObservedAt: time.Date(2026, 9, 23, 1, 2, 3, 4, time.UTC)}
 	store := &testStore{state: state, ok: true}

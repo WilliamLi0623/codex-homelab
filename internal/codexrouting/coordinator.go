@@ -80,54 +80,96 @@ func (c *Coordinator) report(err error) {
 
 // PollOnce performs at most one quota read and one transition publication.
 func (c *Coordinator) PollOnce(ctx context.Context) error {
+	_, err := c.refreshAndDecide(ctx)
+	return err
+}
+
+// RefreshAndDecide performs one quota read and returns the route decision a
+// caller may use for a new session. A quota read failure is represented as an
+// unknown, stale observation; operational failures such as persistence or
+// Controller publication errors are returned and never yield a usable route.
+func (c *Coordinator) RefreshAndDecide(ctx context.Context) (RouteDecision, error) {
+	decision, err := c.refreshAndDecide(ctx)
+	var observationErr *quotaObservationError
+	if errors.As(err, &observationErr) {
+		if ctx.Err() != nil {
+			return RouteDecision{}, ctx.Err()
+		}
+		c.report(err)
+		return decision, nil
+	}
+	return decision, err
+}
+
+func (c *Coordinator) refreshAndDecide(ctx context.Context) (RouteDecision, error) {
 	if err := c.acquire(ctx); err != nil {
-		return err
+		return RouteDecision{}, err
 	}
 	defer c.release()
 	if err := c.loadLocked(ctx); err != nil {
-		return err
+		return RouteDecision{}, err
 	}
 	readCtx, cancel := context.WithTimeout(ctx, c.ReadTimeout)
 	defer cancel()
 	snapshot, err := c.Reader.Read(readCtx)
 	if err != nil {
-		return err
+		return c.decisionLocked(ModeUnknown, false), &quotaObservationError{err: err}
 	}
 	mode := ClassifyQuota(snapshot)
 	if mode != ModeNormal && mode != ModeQuotaFallback {
-		return nil
+		return c.decisionLocked(ModeUnknown, false), nil
 	}
 	if c.loaded && c.current.Mode == mode {
 		if !c.pending {
-			return nil
+			return c.decisionLocked(mode, true), nil
 		}
 		if err := c.Sink.Publish(ctx, c.current); err != nil {
-			return err
+			return c.decisionLocked(mode, true), err
 		}
 		c.pending = false
-		return nil
+		return c.decisionLocked(mode, true), nil
 	}
 	generation := int64(1)
 	if c.loaded {
 		if c.current.Generation == math.MaxInt64 {
-			return errors.New("routing generation exhausted")
+			return RouteDecision{}, errors.New("routing generation exhausted")
 		}
 		generation = c.current.Generation + 1
 	}
 	state := RoutingState{Mode: mode, ObservedAt: c.now(), Generation: generation}
 	if err := validateRoutingState(state); err != nil {
-		return err
+		return RouteDecision{}, err
 	}
 	if err := c.Store.Save(ctx, state); err != nil {
-		return fmt.Errorf("persist routing state before publication: %w", err)
+		return RouteDecision{}, fmt.Errorf("persist routing state before publication: %w", err)
 	}
 	c.current, c.loaded, c.pending = state, true, true
 	if err := c.Sink.Publish(ctx, state); err != nil {
-		return err
+		return c.decisionLocked(mode, true), err
 	}
 	c.pending = false
-	return nil
+	return c.decisionLocked(mode, true), nil
 }
+
+func (c *Coordinator) decisionLocked(observed Mode, fresh bool) RouteDecision {
+	if !c.loaded || (c.current.Mode != ModeNormal && c.current.Mode != ModeQuotaFallback) {
+		return RouteDecision{Mode: ModeNormal, ObservedMode: observed, Fresh: fresh, CanStart: true}
+	}
+	return RouteDecision{
+		Mode:         c.current.Mode,
+		ObservedMode: observed,
+		ObservedAt:   c.current.ObservedAt,
+		Generation:   c.current.Generation,
+		Fresh:        fresh,
+		Published:    !c.pending,
+		CanStart:     !c.pending,
+	}
+}
+
+type quotaObservationError struct{ err error }
+
+func (e *quotaObservationError) Error() string { return e.err.Error() }
+func (e *quotaObservationError) Unwrap() error { return e.err }
 
 func (c *Coordinator) acquire(ctx context.Context) error {
 	select {
