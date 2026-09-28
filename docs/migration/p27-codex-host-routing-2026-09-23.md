@@ -505,3 +505,36 @@ state unchanged. On 2026-09-27, on the Windows development host with Codex CLI
 0.156.1, the main agent ran `go test ./... -count=1` and `go vet ./...`; both
 passed. These are local simulated integration/code gates, not live desktop
 routing or production P25 isolation evidence.
+
+## Local session UI App Server probe — 2026-09-28
+
+The Windows host has Codex CLI `0.156.1`. Its generated experimental App
+Server schema exposes `thread/start` fields `modelProvider`, `model`, and
+arbitrary `config`, plus `ephemeral`; the result reports the effective
+`model`, `modelProvider`, `reasoningEffort`, `approvalPolicy`, and thread
+ephemeral flag. `TurnStartParams` has an explicit `effort` field. Approval
+request/response schemas include command execution, file change, and
+permissions callbacks.
+
+An App Server started with a new, empty temporary `CODEX_HOME` accepted three
+no-turn `ephemeral=true` thread starts. Returned metadata matched OpenAI /
+`gpt-6-luna` / `high`, `osc` / `muse-spark-1.3-contributor` / `xhigh`, and a
+session-scoped `cch_bridge` / `glm-5.3-flash` / `max` provider definition
+pointing only at loopback. All three kept `approvalPolicy=on-request`. No model
+turn ran and no credential was copied into the temporary home. This proves
+session-scoped main-thread provider/model/effort config parsing and pin metadata
+in CLI 0.156.1; it does not prove authenticated requests, effective subagent
+inheritance, bridge availability, or actual tool execution.
+
+Attempting the same App Server startup under the existing user `CODEX_HOME`
+failed before JSON-RPC initialization with a SQLite state-runtime
+initialization error. A scoped write permission request did not resolve it.
+No thread was created in the user home. The root cause must be understood
+before relying on concurrent App Server access to that directory.
+
+Accordingly, the local-session UI implementation may proceed for the verified
+normal OpenAI route and test plumbing, but automatic exhausted-mode fallback
+must remain disabled until effective subagent provider/model/effort is
+verified from runtime metadata. Do not interpret this probe as closing the
+P27 quota-driven routing gate. No global Codex config or remote host was
+changed.
