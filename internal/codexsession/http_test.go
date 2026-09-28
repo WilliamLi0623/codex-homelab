@@ -528,6 +528,32 @@ func TestCookieIsHttpOnlyStrictAndNotEchoed(t *testing.T) {
 	}
 }
 
+func TestSessionHTTPDedicatedCodexPageSetsSameOriginCookie(t *testing.T) {
+	handler, err := NewSessionHTTPHandler(SessionHTTPConfig{
+		ListenAddress: "127.0.0.1:8765", Origin: "http://127.0.0.1:8765", Token: strings.Repeat("t", 32), MaxSSE: 2,
+		StaticFiles: fstest.MapFS{"codex.html": &fstest.MapFile{Data: []byte("<!doctype html><title>Codex</title>")}},
+	}, &testRouteCoordinator{}, &testSessionBackend{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8765/codex.html", nil)
+	request.Host = "127.0.0.1:8765"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("codex page status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == sessionUICookieName {
+			if !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode || cookie.Secure || cookie.Path != "/" {
+				t.Fatalf("dedicated page cookie flags=%#v", cookie)
+			}
+			return
+		}
+	}
+	t.Fatal("dedicated page did not establish local API authorization")
+}
+
 func TestSessionHTTPStaticPageCarriesSecurityHeadersAndOmitsTokenBody(t *testing.T) {
 	handler, _, _ := testHTTPHandler(t, codexrouting.RouteDecision{}, false)
 	response := httptest.NewRecorder()

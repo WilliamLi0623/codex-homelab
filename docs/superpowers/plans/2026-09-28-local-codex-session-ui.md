@@ -105,12 +105,12 @@
 
 **Files:** Add `ui/codex.html`, `ui/src/codex-main.tsx`, `ui/src/codex/App.tsx`, `ui/src/codex/api.ts`, `ui/src/codex/types.ts`, styles/tests; update `ui/vite.config.ts` only for multi-page build/proxy wiring.
 
-- [ ] Add Vitest tests first for route/status display, create-session request, SSE text/activity rendering, reconnect without resending turns, interrupt, approval prompt/response, error display and secret-free browser state.
-- [ ] Build the separate route/session console with sessions list, quota mode/freshness/generation, selected next-thread route, working-directory chooser, prompt composer, streamed conversation, tool activity summary, interrupt and explicit approval controls.
-- [ ] Do not display hidden reasoning, credentials, raw environment, unrestricted tool output, or unbounded event payloads. Render text safely (no raw HTML execution).
-- [ ] Call only the local host endpoints. Do not call Controller APIs, CC Hub, OpenAI, or remote task BFF from the browser.
-- [ ] Keep the existing task console entry and `/ui/api` development proxy behavior unchanged. Use Vite multi-page input so both HTML entries build.
-- [ ] Add UI tests for unknown quota state, fresh route pin label, SSE disconnect/reconnect, approval-required action and static task-console regression.
+- [x] Add Vitest tests first for route/status display, create-session request, SSE event filtering/reconnect state, interrupt, approval request, error redaction and no-resend behavior. Real-browser mock verification also exercised streamed activity and an approval-required action.
+- [x] Build the separate route/session console with sessions list, quota mode/freshness/generation, next-route snapshot, working-directory/prompt form, streamed conversation, bounded activity, interrupt and explicit approval controls. Earlier transcript turns are not rendered yet; the UI says so and does not duplicate transcript storage.
+- [x] Do not display hidden reasoning, credentials, raw environment or unrestricted tool output. The server and client both bound/filter event data; React renders text as text (no raw HTML execution).
+- [x] Call only local host endpoints. The browser client uses `/api/*`; it does not call Controller APIs, CC Hub, OpenAI or the task BFF.
+- [x] Keep the existing task-console entry and `/ui/api` development proxy unchanged. Vite multi-page production build emits both `dist/index.html` and `dist/codex.html`.
+- [x] Add UI tests for unknown/stale/fallback quota labels, no-send-on-ambiguous-response, SSE thread filtering/reconnect, one-shot-only approval and secret-free errors. Existing task UI tests remain green; browser mock confirmed the approval prompt and responsive page.
 
 **Run:** `npm --prefix ui test -- --run`; `npm --prefix ui run build`.
 

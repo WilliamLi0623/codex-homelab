@@ -456,7 +456,7 @@ func publicSessionNotice(threadID string, notice SessionNotice) (map[string]any,
 }
 
 func (h *SessionHTTPHandler) staticOrNotFound(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/" && r.Method == http.MethodGet {
+	if (r.URL.Path == "/" || r.URL.Path == "/codex.html") && r.Method == http.MethodGet {
 		http.SetCookie(w, &http.Cookie{Name: sessionUICookieName, Value: h.config.Token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	}
 	if h.static == nil || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
