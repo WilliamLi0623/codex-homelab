@@ -194,6 +194,10 @@ func TestSessionManagerCreateTurnApprovalResumeSecondTurnKeepsRoutePinned(t *tes
 			serverDone <- errorsForTest("first turn approval was not returned")
 			return
 		}
+		if _, err := serverConn.Write([]byte(`{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}}` + "\n")); err != nil {
+			serverDone <- err
+			return
+		}
 		resume := readAppServerRequest(t, serverConn)
 		if resume.Method != "thread/resume" || resume.Params["threadId"] != "thread-1" {
 			serverDone <- errorsForTest("resume did not target the pinned thread")
@@ -283,6 +287,14 @@ func TestSessionManagerRecoversRoutePinsFromMarkedAppServerHistory(t *testing.T)
 			map[string]any{"id": "fallback-thread", "modelProvider": "osc", "model": "muse-spark-1.3-contributor", "reasoningEffort": "xhigh", "threadSource": sessionUIServiceName, "createdAt": int64(1790000000)},
 			map[string]any{"id": "unrelated", "modelProvider": "openai", "model": "gpt-6-luna", "reasoningEffort": "high", "threadSource": "interactive"},
 		}, "nextCursor": ""})
+		resume := readAppServerRequest(t, serverConn)
+		if resume.Method != "thread/resume" || resume.Params["threadId"] != "fallback-thread" {
+			return
+		}
+		writeAppServerResponse(t, serverConn, resume.ID, map[string]any{
+			"thread":        map[string]any{"id": "fallback-thread", "modelProvider": "osc", "model": "muse-spark-1.3-contributor", "reasoningEffort": "xhigh", "threadSource": sessionUIServiceName},
+			"modelProvider": "osc", "model": "muse-spark-1.3-contributor", "reasoningEffort": "xhigh", "approvalPolicy": "on-request",
+		})
 	}()
 	sessions, err := manager.RecoverListedThreads(testAppServerContext(t))
 	if err != nil {
@@ -297,6 +309,62 @@ func TestRoutePinFromThreadRejectsUnrecognizedProviderTuple(t *testing.T) {
 	thread := AppServerThread{ID: "unknown", ModelProvider: "custom", Model: "arbitrary", ReasoningEffort: stringPointer("high"), ThreadSource: stringPointer(sessionUIServiceName)}
 	if _, err := RoutePinFromThread(thread); err == nil {
 		t.Fatal("unknown provider/model/effort tuple must not be guessed after restart")
+	}
+}
+
+func TestSessionManagerRejectsOverlappingTurnsUntilCompletionEvent(t *testing.T) {
+	client, serverConn := newFakeAppServerClient(t)
+	manager, err := NewSessionManager(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(manager.Close)
+	thread := AppServerThread{ID: "thread-1", ModelProvider: "openai", Model: "gpt-6-luna", ReasoningEffort: stringPointer("high"), ThreadSource: stringPointer(sessionUIServiceName)}
+	session, err := manager.RegisterThread(thread, RoutePin{Mode: "normal", Provider: "openai", Model: "gpt-6-luna", Effort: "high"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverDone := make(chan error, 1)
+	go func() {
+		initializeFakeAppServer(t, serverConn)
+		first := readAppServerRequest(t, serverConn)
+		if first.Method != "turn/start" {
+			serverDone <- unexpectedMethodError(first.Method)
+			return
+		}
+		writeAppServerResponse(t, serverConn, first.ID, map[string]any{"turn": map[string]any{"id": "turn-1"}})
+		second := readAppServerRequest(t, serverConn)
+		if second.Method != "turn/start" {
+			serverDone <- unexpectedMethodError(second.Method)
+			return
+		}
+		writeAppServerResponse(t, serverConn, second.ID, map[string]any{"turn": map[string]any{"id": "turn-2"}})
+		serverDone <- nil
+	}()
+	ctx := testAppServerContext(t)
+	if _, err := manager.StartTurn(ctx, "thread-1", "first"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.StartTurn(ctx, "thread-1", "overlap"); err == nil {
+		t.Fatal("overlapping turn was allowed")
+	}
+	if _, err := serverConn.Write([]byte(`{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case notice := <-session.Notices:
+		if notice.Event == nil || notice.Event.Method != "turn/completed" {
+			t.Fatalf("completion notice=%+v", notice)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("turn completion was not dispatched")
+	}
+	turn, err := manager.StartTurn(ctx, "thread-1", "second")
+	if err != nil || turn.ID != "turn-2" {
+		t.Fatalf("second turn=%+v err=%v", turn, err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
 	}
 }
 

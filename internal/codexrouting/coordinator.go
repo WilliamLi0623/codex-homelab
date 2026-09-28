@@ -101,6 +101,23 @@ func (c *Coordinator) RefreshAndDecide(ctx context.Context) (RouteDecision, erro
 	return decision, err
 }
 
+// CurrentDecision returns the last route snapshot without contacting the quota
+// reader. It is suitable for status views; callers creating a thread must use
+// RefreshAndDecide so the route is based on a fresh authoritative observation.
+func (c *Coordinator) CurrentDecision(ctx context.Context) (RouteDecision, error) {
+	if err := c.acquire(ctx); err != nil {
+		return RouteDecision{}, err
+	}
+	defer c.release()
+	if err := c.loadLocked(ctx); err != nil {
+		return RouteDecision{}, err
+	}
+	if !c.loaded || (c.current.Mode != ModeNormal && c.current.Mode != ModeQuotaFallback) {
+		return c.decisionLocked(ModeUnknown, false), nil
+	}
+	return c.decisionLocked(c.current.Mode, false), nil
+}
+
 func (c *Coordinator) refreshAndDecide(ctx context.Context) (RouteDecision, error) {
 	if err := c.acquire(ctx); err != nil {
 		return RouteDecision{}, err

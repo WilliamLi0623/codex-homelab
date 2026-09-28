@@ -20,6 +20,7 @@ type Process struct {
 	Client *Client
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
+	stdout io.ReadCloser
 	done   chan struct{}
 	mu     sync.Mutex
 	wait   error
@@ -54,7 +55,7 @@ func startProcessCommand(cmd *exec.Cmd, environment []string) (*Process, error) 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start App Server: %w", err)
 	}
-	process := &Process{Client: NewClient(stdout, stdin), cmd: cmd, stdin: stdin, done: make(chan struct{})}
+	process := &Process{Client: NewClient(stdout, stdin), cmd: cmd, stdin: stdin, stdout: stdout, done: make(chan struct{})}
 	go func() {
 		err := cmd.Wait()
 		process.mu.Lock()
@@ -103,6 +104,13 @@ func environmentValue(environment []string, name string) string {
 
 func (p *Process) Done() <-chan struct{} {
 	return p.done
+}
+
+// AppServerStdio exposes the process-owned JSONL transport for clients that
+// need the full App Server protocol. A caller must use exactly one reader for
+// the returned stream and must not use Process.Client concurrently.
+func (p *Process) AppServerStdio() (io.ReadCloser, io.Writer) {
+	return p.stdout, p.stdin
 }
 
 func (p *Process) Close() error {

@@ -2,8 +2,10 @@ package codexsession
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 )
@@ -27,10 +29,14 @@ type SessionNotice struct {
 }
 
 type ManagedSession struct {
-	Thread       AppServerThread
-	Pin          RoutePin
-	Notices      chan SessionNotice
-	streamFailed bool
+	Thread                 AppServerThread
+	Pin                    RoutePin
+	Notices                chan SessionNotice
+	streamFailed           bool
+	activeTurnID           string
+	turnStarting           bool
+	completedWhileStarting string
+	turnStateUnknown       bool
 }
 
 type pendingApproval struct {
@@ -139,7 +145,14 @@ func (m *SessionManager) RecoverListedThreads(ctx context.Context) ([]*ManagedSe
 			if err != nil {
 				return nil, err
 			}
-			session, err := m.RegisterThread(thread, pin)
+			resumed, err := m.client.ResumeThread(ctx, thread.ID)
+			if err != nil {
+				return nil, err
+			}
+			if resumed.ModelProvider != pin.Provider || resumed.Model != pin.Model || resumed.ReasoningEffort == nil || *resumed.ReasoningEffort != pin.Effort || resumed.ThreadSource == nil || *resumed.ThreadSource != sessionUIServiceName {
+				return nil, errors.New("resumed App Server thread changed its route metadata")
+			}
+			session, err := m.RegisterThread(resumed, pin)
 			if err != nil {
 				if existing := m.Get(thread.ID); existing != nil && existing.Pin.Provider == pin.Provider && existing.Pin.Model == pin.Model && existing.Pin.Effort == pin.Effort {
 					session = existing
@@ -166,6 +179,17 @@ func (m *SessionManager) Get(threadID string) *ManagedSession {
 	return m.sessions[threadID]
 }
 
+func (m *SessionManager) List() []*ManagedSession {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	sessions := make([]*ManagedSession, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		sessions = append(sessions, session)
+	}
+	sort.Slice(sessions, func(i, j int) bool { return sessions[i].Pin.CreatedAt.After(sessions[j].Pin.CreatedAt) })
+	return sessions
+}
+
 func (m *SessionManager) ResumeThread(ctx context.Context, threadID string) (*ManagedSession, error) {
 	m.mu.RLock()
 	session := m.sessions[threadID]
@@ -184,15 +208,43 @@ func (m *SessionManager) ResumeThread(ctx context.Context, threadID string) (*Ma
 }
 
 func (m *SessionManager) StartTurn(ctx context.Context, threadID, text string) (Turn, error) {
-	if m.Get(threadID) == nil {
+	session := m.Get(threadID)
+	if session == nil {
 		return Turn{}, errors.New("thread is not registered with this local session manager")
 	}
-	return m.client.StartTurn(ctx, threadID, text)
+	m.mu.Lock()
+	if session.turnStarting || session.activeTurnID != "" || session.turnStateUnknown {
+		m.mu.Unlock()
+		return Turn{}, errors.New("session has an active or ambiguous turn outcome")
+	}
+	session.turnStarting = true
+	m.mu.Unlock()
+	turn, err := m.client.StartTurn(ctx, threadID, text)
+	m.mu.Lock()
+	session.turnStarting = false
+	if err == nil {
+		if session.completedWhileStarting == turn.ID {
+			session.completedWhileStarting = ""
+		} else {
+			session.activeTurnID = turn.ID
+		}
+	} else {
+		session.turnStateUnknown = true
+	}
+	m.mu.Unlock()
+	return turn, err
 }
 
 func (m *SessionManager) InterruptTurn(ctx context.Context, threadID, turnID string) error {
-	if m.Get(threadID) == nil {
+	session := m.Get(threadID)
+	if session == nil {
 		return errors.New("thread is not registered with this local session manager")
+	}
+	m.mu.RLock()
+	active := session.activeTurnID == turnID && !session.turnStarting
+	m.mu.RUnlock()
+	if !active {
+		return errors.New("turn is not the active turn for this session")
 	}
 	return m.client.InterruptTurn(ctx, threadID, turnID)
 }
@@ -227,6 +279,24 @@ func (m *SessionManager) RespondApproval(ctx context.Context, approval ApprovalR
 	delete(m.approvals, key)
 	m.mu.Unlock()
 	return nil
+}
+
+func (m *SessionManager) RespondApprovalID(ctx context.Context, threadID, publicID, decision string) error {
+	rawID, err := base64.RawURLEncoding.DecodeString(publicID)
+	if err != nil || !json.Valid(rawID) || string(rawID) == "null" {
+		return errors.New("approval identifier is invalid")
+	}
+	m.mu.RLock()
+	pending, ok := m.approvals[string(rawID)]
+	m.mu.RUnlock()
+	if !ok || pending.thread != threadID {
+		return errors.New("approval request is no longer pending for this thread")
+	}
+	approval, err := ParseApprovalRequest(pending.request)
+	if err != nil {
+		return err
+	}
+	return m.RespondApproval(ctx, approval, decision)
 }
 
 func (m *SessionManager) Close() {
@@ -265,9 +335,24 @@ func (m *SessionManager) forwardEvent(event Event) {
 	if threadID == "" {
 		return
 	}
-	m.mu.RLock()
+	m.mu.Lock()
 	session := m.sessions[threadID]
-	m.mu.RUnlock()
+	if session != nil && event.Method == "turn/completed" {
+		var completed struct {
+			Turn struct {
+				ID string `json:"id"`
+			} `json:"turn"`
+		}
+		if json.Unmarshal(event.Params, &completed) == nil && completed.Turn.ID != "" {
+			if session.turnStarting {
+				session.completedWhileStarting = completed.Turn.ID
+			}
+			if session.activeTurnID == completed.Turn.ID {
+				session.activeTurnID = ""
+			}
+		}
+	}
+	m.mu.Unlock()
 	if session == nil {
 		return
 	}
@@ -289,6 +374,7 @@ func (m *SessionManager) forwardRequest(request ServerRequest) {
 	}
 	_ = json.Unmarshal(request.Params, &thread)
 	if thread.ThreadID == "" {
+		_ = m.client.Reject(m.ctx, request, -32602, "server request is missing its thread identifier")
 		return
 	}
 	approval, parseErr := ParseApprovalRequest(request)
@@ -299,6 +385,7 @@ func (m *SessionManager) forwardRequest(request ServerRequest) {
 	}
 	m.mu.Unlock()
 	if session == nil {
+		_ = m.client.Reject(m.ctx, request, -32001, "thread is not managed by the local session UI")
 		return
 	}
 	notice := SessionNotice{Approval: &approval, Supported: parseErr == nil}

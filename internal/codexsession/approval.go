@@ -1,6 +1,7 @@
 package codexsession
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ const (
 // intentionally omits arbitrary App Server payloads and permission profiles.
 type ApprovalRequest struct {
 	RequestID json.RawMessage `json:"-"`
+	PublicID  string          `json:"id"`
 	Method    string          `json:"method"`
 	ThreadID  string          `json:"threadId"`
 	TurnID    string          `json:"turnId"`
@@ -32,6 +34,7 @@ type ApprovalRequest struct {
 func ParseApprovalRequest(request ServerRequest) (ApprovalRequest, error) {
 	approval := ApprovalRequest{
 		RequestID: append(json.RawMessage(nil), request.ID...),
+		PublicID:  base64.RawURLEncoding.EncodeToString(request.ID),
 		Method:    request.Method,
 	}
 	var common struct {

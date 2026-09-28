@@ -261,6 +261,29 @@ func TestCoordinatorRefreshAndDecidePropagatesCallerCancellationDuringQuotaRead(
 	}
 }
 
+func TestCurrentDecisionIsConservativeWithoutPersistedState(t *testing.T) {
+	c := newCoordinatorForTest(t, &testReader{}, &testSink{}, &testStore{})
+	decision, err := c.CurrentDecision(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Mode != ModeNormal || decision.ObservedMode != ModeUnknown || decision.Generation != 0 || decision.Fresh || !decision.CanStart {
+		t.Fatalf("initial current decision=%+v", decision)
+	}
+}
+
+func TestCurrentDecisionBlocksUnpublishedPersistedState(t *testing.T) {
+	state := RoutingState{Mode: ModeQuotaFallback, ObservedAt: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC), Generation: 3}
+	c := newCoordinatorForTest(t, &testReader{}, &testSink{}, &testStore{state: state, ok: true})
+	decision, err := c.CurrentDecision(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Mode != ModeQuotaFallback || decision.Generation != 3 || decision.Published || decision.CanStart {
+		t.Fatalf("persisted but unpublished decision=%+v", decision)
+	}
+}
+
 func TestCoordinatorRestartReadsCurrentQuotaBeforePublishing(t *testing.T) {
 	state := RoutingState{Mode: ModeQuotaFallback, Generation: 7, ObservedAt: time.Date(2026, 9, 23, 1, 2, 3, 4, time.UTC)}
 	store := &testStore{state: state, ok: true}
