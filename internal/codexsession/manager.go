@@ -327,7 +327,7 @@ func (m *SessionManager) dispatch() {
 			m.forwardRequest(request)
 		}
 	}
-	m.closeSessions()
+	m.closeSessionsWithError("Codex App Server disconnected; the session outcome may be incomplete")
 }
 
 func (m *SessionManager) forwardEvent(event Event) {
@@ -406,11 +406,7 @@ func (m *SessionManager) failSession(threadID, message string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if session := m.sessions[threadID]; session != nil {
-		session.streamFailed = true
-		select {
-		case session.Notices <- SessionNotice{Error: message}:
-		default:
-		}
+		enqueueSessionFailure(session, message)
 	}
 }
 
@@ -423,6 +419,41 @@ func (m *SessionManager) closeSessions() {
 	m.closed = true
 	for _, session := range m.sessions {
 		close(session.Notices)
+	}
+}
+
+func (m *SessionManager) closeSessionsWithError(message string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return
+	}
+	m.closed = true
+	for _, session := range m.sessions {
+		enqueueSessionFailure(session, message)
+		close(session.Notices)
+	}
+}
+
+func enqueueSessionFailure(session *ManagedSession, message string) {
+	if session.streamFailed {
+		return
+	}
+	session.streamFailed = true
+	notice := SessionNotice{Error: message}
+	select {
+	case session.Notices <- notice:
+	default:
+		// The consumer is already behind. Drop the oldest buffered event so the
+		// terminal failure cannot become a silent successful close.
+		select {
+		case <-session.Notices:
+		default:
+		}
+		select {
+		case session.Notices <- notice:
+		default:
+		}
 	}
 }
 

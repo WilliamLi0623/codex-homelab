@@ -349,6 +349,19 @@ func TestSessionHTTPSSEFiltersHiddenReasoningAndBoundsConnections(t *testing.T) 
 	}
 }
 
+func TestSessionHTTPSSEReportsUnexpectedAppServerTermination(t *testing.T) {
+	handler, _, backend := testHTTPHandler(t, codexrouting.RouteDecision{}, false)
+	cookie := localUICookie(t, handler)
+	session := &ManagedSession{Thread: AppServerThread{ID: "thread-1"}, Notices: make(chan SessionNotice, 1)}
+	session.Notices <- SessionNotice{Error: "Codex App Server disconnected; the session outcome may be incomplete"}
+	close(session.Notices)
+	backend.sessions["thread-1"] = session
+	response := authorizedUIRequest(handler, http.MethodGet, "/api/sessions/thread-1/events", nil, cookie)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"type":"stream_error"`) || !strings.Contains(response.Body.String(), "outcome may be incomplete") {
+		t.Fatalf("unexpected App Server termination was not emitted as a stream error: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestSessionHTTPRouteTableIsExplicit(t *testing.T) {
 	normal, err := SessionRouteForMode(codexrouting.ModeNormal)
 	if err != nil || normal.Provider != "openai" || normal.Model != "gpt-6-luna" || normal.Effort != "high" {

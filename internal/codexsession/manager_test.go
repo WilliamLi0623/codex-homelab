@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -365,6 +366,116 @@ func TestSessionManagerRejectsOverlappingTurnsUntilCompletionEvent(t *testing.T)
 	}
 	if err := <-serverDone; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSessionManagerSurfacesUnexpectedAppServerDisconnectWithoutDroppingSession(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		fillQueue bool
+		trigger   func(*testing.T, net.Conn)
+	}{
+		{name: "EOF", trigger: func(t *testing.T, conn net.Conn) { t.Helper(); _ = conn.Close() }},
+		{name: "malformed JSON stream", fillQueue: true, trigger: func(t *testing.T, conn net.Conn) {
+			t.Helper()
+			if _, err := conn.Write([]byte("{malformed\n")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client, serverConn := newFakeAppServerClient(t)
+			manager, err := NewSessionManager(client)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(manager.Close)
+
+			thread := AppServerThread{
+				ID: "thread-1", ModelProvider: "openai", Model: "gpt-6-luna",
+				ReasoningEffort: stringPointer("high"), ThreadSource: stringPointer(sessionUIServiceName),
+			}
+			session, err := manager.RegisterThread(thread, RoutePin{Mode: "normal", Provider: "openai", Model: "gpt-6-luna", Effort: "high"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.activeTurnID = "turn-1"
+			if test.fillQueue {
+				for range cap(session.Notices) {
+					session.Notices <- SessionNotice{Event: &Event{Method: "item/agentMessage/delta"}}
+				}
+				if got, capacity := len(session.Notices), cap(session.Notices); got != capacity {
+					t.Fatalf("failed to fill the session notice queue: len=%d cap=%d", got, capacity)
+				}
+			}
+			test.trigger(t, serverConn)
+			select {
+			case <-manager.done:
+			case <-time.After(time.Second):
+				t.Fatal("session manager did not observe App Server termination")
+			}
+
+			deadline := time.After(time.Second)
+			foundError := false
+			for !foundError {
+				select {
+				case notice, open := <-session.Notices:
+					if !open {
+						t.Fatal("session notice stream closed without a disconnect error")
+					}
+					if notice.Error != "" {
+						foundError = true
+						if strings.Contains(notice.Error, "secret") || strings.Contains(notice.Error, "prompt") {
+							t.Fatalf("disconnect notice contains sensitive diagnostics: %q", notice.Error)
+						}
+					}
+				case <-deadline:
+					t.Fatal("unexpected App Server disconnect was not surfaced")
+				}
+			}
+			if manager.Get(thread.ID) != session {
+				t.Fatal("session was dropped after an ambiguous App Server disconnect")
+			}
+			if session.activeTurnID != "turn-1" {
+				t.Fatalf("ambiguous turn was incorrectly marked complete: active=%q", session.activeTurnID)
+			}
+			select {
+			case _, open := <-session.Notices:
+				if open {
+					t.Fatal("session notice stream remained open after App Server disconnect")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("session notice stream was not closed after disconnect")
+			}
+		})
+	}
+}
+
+func TestSessionManagerQueueOverflowReservesTerminalErrorNotice(t *testing.T) {
+	client, _ := newFakeAppServerClient(t)
+	manager, err := NewSessionManager(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(manager.Close)
+	thread := AppServerThread{ID: "thread-1", ModelProvider: "openai", Model: "gpt-6-luna", ReasoningEffort: stringPointer("high"), ThreadSource: stringPointer(sessionUIServiceName)}
+	session, err := manager.RegisterThread(thread, RoutePin{Mode: "normal", Provider: "openai", Model: "gpt-6-luna", Effort: "high"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range cap(session.Notices) {
+		session.Notices <- SessionNotice{Event: &Event{Method: "item/agentMessage/delta"}}
+	}
+	manager.failSession(thread.ID, "App Server event queue is full; session stream stopped")
+	foundError := false
+	for len(session.Notices) > 0 {
+		notice := <-session.Notices
+		if notice.Error != "" {
+			foundError = true
+		}
+	}
+	if !foundError {
+		t.Fatal("queue overflow silently discarded its terminal failure notice")
 	}
 }
 

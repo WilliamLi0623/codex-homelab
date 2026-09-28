@@ -567,3 +567,46 @@ unknown and recorded as zero. The installed App Server did not list a
 persistent no-turn thread, so a thread created before its first turn cannot
 currently be recovered through this history-based path. The user CODEX_HOME
 SQLite startup failure remains unresolved and blocks live session acceptance.
+
+## Local session UI Task 6 checkpoint — 2026-09-29
+
+Deterministic local integration coverage now exercises one route lifecycle
+through the real quota coordinator, App Server JSONL client, session manager,
+HTTP API and SSE handler. It creates a normal OpenAI / `gpt-6-luna` / `high`
+thread at generation 1, streams visible assistant text and a command-approval
+request, sends an explicit one-shot `accept`, continues the same thread, then
+simulates authoritative exhaustion and recovery for newly created Spark
+`xhigh` and Luna `high` threads at generations 2 and 3. The original thread
+remains pinned and resumes without provider overrides.
+
+The Spark exhaustion step is a mock-only route test using an explicitly
+fallback-enabled test handler. The production session service still sets
+`FallbackEnabled=false`; a separate regression verifies exhausted-mode session
+creation fails closed. No GLM `max` subagent runtime selection is claimed.
+Effective subagent provider/model/effort remains the hard P27 routing gate.
+
+App Server EOF and malformed JSON now produce a sanitized `stream_error`,
+close the event channel, retain the thread, and leave an in-flight turn
+ambiguous rather than marking it complete. The UI-disconnect simulation
+continues the same App Server thread without replaying the initial request.
+If the bounded session notice queue is already full, the manager drops its
+oldest queued event only to reserve a slot for the terminal error; an existing
+queue-overflow error uses the same rule so the failure cannot disappear.
+Existing tests also cover quota read/publication failures, bridge 401/429/503
+classification without retry, bridge stream interruption without
+`response.completed`, approval rejection, request bounds and secret redaction.
+
+Verification on this host: `go test ./... -count=1`, `go vet ./...`, all 22 UI
+tests, and a separate-directory Vite production build passed. The default
+sandbox denied Vite's child process (`spawn EPERM`); rerunning the same tests and
+build with the approved elevated execution succeeded. The build output was
+written to a new temporary directory, preserving existing `ui/dist`. `go test
+-race` remains unavailable because `CGO_ENABLED=0`.
+
+[The local session UI runbook](../runbooks/codex-session-ui.md) records a loopback-only PowerShell launch,
+stop and rollback procedure. It is documentation, not evidence of a live
+service start. The existing user `CODEX_HOME` still fails App Server startup
+during SQLite initialization, so no authenticated local UI session, native
+Desktop liveness check, or live provider failure injection was performed.
+Remote configuration/deployment and production P25/P26 isolation acceptance
+remain open.
