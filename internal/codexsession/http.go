@@ -51,6 +51,10 @@ type SessionBackend interface {
 	RespondApprovalID(context.Context, string, string, string) error
 }
 
+type SessionHistoryBackend interface {
+	History(context.Context, string) (SessionHistory, error)
+}
+
 type SessionRoute struct {
 	Provider string
 	Model    string
@@ -93,6 +97,7 @@ func NewSessionHTTPHandler(config SessionHTTPConfig, coordinator SessionRouteCoo
 	h.mux.HandleFunc("GET /healthz", h.health)
 	h.mux.HandleFunc("GET /api/status", h.status)
 	h.mux.HandleFunc("GET /api/sessions", h.listSessions)
+	h.mux.HandleFunc("GET /api/sessions/{id}/history", h.sessionHistory)
 	h.mux.HandleFunc("POST /api/sessions", h.createSession)
 	h.mux.HandleFunc("GET /api/sessions/{id}/events", h.streamSession)
 	h.mux.HandleFunc("POST /api/sessions/{id}/turns", h.startTurn)
@@ -199,6 +204,27 @@ func (h *SessionHTTPHandler) listSessions(w http.ResponseWriter, _ *http.Request
 		result = append(result, sessionSummary{ID: session.Thread.ID, Provider: session.Pin.Provider, Model: session.Pin.Model, Effort: session.Pin.Effort, Mode: session.Pin.Mode, Created: session.Pin.CreatedAt})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": result})
+}
+
+func (h *SessionHTTPHandler) sessionHistory(w http.ResponseWriter, r *http.Request) {
+	threadID := r.PathValue("id")
+	if h.sessions.Get(threadID) == nil {
+		writeHTTPError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	backend, ok := h.sessions.(SessionHistoryBackend)
+	if !ok {
+		writeHTTPError(w, http.StatusServiceUnavailable, "session history is unavailable")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	history, err := backend.History(ctx, threadID)
+	if err != nil {
+		writeHTTPError(w, http.StatusBadGateway, "Codex App Server history could not be loaded")
+		return
+	}
+	writeJSON(w, http.StatusOK, history)
 }
 
 func (h *SessionHTTPHandler) createSession(w http.ResponseWriter, r *http.Request) {

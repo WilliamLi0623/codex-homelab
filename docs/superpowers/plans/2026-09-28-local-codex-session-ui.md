@@ -106,11 +106,12 @@
 **Files:** Add `ui/codex.html`, `ui/src/codex-main.tsx`, `ui/src/codex/App.tsx`, `ui/src/codex/api.ts`, `ui/src/codex/types.ts`, styles/tests; update `ui/vite.config.ts` only for multi-page build/proxy wiring.
 
 - [x] Add Vitest tests first for route/status display, create-session request, SSE event filtering/reconnect state, interrupt, approval request, error redaction and no-resend behavior. Real-browser mock verification also exercised streamed activity and an approval-required action.
-- [x] Build the separate route/session console with sessions list, quota mode/freshness/generation, next-route snapshot, working-directory/prompt form, streamed conversation, bounded activity, interrupt and explicit approval controls. Earlier transcript turns are not rendered yet; the UI says so and does not duplicate transcript storage.
+- [x] Build the separate route/session console with sessions list, quota mode/freshness/generation, next-route snapshot, working-directory/prompt form, streamed conversation, bounded activity, interrupt and explicit approval controls. The UI hydrates a bounded recent transcript from App Server history; it does not duplicate transcript storage.
 - [x] Do not display hidden reasoning, credentials, raw environment or unrestricted tool output. The server and client both bound/filter event data; React renders text as text (no raw HTML execution).
 - [x] Call only local host endpoints. The browser client uses `/api/*`; it does not call Controller APIs, CC Hub, OpenAI or the task BFF.
 - [x] Keep the existing task-console entry and `/ui/api` development proxy unchanged. Vite multi-page production build emits both `dist/index.html` and `dist/codex.html`.
 - [x] Add UI tests for unknown/stale/fallback quota labels, no-send-on-ambiguous-response, SSE thread filtering/reconnect, one-shot-only approval and secret-free errors. Existing task UI tests remain green; browser mock confirmed the approval prompt and responsive page.
+- [x] Hydrate up to 20 recent turns through authenticated `GET /api/sessions/{id}/history`; request the newest item page per turn and restore chronological order. Only schema-confirmed user text and visible assistant phases are returned. Reasoning, tools, tool output, and non-text user content are excluded; responses are capped at 200 messages and 512 KiB, UTF-8-safe when truncated, kept in page memory only, and merged with live SSE by stable IDs without collapsing distinct items or repeated prompts.
 
 **Run:** `npm --prefix ui test -- --run`; `npm --prefix ui run build`.
 

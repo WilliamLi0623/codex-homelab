@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { approveAction, createSession, getRoutingStatus, interruptTurn, listSessions, sendTurn, subscribeToSession } from "./api";
+import { approveAction, createSession, getRoutingStatus, getSessionHistory, interruptTurn, listSessions, sendTurn, subscribeToSession } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -26,6 +26,14 @@ describe("local Codex session API", () => {
       credentials: "same-origin",
       body: JSON.stringify({ cwd: "C:/src/project", prompt: "Inspect the repository" }),
     }));
+  });
+
+  it("loads bounded thread history from the same-origin local session host", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ messages: [{ id: "item-1", role: "assistant", text: "visible" }], truncated: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getSessionHistory("thread/1")).resolves.toMatchObject({ truncated: true, messages: [{ id: "item-1", text: "visible" }] });
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/thread%2F1/history", expect.objectContaining({ credentials: "same-origin" }));
   });
 
   it("sends a continuation once and never retries an ambiguous response", async () => {

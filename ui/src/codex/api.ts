@@ -1,4 +1,4 @@
-import type { ApprovalRequest, RoutingStatus, SessionNotice, SessionSummary } from "./types";
+import type { ApprovalRequest, RoutingStatus, SessionHistory, SessionNotice, SessionSummary } from "./types";
 
 export class SessionUIError extends Error {
   constructor(readonly status: number) {
@@ -60,6 +60,10 @@ export async function getRoutingStatus(): Promise<RoutingStatus> {
 export async function listSessions(): Promise<SessionSummary[]> {
   const result = await requestJSON<{ sessions: SessionSummary[] }>("/api/sessions");
   return result.sessions;
+}
+
+export function getSessionHistory(threadID: string): Promise<SessionHistory> {
+  return requestJSON<SessionHistory>(`/api/sessions/${encodeURIComponent(threadID)}/history`);
 }
 
 export function createSession(cwd: string, prompt: string): Promise<CreatedSession> {

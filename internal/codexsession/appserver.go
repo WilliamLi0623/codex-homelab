@@ -213,7 +213,7 @@ func (c *AppServerClient) ListItems(ctx context.Context, threadID, turnID string
 	if limit < 1 || limit > 100 {
 		return RawPage{}, errors.New("item page size must be between 1 and 100")
 	}
-	params := map[string]any{"threadId": threadID, "limit": limit, "sortDirection": "asc"}
+	params := map[string]any{"threadId": threadID, "limit": limit, "sortDirection": "desc"}
 	if turnID != "" {
 		params["turnId"] = turnID
 	}

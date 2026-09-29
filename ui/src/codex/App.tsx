@@ -1,9 +1,9 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
-import { approveAction, createSession, getRoutingStatus, interruptTurn, listSessions, sendTurn, SessionUIError, subscribeToSession, type SessionConnection } from "./api";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { approveAction, createSession, getRoutingStatus, getSessionHistory, interruptTurn, listSessions, sendTurn, SessionUIError, subscribeToSession, type SessionConnection } from "./api";
+import { mergeHistoryEntries, type ConversationEntry } from "./history";
 import type { ApprovalRequest, RoutingStatus, SessionNotice, SessionSummary } from "./types";
 import StatusSummary from "./StatusSummary";
 
-type ConversationEntry = { id: string; role: "user" | "assistant"; body: string; turnID?: string; state?: "sending" | "sent" | "complete" | "unknown" };
 type ActivityEntry = { id: string; label: string };
 type PendingApproval = { approval: ApprovalRequest; supported: boolean; error?: string };
 
@@ -30,11 +30,15 @@ export default function SessionApp() {
   const [sending, setSending] = useState(false);
   const [activeTurns, setActiveTurns] = useState<Record<string, string>>({});
   const [entries, setEntries] = useState<Record<string, ConversationEntry[]>>({});
+  const [historyTruncated, setHistoryTruncated] = useState<Record<string, boolean>>({});
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [activity, setActivity] = useState<Record<string, ActivityEntry[]>>({});
   const [approvals, setApprovals] = useState<Record<string, PendingApproval[]>>({});
   const [approvalBusy, setApprovalBusy] = useState<string>();
   const [connection, setConnection] = useState<SessionConnection>("connecting");
   const [error, setError] = useState<string>();
+  const historyLoaded = useRef(new Set<string>());
+  const historyLoads = useRef(new Map<string, ReturnType<typeof getSessionHistory>>());
 
   const refreshSessions = useCallback(async () => {
     const [nextStatus, nextSessions] = await Promise.all([getRoutingStatus(), listSessions()]);
@@ -69,6 +73,34 @@ export default function SessionApp() {
   const selectedEntries = selected ? entries[selected.id] ?? [] : [];
   const selectedActivity = selected ? activity[selected.id] ?? [] : [];
   const selectedApprovals = selected ? approvals[selected.id] ?? [] : [];
+
+  useEffect(() => {
+    if (!selectedID || historyLoaded.current.has(selectedID)) return;
+    let alive = true;
+    setHistoryLoading(true);
+    let load = historyLoads.current.get(selectedID);
+    if (!load) {
+      load = getSessionHistory(selectedID);
+      historyLoads.current.set(selectedID, load);
+    }
+    load
+      .then((history) => {
+        if (!alive) return;
+        historyLoaded.current.add(selectedID);
+        setEntries((current) => ({
+          ...current,
+          [selectedID]: mergeHistoryEntries(history.messages, current[selectedID] ?? []),
+        }));
+        setHistoryTruncated((current) => ({ ...current, [selectedID]: history.truncated }));
+      })
+      .catch((cause: unknown) => {
+        if (!alive) return;
+        historyLoads.current.delete(selectedID);
+        setError(errorText(cause));
+      })
+      .finally(() => alive && setHistoryLoading(false));
+    return () => { alive = false; };
+  }, [selectedID]);
 
   useEffect(() => {
     if (!selectedID) return;
@@ -113,6 +145,7 @@ export default function SessionApp() {
     setError(undefined);
     try {
       const result = await createSession(cwd, newPrompt);
+      historyLoaded.current.add(result.session.id);
       setSessions((current) => [result.session, ...current.filter((item) => item.id !== result.session.id)]);
       setSelectedID(result.session.id);
       setEntries((current) => ({ ...current, [result.session.id]: [{ id: result.turn_id, role: "user", body: newPrompt, turnID: result.turn_id, state: "sent" }] }));
@@ -220,11 +253,12 @@ export default function SessionApp() {
             </header>
 
             <section className="conversation-stream" aria-label="Conversation events" aria-live="polite" aria-relevant="additions text">
-              {selectedEntries.length === 0 && <div className="history-note"><h3>Thread context is preserved by Codex</h3><p>Earlier transcript text is not loaded into this browser view yet. New turns continue in the selected App Server thread; the UI never stores conversation text in browser storage.</p></div>}
+              {selectedEntries.length === 0 && <div className="history-note"><h3>{historyLoading ? "Loading conversation history" : "No visible text history"}</h3><p>{historyLoading ? "Reading recent messages from Codex App Server…" : "This thread has no visible text messages in its saved history. App Server remains the source of truth; this page does not persist transcript text."}</p></div>}
               {selectedEntries.map((entry) => <article key={entry.id} className={`conversation-entry conversation-entry--${entry.role}`}>
                 <div className="entry-heading"><h3>{entry.role === "user" ? "You" : "Codex"}</h3>{entry.state === "sending" && <span>Sending</span>}{entry.state === "unknown" && <span>Outcome unknown</span>}{entry.state === "complete" && <span>Complete</span>}</div>
                 <p>{entry.body}</p>
               </article>)}
+              {selected && historyTruncated[selected.id] && <p className="history-note" role="status">Showing a bounded recent excerpt. Older items or oversized messages were omitted by the local history limit.</p>}
             </section>
 
             {selectedApprovals.length > 0 && <section className="approval-section" aria-labelledby="approval-heading"><div className="subsection-heading"><div><p className="eyebrow">Action required</p><h3 id="approval-heading">Codex is requesting approval</h3></div><span>{selectedApprovals.length}</span></div>

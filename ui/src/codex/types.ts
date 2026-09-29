@@ -21,6 +21,18 @@ export interface SessionSummary {
   created_at: string;
 }
 
+export interface HistoryMessage {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  truncated?: boolean;
+}
+
+export interface SessionHistory {
+  messages: HistoryMessage[];
+  truncated: boolean;
+}
+
 export type SessionNotice =
   | { type: "assistant_delta"; thread_id: string; turn_id: string; item_id: string; delta: string }
   | { type: "turn/started" | "turn/completed"; thread_id: string; turn_id: string; status: string }

@@ -539,6 +539,37 @@ verified from runtime metadata. Do not interpret this probe as closing the
 P27 quota-driven routing gate. No global Codex config or remote host was
 changed.
 
+### Read-only CODEX_HOME SQLite diagnosis — 2026-09-29
+
+Without launching another App Server or reading database contents, a local
+metadata check found `CODEX_HOME=C:\Users\William Li\.codex` and these files in
+its `sqlite` directory: `codex-dev.db` (778,240 bytes; last written 2026-09-24),
+`codex-dev.db-wal` (4,173,592 bytes; last written 2026-09-29 15:26 local), and
+`codex-dev.db-shm` (32,768 bytes; last written 2026-09-29 15:44 local). The
+current user has `FullControl` on the directory. The process inventory showed
+the Codex desktop host and Codex processes running at the time of inspection.
+No database bytes, credentials, or process command lines were read.
+
+This rules out a simple absence of the SQLite directory and does not show an
+obvious user-ACL denial. Recent WAL/SHM timestamps are consistent with active
+Codex database use, but do not prove which process holds a lock or that locking
+caused the App Server initialization error. Therefore the root cause remains
+unconfirmed; do not retry App Server against this shared CODEX_HOME until the
+specific SQLite error and lock/initialization boundary are identified. The
+inspection did not modify the directory or any files.
+
+### Bounded session-history display — 2026-09-29
+
+The local session UI now requests recent history from the same App Server
+thread through an authenticated loopback endpoint. The implementation uses the
+installed CLI 0.156.1 generated schema to allow only user text and assistant
+`commentary`/`final_answer` (or phase-unknown) messages. Reasoning items, tool
+calls/results, and non-text content are excluded. It reads at most 20 recent
+turns, returns at most 200 visible messages / 512 KiB, and reports truncation;
+no second transcript store was introduced. Mock/protocol tests and local Go/UI
+validation pass. No live history payload was captured or rendered because the
+shared CODEX_HOME App Server SQLite initialization issue remains unresolved.
+
 A follow-up no-turn probe in a credential-free temporary CODEX_HOME confirmed
 that `thread/start` accepts `threadSource="codex-session-ui"` and returns that
 marker together with the requested OpenAI/Luna/high metadata. `thread/list`

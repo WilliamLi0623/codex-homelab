@@ -60,6 +60,7 @@ type testSessionBackend struct {
 	createErr   error
 	routes      []RoutePin
 	options     []ThreadStartOptions
+	history     SessionHistory
 }
 
 func (b *testSessionBackend) CreateThread(_ context.Context, options ThreadStartOptions, pin RoutePin) (*ManagedSession, error) {
@@ -95,6 +96,12 @@ func (b *testSessionBackend) List() []*ManagedSession {
 		out = append(out, session)
 	}
 	return out
+}
+
+func (b *testSessionBackend) History(context.Context, string) (SessionHistory, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.history, nil
 }
 
 func (b *testSessionBackend) StartTurn(context.Context, string, string) (Turn, error) {
@@ -222,6 +229,31 @@ func TestSessionHTTPRequiresExactHostCookieAndOriginForWrites(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("missing cookie status=%d", response.Code)
+	}
+}
+
+func TestSessionHTTPReturnsOnlyRegisteredSessionHistory(t *testing.T) {
+	handler, _, backend := testHTTPHandler(t, codexrouting.RouteDecision{}, false)
+	cookie := localUICookie(t, handler)
+	session, err := backend.CreateThread(context.Background(), ThreadStartOptions{ModelProvider: "openai", Model: "gpt-6-luna", Effort: "high"}, RoutePin{Mode: "normal", Provider: "openai", Model: "gpt-6-luna", Effort: "high"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.history = SessionHistory{Messages: []HistoryMessage{{ID: "item-1", Role: "user", Text: "hello"}, {ID: "item-2", Role: "assistant", Text: "visible answer"}}, Truncated: true}
+	response := authorizedUIRequest(handler, http.MethodGet, "/api/sessions/"+session.Thread.ID+"/history", nil, cookie)
+	if response.Code != http.StatusOK {
+		t.Fatalf("history status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result SessionHistory
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Messages) != 2 || result.Messages[0].Text != "hello" || result.Messages[1].Role != "assistant" || !result.Truncated {
+		t.Fatalf("history response=%+v", result)
+	}
+	missing := authorizedUIRequest(handler, http.MethodGet, "/api/sessions/not-registered/history", nil, cookie)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("unknown history status=%d body=%s", missing.Code, missing.Body.String())
 	}
 }
 
