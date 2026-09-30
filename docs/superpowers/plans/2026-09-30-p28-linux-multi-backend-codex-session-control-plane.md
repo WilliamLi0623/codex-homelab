@@ -180,3 +180,10 @@ P28 is complete only when the Linux Web UI can create and continue persistent Se
 - Therefore Task 4's manager/API wiring is not sufficient to expose Session creation: doing so would allow creation of a running but non-Codex-ready LXC. No Session LXC was created and no API endpoint was enabled.
 - **Decision needed before Task 4 can pass:** choose an approved bootstrap boundary: (A) build and reserve a dedicated immutable Codex-capable Session template (new template ID/capacity inventory and controlled template build); (B) authorize a separate least-privilege Controller-owned SSH bootstrap identity and explicitly provision its public key into the Session image; or (C) design a narrowly scoped PVE-side guest-bootstrap service. Do not use the Windows private key, clone an authenticated test LXC, or give the Controller unrestricted PVE host shell access.
 - Until that decision, safe work may continue on isolated API/auth and test seams that do not create/start an LXC; live Session lifecycle and Task 5 remain gated. This is an architecture/security boundary, not a transient test failure.
+
+### Task 2 streaming and GLM Responses probe — 2026-09-30
+
+- Live probes ran from PVE with the required coding-agent User-Agent. The existing CC Hub key was read on PVE into process memory only; it was not printed or persisted.
+- Muse POST /v1/responses with stream=true: HTTP 200; received response.created, response.in_progress, output-item/content-part events, one response.output_text.delta, and terminal response.completed; assembled exact text P28_SPARK_STREAM_OK.
+- GLM-5.3-Flash POST /v1/chat/completions with stream=true: HTTP 200; 38 data chunks plus finish_reason=stop; assembled exact text P28_GLM_STREAM_OK.
+- GLM-5.3-Flash POST /v1/responses returned HTTP 503 for both minimal text and function-tool probes. The function continuation was not attempted because no response/tool call was returned. This confirms current GLM routing should use Chat Completions; Muse Responses remains independently usable. These are provider probes, not Codex/App Server or Controller E2E.
