@@ -162,3 +162,12 @@ P28 is complete only when the Linux Web UI can create and continue persistent Se
 - On LXC3006, `model/list` included `gpt-6-luna`. `thread/start` created thread `01a0f0f6-6ab9-7320-aa89-93f163d9750c`; three simple turns returned `P28_APP_SERVER_OK`. The App Server process was stopped and restarted; `thread/resume` returned the same ID and prior turns, and a follow-up turn again returned the exact token.
 - The server emitted `account/rateLimits/updated` for the logged-in Plus account (5-hour and weekly windows). The observed usage was 1% / 17% after the probe; this is a point-in-time observation, not proof of A/B identity mapping or quota monitor correctness.
 - This proves a single logged-in Linux CLI/App Server can start, stream a turn, persist history, and resume after process restart on LXC3006. It does not prove the dedicated Session LXC template/bootstrap, identity A/B isolation, tool execution, or production Controller lifecycle. Task 2 remains partial; Task 5 remains unstarted.
+
+### Task 2 provider probe — CC Hub Spark and GLM
+
+- On PVE, used the existing CC Hub key without printing or persisting it and sent requests with `codex_cli_rs/0.155.0 (Linux Ubuntu 24.04; x86_64) p28-probe`.
+- Muse Responses text returned HTTP 200 with `completed` and `CCH_SPARK_OK`; GLM-5.3-Flash Chat Completions text returned HTTP 200 with `CCH_GLM_OK`.
+- Responses tool call with `tool_choice=required` returned HTTP 503 with the explicit message that only `auto` is supported. This was a request-option limitation, not a general Spark outage.
+- With `tool_choice=auto`, Muse returned a standard `function_call` (`get_test_value`, stable `call_id`, `{}` arguments). Replaying the full stateless input history, all prior output items, and the matching `function_call_output` returned HTTP 200 and final text containing the simulated result.
+- GLM Chat Completions returned a standard `tool_calls` entry with an ID; returning the assistant tool-call message and a `role=tool` result using the exact ID returned HTTP 200 and final text. All tool execution was a harmless simulated value.
+- These were non-streaming protocol probes, not Controller delegation or production E2E. Task 2 remains partial for A/B account attribution/isolation, concurrent auth behavior, and real Spark→Controller child-task orchestration.
