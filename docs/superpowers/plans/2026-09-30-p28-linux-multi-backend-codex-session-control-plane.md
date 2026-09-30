@@ -187,3 +187,11 @@ P28 is complete only when the Linux Web UI can create and continue persistent Se
 - Muse POST /v1/responses with stream=true: HTTP 200; received response.created, response.in_progress, output-item/content-part events, one response.output_text.delta, and terminal response.completed; assembled exact text P28_SPARK_STREAM_OK.
 - GLM-5.3-Flash POST /v1/chat/completions with stream=true: HTTP 200; 38 data chunks plus finish_reason=stop; assembled exact text P28_GLM_STREAM_OK.
 - GLM-5.3-Flash POST /v1/responses returned HTTP 503 for both minimal text and function-tool probes. The function continuation was not attempted because no response/tool call was returned. This confirms current GLM routing should use Chat Completions; Muse Responses remains independently usable. These are provider probes, not Codex/App Server or Controller E2E.
+
+### Task 2 — streamed tool-loop correction and verification
+
+- With Muse Responses streaming and reasoning effort xhigh, the model returned one standard function call with response.function_call_arguments.delta/done and a terminal response.completed.
+- An initial continuation probe returned 503 because the test harness placed a raw string inside the Responses input array. This was malformed test input, not an upstream stream/tool-loop failure. Replaying the user turn as a typed message item, all original response output items, and the same call_id fixed the request.
+- Corrected Muse stream → function call → simulated function output → streamed continuation returned HTTP 200, three text deltas, terminal response.completed, and the expected fixed result.
+- GLM-5.3-Flash Chat Completions with reasoning_effort=max returned a streamed standard tool_calls entry; the assistant call and simulated tool result with its unchanged call ID continued to finish_reason=stop and the expected final text.
+- No real tool was executed. This proves the upstream protocol loop only; Codex execution and Spark-to-Controller child-task delegation remain unverified. GLM Responses still returned HTTP 503 in the separate probes above.
