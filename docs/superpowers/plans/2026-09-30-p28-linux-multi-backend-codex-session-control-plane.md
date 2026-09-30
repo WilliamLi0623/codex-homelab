@@ -155,3 +155,10 @@ P28 is complete only when the Linux Web UI can create and continue persistent Se
 - Validation after this slice: `go test ./... -count=1`, `go vet ./...`, and `git diff --check` pass. No Proxmox mutation or LXC lifecycle operation was run.
 - Task 4 remains in progress: controller construction is wired, but authenticated lifecycle API and live Proxmox lifecycle are not yet implemented. Templates 3900–3902 still lack Codex CLI/App Server and need a verified bootstrap path before Task 5.
 - Task 2 remains partial: LXC3006 reports Codex CLI 0.155.0 and `codex login status` says logged in. Invoking App Server with documented `initialize`/`initialized` NDJSON exits 0 without emitting the initialize response; no thread or model request was made. Therefore App Server handshake remains unverified.
+
+### Task 2 probe correction — interactive App Server verification
+
+- The prior piped probe closed stdin immediately after sending both initialization messages and is superseded. With stdio kept open, `initialize` returned successfully; only then `initialized` was sent.
+- On LXC3006, `model/list` included `gpt-6-luna`. `thread/start` created thread `01a0f0f6-6ab9-7320-aa89-93f163d9750c`; three simple turns returned `P28_APP_SERVER_OK`. The App Server process was stopped and restarted; `thread/resume` returned the same ID and prior turns, and a follow-up turn again returned the exact token.
+- The server emitted `account/rateLimits/updated` for the logged-in Plus account (5-hour and weekly windows). The observed usage was 1% / 17% after the probe; this is a point-in-time observation, not proof of A/B identity mapping or quota monitor correctness.
+- This proves a single logged-in Linux CLI/App Server can start, stream a turn, persist history, and resume after process restart on LXC3006. It does not prove the dedicated Session LXC template/bootstrap, identity A/B isolation, tool execution, or production Controller lifecycle. Task 2 remains partial; Task 5 remains unstarted.
