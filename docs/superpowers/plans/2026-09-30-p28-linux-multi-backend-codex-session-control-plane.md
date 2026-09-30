@@ -147,3 +147,11 @@ Execute Tasks 1–14 in order. Within a task, run tests before behavior changes 
 ## Final acceptance
 
 P28 is complete only when the Linux Web UI can create and continue persistent Sessions; Codex A/B identities remain isolated; manual handoff works; Spark delegates real GLM work through Controller; quota-driven failover/failback pass their feature-gated tests; workspace/session state survives runtime replacement; no ambiguous operation is replayed; browser/logs contain no credentials; and existing P25/P26 task execution remains unaffected.
+
+## Status addendum — 2026-09-30 continuation
+
+- Controller can now optionally construct the persistent Session runtime manager from `SESSION_RUNTIME_TEMPLATE_VMID` and `SESSION_WORKSPACE_SIZE_GIB`, reusing the existing Proxmox credential source. Root storage is fixed to `local` (SSD); workspace storage is fixed to `pool` (HDD).
+- The manager is injected into the API server through a separate constructor. Existing task routes are unchanged; no Session API route is registered until the authenticated Task 7 boundary is implemented. An enabled-runtime integration test confirms `/v1/ready` remains healthy and `/v1/sessions` remains unavailable (404).
+- Validation after this slice: `go test ./... -count=1`, `go vet ./...`, and `git diff --check` pass. No Proxmox mutation or LXC lifecycle operation was run.
+- Task 4 remains in progress: controller construction is wired, but authenticated lifecycle API and live Proxmox lifecycle are not yet implemented. Templates 3900–3902 still lack Codex CLI/App Server and need a verified bootstrap path before Task 5.
+- Task 2 remains partial: LXC3006 reports Codex CLI 0.155.0 and `codex login status` says logged in. Invoking App Server with documented `initialize`/`initialized` NDJSON exits 0 without emitting the initialize response; no thread or model request was made. Therefore App Server handshake remains unverified.

@@ -14,6 +14,7 @@ import (
 	"github.com/WilliamLi0623/codex-homelab/internal/executor/k3s"
 	"github.com/WilliamLi0623/codex-homelab/internal/modelrouter"
 	"github.com/WilliamLi0623/codex-homelab/internal/orchestrator"
+	"github.com/WilliamLi0623/codex-homelab/internal/sessionruntime"
 	"github.com/WilliamLi0623/codex-homelab/internal/store"
 )
 
@@ -71,8 +72,21 @@ func newHandlerFromEnvironment(databasePath string) (http.Handler, func(), error
 	executor := k3s.New(kubernetesRuntime, database)
 	dispatcher := orchestrator.New(capacityAdapter, executor)
 	completer := orchestrator.NewResultConsumer(database, executor, capacityAdapter)
+	var sessionManager *sessionruntime.Manager
+	if config.SessionRuntime != nil {
+		sessionProxmoxRuntime, runtimeErr := sessionruntime.NewProxmoxRuntime(sessionruntime.ProxmoxConfig{BaseURL: config.Proxmox.BaseURL, Node: config.Proxmox.Node, Token: config.Proxmox.Token})
+		if runtimeErr != nil {
+			closeStore()
+			return nil, nil, fmt.Errorf("configure Session Proxmox runtime: %w", runtimeErr)
+		}
+		sessionManager, runtimeErr = sessionruntime.NewManager(database, sessionProxmoxRuntime, *config.SessionRuntime)
+		if runtimeErr != nil {
+			closeStore()
+			return nil, nil, fmt.Errorf("configure Session runtime manager: %w", runtimeErr)
+		}
+	}
 	observationDone = startObservationLoop(runtimeContext, orchestrator.NewObservationLoop(database, completer))
-	return api.NewServerWithRoutingStateAndRoutes(database, dispatcher, completer, capacityAdapter, executor, routingStateTokenFromEnvironment(), config.Routes, true), closeStore, nil
+	return api.NewServerWithRoutingStateAndRoutesAndSessionRuntime(database, dispatcher, completer, capacityAdapter, executor, routingStateTokenFromEnvironment(), config.Routes, true, sessionManager), closeStore, nil
 }
 
 func startObservationLoop(ctx context.Context, loop *orchestrator.ObservationLoop) <-chan struct{} {

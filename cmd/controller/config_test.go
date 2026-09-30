@@ -178,3 +178,46 @@ func TestLoadEnvironmentConfigRejectsPartialKueueResources(t *testing.T) {
 		t.Fatal("partial Kueue resource config was accepted")
 	}
 }
+
+func TestLoadEnvironmentConfigLeavesSessionRuntimeDisabledByDefault(t *testing.T) {
+	setControllerEnvironment(t)
+	t.Setenv("SESSION_RUNTIME_TEMPLATE_VMID", "")
+	t.Setenv("SESSION_WORKSPACE_SIZE_GIB", "")
+
+	cfg, err := loadEnvironmentConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SessionRuntime != nil {
+		t.Fatalf("Session runtime config = %+v, want disabled", cfg.SessionRuntime)
+	}
+}
+
+func TestLoadEnvironmentConfigLoadsSessionRuntimeSeparatelyFromWorkerPool(t *testing.T) {
+	setControllerEnvironment(t)
+	t.Setenv("SESSION_RUNTIME_TEMPLATE_VMID", "3901")
+	t.Setenv("SESSION_WORKSPACE_SIZE_GIB", "48")
+
+	cfg, err := loadEnvironmentConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SessionRuntime == nil {
+		t.Fatal("Session runtime config is nil")
+	}
+	if cfg.SessionRuntime.TemplateVMID != 3901 || cfg.SessionRuntime.SystemStorage != "local" || cfg.SessionRuntime.WorkspaceStorage != "pool" || cfg.SessionRuntime.WorkspaceSizeGiB != 48 {
+		t.Fatalf("Session runtime config = %+v", cfg.SessionRuntime)
+	}
+	if cfg.CapacityConfig.TemplateVMID != 3900 {
+		t.Fatalf("worker template VMID changed to %d", cfg.CapacityConfig.TemplateVMID)
+	}
+}
+
+func TestLoadEnvironmentConfigRejectsPartialSessionRuntimeConfig(t *testing.T) {
+	setControllerEnvironment(t)
+	t.Setenv("SESSION_RUNTIME_TEMPLATE_VMID", "3900")
+	t.Setenv("SESSION_WORKSPACE_SIZE_GIB", "")
+	if _, err := loadEnvironmentConfig(); err == nil {
+		t.Fatal("partial Session runtime config was accepted")
+	}
+}

@@ -17,6 +17,7 @@ import (
 	"github.com/WilliamLi0623/codex-homelab/internal/domain"
 	"github.com/WilliamLi0623/codex-homelab/internal/modelrouter"
 	"github.com/WilliamLi0623/codex-homelab/internal/orchestrator"
+	"github.com/WilliamLi0623/codex-homelab/internal/sessionruntime"
 	"github.com/WilliamLi0623/codex-homelab/internal/store"
 )
 
@@ -66,6 +67,7 @@ type Server struct {
 	routingStateToken string
 	routeConfig       modelrouter.RouteConfig
 	requireRoute      bool
+	sessionRuntime    *sessionruntime.Manager
 	mux               *http.ServeMux
 }
 
@@ -207,7 +209,14 @@ func NewServerWithRoutingStateToken(database *store.Store, dispatcher Dispatcher
 // NewServerWithRoutingStateAndRoutes enables authoritative mode publication
 // and requires every new/retried attempt to receive a validated route snapshot.
 func NewServerWithRoutingStateAndRoutes(database *store.Store, dispatcher Dispatcher, completer Completer, releaser ReleaseReconciler, messageSender AttemptMessageSender, routingStateToken string, routeConfig modelrouter.RouteConfig, requireRoute bool) *Server {
-	server := &Server{store: database, dispatcher: dispatcher, completer: completer, releaser: releaser, messageSender: messageSender, routingStateToken: routingStateToken, routeConfig: routeConfig, requireRoute: requireRoute, mux: http.NewServeMux()}
+	return NewServerWithRoutingStateAndRoutesAndSessionRuntime(database, dispatcher, completer, releaser, messageSender, routingStateToken, routeConfig, requireRoute, nil)
+}
+
+// NewServerWithRoutingStateAndRoutesAndSessionRuntime binds the Controller-owned
+// persistent Session runtime manager without changing task routes or enabling
+// Session API endpoints before their authorization layer is implemented.
+func NewServerWithRoutingStateAndRoutesAndSessionRuntime(database *store.Store, dispatcher Dispatcher, completer Completer, releaser ReleaseReconciler, messageSender AttemptMessageSender, routingStateToken string, routeConfig modelrouter.RouteConfig, requireRoute bool, sessionManager *sessionruntime.Manager) *Server {
+	server := &Server{store: database, dispatcher: dispatcher, completer: completer, releaser: releaser, messageSender: messageSender, routingStateToken: routingStateToken, routeConfig: routeConfig, requireRoute: requireRoute, sessionRuntime: sessionManager, mux: http.NewServeMux()}
 	server.mux.HandleFunc("GET /v1/health", server.health)
 	server.mux.HandleFunc("GET /v1/ready", server.ready)
 	server.mux.HandleFunc("GET /v1/status", server.status)

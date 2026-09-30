@@ -10,6 +10,7 @@ import (
 	"github.com/WilliamLi0623/codex-homelab/internal/executor/k3s"
 	"github.com/WilliamLi0623/codex-homelab/internal/modelrouter"
 	"github.com/WilliamLi0623/codex-homelab/internal/orchestrator"
+	"github.com/WilliamLi0623/codex-homelab/internal/sessionruntime"
 )
 
 const (
@@ -24,6 +25,7 @@ type environmentConfig struct {
 	Kubernetes     k3s.KubernetesConfig
 	CapacityConfig orchestrator.CapacityAdapterConfig
 	Routes         modelrouter.RouteConfig
+	SessionRuntime *sessionruntime.Config
 }
 
 func loadEnvironmentConfig() (environmentConfig, error) {
@@ -48,6 +50,10 @@ func loadEnvironmentConfig() (environmentConfig, error) {
 	templateVMID, err := strconv.Atoi(values["PROXMOX_TEMPLATE_VMID"])
 	if err != nil || templateVMID < controllerTemplateVMIDMin || templateVMID > controllerTemplateVMIDMax {
 		return environmentConfig{}, fmt.Errorf("PROXMOX_TEMPLATE_VMID must be an integer in %d-%d", controllerTemplateVMIDMin, controllerTemplateVMIDMax)
+	}
+	sessionRuntimeConfig, err := loadSessionRuntimeConfig()
+	if err != nil {
+		return environmentConfig{}, err
 	}
 	model := strings.TrimSpace(os.Getenv("CODEX_MODEL"))
 	modelProfile := strings.TrimSpace(os.Getenv("CODEX_MODEL_PROFILE"))
@@ -109,7 +115,8 @@ func loadEnvironmentConfig() (environmentConfig, error) {
 			TemplateVMID: templateVMID,
 			Priority:     1,
 		},
-		Routes: routes,
+		Routes:         routes,
+		SessionRuntime: sessionRuntimeConfig,
 	}
 	if err := config.Proxmox.ValidateConfig(); err != nil {
 		return environmentConfig{}, fmt.Errorf("invalid Proxmox configuration: %w", err)
@@ -175,6 +182,27 @@ func configuredReasoningEffort(model, profile, configured string) (string, error
 	}
 	if configured != want {
 		return "", fmt.Errorf("model %q requires CODEX_MODEL_REASONING_EFFORT=%q", selected, want)
+
 	}
 	return configured, nil
+}
+
+func loadSessionRuntimeConfig() (*sessionruntime.Config, error) {
+	templateValue := strings.TrimSpace(os.Getenv("SESSION_RUNTIME_TEMPLATE_VMID"))
+	workspaceSizeValue := strings.TrimSpace(os.Getenv("SESSION_WORKSPACE_SIZE_GIB"))
+	if templateValue == "" && workspaceSizeValue == "" {
+		return nil, nil
+	}
+	if templateValue == "" || workspaceSizeValue == "" {
+		return nil, fmt.Errorf("SESSION_RUNTIME_TEMPLATE_VMID and SESSION_WORKSPACE_SIZE_GIB must be configured together")
+	}
+	templateVMID, err := strconv.Atoi(templateValue)
+	if err != nil || templateVMID < controllerTemplateVMIDMin || templateVMID > controllerTemplateVMIDMax {
+		return nil, fmt.Errorf("SESSION_RUNTIME_TEMPLATE_VMID must be an integer in %d-%d", controllerTemplateVMIDMin, controllerTemplateVMIDMax)
+	}
+	workspaceSizeGiB, err := strconv.Atoi(workspaceSizeValue)
+	if err != nil || workspaceSizeGiB < 1 {
+		return nil, fmt.Errorf("SESSION_WORKSPACE_SIZE_GIB must be a positive integer")
+	}
+	return &sessionruntime.Config{TemplateVMID: templateVMID, SystemStorage: sessionruntime.SessionSystemStorage, WorkspaceStorage: "pool", WorkspaceSizeGiB: workspaceSizeGiB}, nil
 }

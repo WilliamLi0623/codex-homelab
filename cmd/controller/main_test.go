@@ -115,3 +115,29 @@ func (testDispatcher) Dispatch(context.Context, orchestrator.Request) (orchestra
 }
 
 var _ api.Dispatcher = testDispatcher{}
+
+func TestNewHandlerFromEnvironmentConstructsOptionalSessionRuntime(t *testing.T) {
+	proxmoxServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(proxmoxServer.Close)
+	setControllerEnvironment(t)
+	t.Setenv("PROXMOX_BASE_URL", proxmoxServer.URL)
+	t.Setenv("KUBERNETES_BASE_URL", proxmoxServer.URL)
+	t.Setenv("SESSION_RUNTIME_TEMPLATE_VMID", "3900")
+	t.Setenv("SESSION_WORKSPACE_SIZE_GIB", "32")
+
+	handler, closeStore, err := newHandlerFromEnvironment(filepath.Join(t.TempDir(), "controller.sqlite"))
+	if err != nil {
+		t.Fatalf("newHandlerFromEnvironment() error = %v", err)
+	}
+	t.Cleanup(closeStore)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/ready", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("readiness status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("unauthenticated Session route status = %d, want 404", recorder.Code)
+	}
+}
