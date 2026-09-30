@@ -56,6 +56,9 @@ type Runtime interface {
 	Stop(context.Context, int) error
 	Observe(context.Context, int) (RuntimeState, error)
 	VerifyIdentity(context.Context, store.SessionRuntimeBinding) error
+	// CheckReady verifies the guest/Codex bootstrap without changing runtime
+	// state. RUNNING alone is never sufficient to accept a Session turn.
+	CheckReady(context.Context, store.SessionRuntimeBinding) error
 	Delete(context.Context, int) error
 }
 
@@ -148,6 +151,9 @@ func (m *Manager) createAllocated(ctx context.Context, binding store.SessionRunt
 	}
 	if state != RuntimeRunning {
 		return m.currentBindingWithError(ctx, binding, m.markFailed(ctx, binding, "STARTING", ErrRuntimeNotReady))
+	}
+	if err := m.runtime.CheckReady(ctx, binding); err != nil {
+		return m.currentBindingWithError(ctx, binding, m.markUnknown(ctx, binding, "STARTING", err))
 	}
 	if err := m.store.UpdateSessionRuntimeBindingState(ctx, binding.ID, "STARTING", "READY", "", m.clock()); err != nil {
 		return m.currentBindingWithError(ctx, binding, err)
@@ -285,6 +291,9 @@ func (m *Manager) Resume(ctx context.Context, sessionID, epochID string) error {
 	if state != RuntimeRunning {
 		return m.markUnknown(ctx, binding, "RESUMING", ErrRuntimeNotReady)
 	}
+	if err := m.runtime.CheckReady(ctx, binding); err != nil {
+		return m.markUnknown(ctx, binding, "RESUMING", err)
+	}
 	return m.store.UpdateSessionRuntimeBindingState(ctx, binding.ID, "RESUMING", "READY", "", m.clock())
 }
 
@@ -407,6 +416,11 @@ func (m *Manager) Reconcile(ctx context.Context, sessionID, epochID string) (sto
 		next = "DELETED"
 	default:
 		return binding, fmt.Errorf("unsupported pending operation %q: %w", binding.PendingOperation, ErrReconciliationNeeded)
+	}
+	if next == "READY" {
+		if err := m.runtime.CheckReady(ctx, binding); err != nil {
+			return binding, fmt.Errorf("verify Session runtime readiness before reconciliation: %w", err)
+		}
 	}
 	if err := m.store.UpdateSessionRuntimeBindingState(ctx, binding.ID, "UNKNOWN", next, "", m.clock()); err != nil {
 		return binding, err

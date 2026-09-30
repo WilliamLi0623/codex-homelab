@@ -299,6 +299,17 @@ func (r *ProxmoxRuntime) Start(ctx context.Context, vmid int) error {
 	return r.action(ctx, vmid, "/status/start")
 }
 
+// CheckReady remains fail-closed until the selected epoch's guest bootstrap,
+// identity adapter, and Codex App Server readiness have been verified. A PVE
+// running status or root console probe does not establish those capabilities.
+// This method is read-only so reconciliation cannot replay bootstrap effects.
+func (r *ProxmoxRuntime) CheckReady(ctx context.Context, _ store.SessionRuntimeBinding) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: Session guest/Codex bootstrap is not configured", ErrRuntimeNotReady)
+}
+
 func (r *ProxmoxRuntime) Stop(ctx context.Context, vmid int) error {
 	return r.action(ctx, vmid, "/status/stop")
 }
@@ -379,6 +390,7 @@ func (r *ProxmoxRuntime) VerifyIdentity(ctx context.Context, binding store.Sessi
 			Hostname     string `json:"hostname"`
 			Description  string `json:"description"`
 			Unprivileged int    `json:"unprivileged"`
+			RootFS       string `json:"rootfs"`
 		} `json:"data"`
 	}
 	if err := r.request(ctx, http.MethodGet, path, nil, &envelope); err != nil {
@@ -393,6 +405,9 @@ func (r *ProxmoxRuntime) VerifyIdentity(ctx context.Context, binding store.Sessi
 	}
 	if envelope.Data.Unprivileged != 0 {
 		return errors.New("Session runtime must use privileged LXC mode")
+	}
+	if !strings.HasPrefix(volumeIDFromMount(envelope.Data.RootFS), SessionSystemStorage+":") {
+		return errors.New("Session runtime root disk must be on local SSD storage")
 	}
 	if envelope.Data.Hostname != sessionHostname(binding.SessionID, binding.EpochID, binding.Generation) || owner.Version != 1 || owner.SessionID != binding.SessionID || owner.EpochID != binding.EpochID || owner.Generation != binding.Generation {
 		return errors.New("Proxmox guest ownership metadata does not match the Session binding")

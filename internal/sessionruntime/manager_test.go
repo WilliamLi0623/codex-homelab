@@ -20,6 +20,8 @@ type fakeRuntime struct {
 	stopErr           error
 	deleteErr         error
 	verifyErr         error
+	readyErr          error
+	readyCalls        int
 	workspaceVolumeID string
 	cloneCalls        int
 	startCalls        int
@@ -78,6 +80,10 @@ func (r *fakeRuntime) Observe(context.Context, int) (RuntimeState, error) { retu
 func (r *fakeRuntime) VerifyIdentity(context.Context, store.SessionRuntimeBinding) error {
 	r.verifyCalls++
 	return r.verifyErr
+}
+func (r *fakeRuntime) CheckReady(context.Context, store.SessionRuntimeBinding) error {
+	r.readyCalls++
+	return r.readyErr
 }
 func (r *fakeRuntime) Delete(context.Context, int) error {
 	r.deleteCalls++
@@ -154,6 +160,85 @@ func TestCreateStopResumeDeleteSessionRuntimeLifecycle(t *testing.T) {
 	}
 	if runtime.cloneCalls != 2 || runtime.startCalls != 3 || runtime.stopCalls != 3 || runtime.verifyCalls != 8 || runtime.deleteCalls != 2 {
 		t.Fatalf("runtime calls clone/start/stop/verify/delete=%d/%d/%d/%d/%d", runtime.cloneCalls, runtime.startCalls, runtime.stopCalls, runtime.verifyCalls, runtime.deleteCalls)
+	}
+}
+
+// Removing the runtime-readiness check must never promote a merely running
+// container to READY. Persist uncertainty without replaying its start request.
+func TestCreateRunningSessionWaitsForRuntimeReadiness(t *testing.T) {
+	runtime := &fakeRuntime{available: true, readyErr: ErrRuntimeNotReady}
+	db, manager := setupManager(t, runtime)
+	ctx := context.Background()
+	binding, err := manager.Create(ctx, CreateRequest{ID: "binding-a", SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-1"})
+	if !errors.Is(err, ErrOutcomeUnknown) || binding.State != "UNKNOWN" || binding.PendingOperation != "start" {
+		t.Fatalf("Create() binding=%+v error=%v, want UNKNOWN start rather than READY", binding, err)
+	}
+	stored, err := db.GetSessionRuntimeBinding(ctx, "session-a", "epoch-a")
+	if err != nil || stored.State != "UNKNOWN" || runtime.readyCalls != 1 {
+		t.Fatalf("stored=%+v error=%v readiness checks=%d", stored, err, runtime.readyCalls)
+	}
+	if _, err := manager.Reconcile(ctx, "session-a", "epoch-a"); !errors.Is(err, ErrRuntimeNotReady) {
+		t.Fatalf("Reconcile(unready) error=%v, want readiness rejection", err)
+	}
+	runtime.readyErr = nil
+	binding, err = manager.Reconcile(ctx, "session-a", "epoch-a")
+	if err != nil || binding.State != "READY" || runtime.cloneCalls != 1 || runtime.startCalls != 1 {
+		t.Fatalf("Reconcile(ready) binding=%+v error=%v clone/start=%d/%d", binding, err, runtime.cloneCalls, runtime.startCalls)
+	}
+}
+
+func TestResumeRunningSessionWaitsForRuntimeReadiness(t *testing.T) {
+	runtime := &fakeRuntime{available: true}
+	db, manager := setupManager(t, runtime)
+	ctx := context.Background()
+	if _, err := manager.Create(ctx, CreateRequest{ID: "binding-a", SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Stop(ctx, "session-a", "epoch-a"); err != nil {
+		t.Fatal(err)
+	}
+	runtime.readyErr = ErrRuntimeNotReady
+	if err := manager.Resume(ctx, "session-a", "epoch-a"); !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("Resume() error=%v, want UNKNOWN", err)
+	}
+	binding, err := db.GetSessionRuntimeBinding(ctx, "session-a", "epoch-a")
+	if err != nil || binding.State != "UNKNOWN" || binding.PendingOperation != "start" {
+		t.Fatalf("resumed binding=%+v error=%v, want UNKNOWN start", binding, err)
+	}
+}
+
+func TestReconcileRunningSessionRequiresReadinessForEveryPendingOperation(t *testing.T) {
+	for _, pending := range []string{"create", "start", "stop"} {
+		t.Run(pending, func(t *testing.T) {
+			runtime := &fakeRuntime{available: true, state: RuntimeRunning, readyErr: ErrRuntimeNotReady, workspaceVolumeID: "pool:subvol-4000-disk-1"}
+			db, manager := setupManager(t, runtime)
+			ctx := context.Background()
+			now := time.Now().UTC()
+			_, err := db.AllocateSessionRuntimeBinding(ctx, store.SessionRuntimeBinding{ID: "binding-a", SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-1", State: "ALLOCATING", CreatedAt: now, UpdatedAt: now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			states := []string{"ALLOCATING"}
+			if pending != "create" {
+				states = append(states, "CREATING", "STARTING")
+			}
+			if pending == "stop" {
+				states = append(states, "READY", "STOPPING")
+			}
+			states = append(states, "UNKNOWN")
+			for i := 1; i < len(states); i++ {
+				if err := db.UpdateSessionRuntimeBindingState(ctx, "binding-a", states[i-1], states[i], "", now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := manager.Reconcile(ctx, "session-a", "epoch-a"); !errors.Is(err, ErrRuntimeNotReady) {
+				t.Fatalf("Reconcile() error=%v, want readiness rejection", err)
+			}
+			binding, err := db.GetSessionRuntimeBinding(ctx, "session-a", "epoch-a")
+			if err != nil || binding.State != "UNKNOWN" || binding.PendingOperation != pending || runtime.startCalls != 0 || runtime.cloneCalls != 0 || runtime.stopCalls != 0 {
+				t.Fatalf("binding=%+v error=%v; reconciliation must retain UNKNOWN without mutation", binding, err)
+			}
+		})
 	}
 }
 

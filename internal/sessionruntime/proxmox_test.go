@@ -3,6 +3,8 @@ package sessionruntime
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +13,52 @@ import (
 
 	"github.com/WilliamLi0623/codex-homelab/internal/store"
 )
+
+func TestProxmoxRuntimeCannotClaimCodexReadinessWithoutBootstrap(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		t.Errorf("unimplemented readiness must not issue bootstrap mutations: %s %s", r.Method, r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	runtime, err := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "token", Client: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = runtime.CheckReady(context.Background(), store.SessionRuntimeBinding{VMID: 4000, SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-1"})
+	if !errors.Is(err, ErrRuntimeNotReady) || requests != 0 {
+		t.Fatalf("CheckReady() error=%v requests=%d; Codex bootstrap is not yet verified", err, requests)
+	}
+}
+
+func TestTermproxyClientFramesUseByteLengthsAndExactControlFormat(t *testing.T) {
+	text, err := encodeTermproxyInput("pwd\n")
+	if err != nil || string(text) != "0:4:pwd\n" {
+		t.Fatalf("encodeTermproxyInput(ASCII) = %q, %v", text, err)
+	}
+
+	unicode, err := encodeTermproxyInput("目录\n")
+	if err != nil || string(unicode) != "0:7:目录\n" {
+		t.Fatalf("encodeTermproxyInput(Unicode) = %q, %v; want UTF-8 byte length 7", unicode, err)
+	}
+
+	resize, err := encodeTermproxyResize(120, 40)
+	if err != nil || string(resize) != "1:120:40:" {
+		t.Fatalf("encodeTermproxyResize() = %q, %v", resize, err)
+	}
+	if got := string(termproxyPingFrame()); got != "2" {
+		t.Fatalf("termproxyPingFrame() = %q, want 2", got)
+	}
+}
+
+func TestTermproxyResizeRejectsNonPositiveDimensions(t *testing.T) {
+	for _, dimensions := range [][2]int{{0, 24}, {80, 0}, {-1, 24}, {80, -1}} {
+		if _, err := encodeTermproxyResize(dimensions[0], dimensions[1]); err == nil {
+			t.Errorf("encodeTermproxyResize(%d,%d) unexpectedly succeeded", dimensions[0], dimensions[1])
+		}
+	}
+}
 
 func TestProxmoxCloneUsesSessionRangeSSDAndDHCP(t *testing.T) {
 	var cloneForm url.Values
@@ -162,7 +210,7 @@ func TestProxmoxDeleteUsesDELETEAndIdentityRequiresExactOwnership(t *testing.T) 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/api2/json/nodes/pve-node/lxc/4001/config" && r.Method == http.MethodGet:
-			data, _ := json.Marshal(map[string]any{"data": map[string]any{"vmid": vmid, "hostname": sessionHostname("session-a", "epoch-a", "gen-1"), "description": owner, "unprivileged": unprivileged}})
+			data, _ := json.Marshal(map[string]any{"data": map[string]any{"vmid": vmid, "hostname": sessionHostname("session-a", "epoch-a", "gen-1"), "description": owner, "unprivileged": unprivileged, "rootfs": "local:4001/vm-4001-disk-0.raw,size=8G"}})
 			_, _ = w.Write(data)
 		case r.URL.Path == "/api2/json/nodes/pve-node/lxc/4001" && r.Method == http.MethodDelete:
 			deleteMethod = r.Method
@@ -196,6 +244,58 @@ func TestProxmoxDeleteUsesDELETEAndIdentityRequiresExactOwnership(t *testing.T) 
 	}
 	if err := runtime.VerifyIdentity(context.Background(), store.SessionRuntimeBinding{VMID: vmid, SessionID: "other-session", EpochID: "epoch-a", Generation: "gen-1"}); err == nil {
 		t.Fatal("VerifyIdentity() accepted mismatched Session owner")
+	}
+}
+
+func TestProxmoxIdentityRejectsRootDiskOutsideSSDStorage(t *testing.T) {
+	for _, rootfs := range []string{"", "pool:subvol-4001-disk-0,size=8G", "/pool/session-rootfs", "local-other:disk"} {
+		t.Run(rootfs, func(t *testing.T) {
+			owner, err := encodeOwnership(sessionOwnership{Version: 1, SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Fatalf("identity verification issued %s", r.Method)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"vmid": 4001, "hostname": sessionHostname("session-a", "epoch-a", "gen-1"), "description": owner, "rootfs": rootfs}})
+			}))
+			defer server.Close()
+			runtime, err := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "token", Client: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := runtime.VerifyIdentity(context.Background(), store.SessionRuntimeBinding{VMID: 4001, SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-1"}); err == nil {
+				t.Fatalf("VerifyIdentity() accepted rootfs %q outside required SSD storage", rootfs)
+			}
+		})
+	}
+}
+
+func TestProxmoxIdentityRejectsEachMismatchedEpochOwnershipField(t *testing.T) {
+	for _, owner := range []sessionOwnership{
+		{Version: 2, SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-1"},
+		{Version: 1, SessionID: "other-session", EpochID: "epoch-a", Generation: "gen-1"},
+		{Version: 1, SessionID: "session-a", EpochID: "other-epoch", Generation: "gen-1"},
+		{Version: 1, SessionID: "session-a", EpochID: "epoch-a", Generation: "other-generation"},
+	} {
+		t.Run(fmt.Sprintf("%d-%s-%s-%s", owner.Version, owner.SessionID, owner.EpochID, owner.Generation), func(t *testing.T) {
+			description, err := encodeOwnership(owner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"vmid": 4001, "hostname": sessionHostname("session-a", "epoch-a", "gen-1"), "description": description, "rootfs": "local:4001/vm-4001-disk-0.raw,size=8G"}})
+			}))
+			defer server.Close()
+			runtime, err := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "token", Client: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := runtime.VerifyIdentity(context.Background(), store.SessionRuntimeBinding{VMID: 4001, SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-1"}); err == nil {
+				t.Fatal("VerifyIdentity() accepted mismatched epoch ownership")
+			}
+		})
 	}
 }
 
