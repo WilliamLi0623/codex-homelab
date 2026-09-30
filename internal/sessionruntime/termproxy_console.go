@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -52,6 +53,55 @@ type termproxySession struct {
 	Ticket string `json:"ticket"`
 	Port   int    `json:"port"`
 	UPID   string `json:"upid"`
+}
+
+func (session *termproxySession) UnmarshalJSON(data []byte) error {
+	var decoded struct {
+		User   string          `json:"user"`
+		Ticket string          `json:"ticket"`
+		Port   json.RawMessage `json:"port"`
+		UPID   string          `json:"upid"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return errors.New("invalid termproxy response")
+	}
+	port, err := parseTermproxyPort(decoded.Port)
+	if err != nil {
+		return err
+	}
+	session.User = decoded.User
+	session.Ticket = decoded.Ticket
+	session.Port = port
+	session.UPID = decoded.UPID
+	return nil
+}
+
+func parseTermproxyPort(raw json.RawMessage) (int, error) {
+	invalid := errors.New("termproxy port must be decimal and in range 5900-5999")
+	value := bytes.TrimSpace(raw)
+	if len(value) == 0 {
+		return 0, invalid
+	}
+	if value[0] == '"' {
+		var text string
+		if err := json.Unmarshal(value, &text); err != nil {
+			return 0, invalid
+		}
+		value = []byte(text)
+	}
+	if len(value) == 0 {
+		return 0, invalid
+	}
+	for _, digit := range value {
+		if digit < '0' || digit > '9' {
+			return 0, invalid
+		}
+	}
+	port, err := strconv.Atoi(string(value))
+	if err != nil || port < 5900 || port > 5999 {
+		return 0, invalid
+	}
+	return port, nil
 }
 
 // ProbeConsole performs a fixed, read-only guest identity probe. It does not
@@ -113,7 +163,7 @@ func (r *ProxmoxRuntime) ProbeConsole(ctx context.Context, binding store.Session
 		return empty, ErrConsoleHandshake
 	}
 	session := envelope.Data
-	if session.User == "" || session.Ticket == "" || session.UPID == "" || session.Port < 1 || session.Port > 65535 {
+	if session.User == "" || session.Ticket == "" || session.UPID == "" || session.Port < 5900 || session.Port > 5999 {
 		return empty, ErrConsoleHandshake
 	}
 

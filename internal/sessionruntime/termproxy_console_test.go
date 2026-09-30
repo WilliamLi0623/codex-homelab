@@ -26,6 +26,7 @@ type consoleTestOptions struct {
 	missingMode  bool
 	owner        string
 	vmid         int
+	portJSON     json.RawMessage
 	unprivileged int
 	state        string
 	authReply    string
@@ -57,6 +58,9 @@ func newConsoleTestRuntime(t *testing.T, options *consoleTestOptions) (*ProxmoxR
 	}
 	if options.vmid == 0 {
 		options.vmid = 4005
+	}
+	if len(options.portJSON) == 0 {
+		options.portJSON = json.RawMessage("5905")
 	}
 	mux := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api2/json/nodes/pve-node/lxc/4005/vncwebsocket" {
@@ -140,7 +144,13 @@ func newConsoleTestRuntime(t *testing.T, options *consoleTestOptions) (*ProxmoxR
 			_, _ = w.Write(data)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/termproxy"):
 			options.postCalls++
-			_, _ = w.Write([]byte(`{"data":{"user":"root@pam","ticket":"ticket-secret","port":5905,"upid":"UPID:node:termproxy"}}`))
+			data, _ := json.Marshal(map[string]any{"data": map[string]json.RawMessage{
+				"user":   json.RawMessage(`"root@pam"`),
+				"ticket": json.RawMessage(`"ticket-secret"`),
+				"port":   options.portJSON,
+				"upid":   json.RawMessage(`"UPID:node:termproxy"`),
+			}})
+			_, _ = w.Write(data)
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
@@ -161,7 +171,7 @@ func consoleOutput(conn *websocket.Conn, output string) {
 }
 
 func TestProbeConsoleUsesBinaryTermproxyAndReturnsIsolatedIdentity(t *testing.T) {
-	options := &consoleTestOptions{authSplit: true}
+	options := &consoleTestOptions{authSplit: true, portJSON: json.RawMessage(`"5905"`)}
 	options.terminal = func(conn *websocket.Conn, command string) {
 		frame := strings.TrimPrefix(command, "0:")
 		_, encoded, ok := strings.Cut(frame, ":")
@@ -207,6 +217,40 @@ func TestProbeConsoleUsesBinaryTermproxyAndReturnsIsolatedIdentity(t *testing.T)
 	}
 	if !strings.HasSuffix(options.gotCommand, "\n") {
 		t.Fatalf("termproxy command has no execution newline")
+	}
+}
+
+func TestProbeConsoleRejectsMalformedTermproxyPortsBeforeWebSocket(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "boolean", raw: `true`},
+		{name: "fraction", raw: `5905.5`},
+		{name: "exponent", raw: `5.905e3`},
+		{name: "non-decimal string", raw: `"59x5"`},
+		{name: "below range", raw: `5899`},
+		{name: "above range", raw: `6000`},
+		{name: "out of range string", raw: `"70000"`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			options := &consoleTestOptions{portJSON: json.RawMessage(test.raw)}
+			runtime, server := newConsoleTestRuntime(t, options)
+			defer server.Close()
+			_, err := runtime.ProbeConsole(context.Background(), consoleTestBinding())
+			if !errors.Is(err, ErrConsoleHandshake) {
+				t.Fatalf("ProbeConsole() error = %v, want generic termproxy handshake classification", err)
+			}
+			if options.postCalls != 1 || options.wsCalls != 0 {
+				t.Fatalf("termproxy POSTs=%d WebSocket requests=%d; want one POST and no WebSocket", options.postCalls, options.wsCalls)
+			}
+			for _, secret := range []string{consoleTestToken, consoleTestTicket, "vncticket=", strings.Trim(test.raw, `"`)} {
+				if secret != "" && strings.Contains(err.Error(), secret) {
+					t.Fatalf("ProbeConsole() error leaked sensitive or raw value %q", secret)
+				}
+			}
+		})
 	}
 }
 
