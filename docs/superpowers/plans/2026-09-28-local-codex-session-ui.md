@@ -1,5 +1,7 @@
 # Local Quota-Routed Codex Session UI Implementation Plan
 
+> **Historical prototype:** P28 supersedes this Windows-local, quota-routed deployment target. Preserve this plan and its evidence; do not use it as the production deployment plan. See [P28 Linux Session Control Plane](2026-09-30-p28-linux-multi-backend-codex-session-control-plane.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` for independent implementation slices where available; otherwise use `superpowers:executing-plans`. Execute in order and keep each task reviewable.
 
 **Goal:** Add a separate loopback-only browser UI for Codex App Server sessions. Each new thread must use the existing authoritative quota coordinator to select and pin the approved provider/model/reasoning route; native Codex Desktop and the existing Controller task UI remain unchanged.

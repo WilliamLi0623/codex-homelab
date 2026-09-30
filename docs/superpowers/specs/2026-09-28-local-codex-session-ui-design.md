@@ -1,5 +1,7 @@
 # Local Quota-Routed Codex Session UI Design
 
+> **Historical prototype:** P28 supersedes this Windows-local, quota-routed deployment target. Preserve the design and its evidence; do not treat it as the production target. See [P28 Linux Session Control Plane](../plans/2026-09-30-p28-linux-multi-backend-codex-session-control-plane.md).
+
 ## Status and scope
 
 This design adds a local user interface for creating and interacting with Codex
