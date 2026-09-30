@@ -1,0 +1,270 @@
+package sessionruntime
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+
+	"github.com/WilliamLi0623/codex-homelab/internal/store"
+)
+
+func TestProxmoxCloneUsesSessionRangeSSDAndDHCP(t *testing.T) {
+	var cloneForm url.Values
+	var dhcpForm url.Values
+	workspaceAttached := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "PVEAPIToken=test-token" {
+			t.Errorf("Authorization = %q, want configured API token", r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/pve-node/lxc/3900/config":
+			_, _ = w.Write([]byte(`{"data":{"template":1}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api2/json/nodes/pve-node/lxc/3900/clone":
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("ParseForm: %v", err)
+			}
+			cloneForm = r.Form
+			_, _ = w.Write([]byte(`{"data":"UPID:node:task"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/pve-node/tasks/UPID:node:task/status":
+			_, _ = w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"OK"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/pve-node/lxc/4000/config":
+			if workspaceAttached {
+				_, _ = w.Write([]byte(`{"data":{"net0":"name=eth0,bridge=vmbr0,ip=192.0.2.20/24,tag=20","mp0":"pool:subvol-4000-disk-1,mp=/workspace,backup=1"}}`))
+			} else {
+				_, _ = w.Write([]byte(`{"data":{"net0":"name=eth0,bridge=vmbr0,ip=192.0.2.20/24,tag=20"}}`))
+			}
+		case r.Method == http.MethodPut && r.URL.Path == "/api2/json/nodes/pve-node/lxc/4000/config":
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("ParseForm: %v", err)
+			}
+			dhcpForm = r.Form
+			if r.Form.Get("mp0") != "pool:32,mp=/workspace,backup=1" {
+				t.Errorf("mp0 = %q, want workspace volume allocation on pool", r.Form.Get("mp0"))
+			}
+			workspaceAttached = true
+			_, _ = w.Write([]byte(`{"data":null}`))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	runtime, err := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "PVEAPIToken=test-token", Client: server.Client()})
+	if err != nil {
+		t.Fatalf("NewProxmoxRuntime() error = %v", err)
+	}
+	workspaceVolumeID, err := runtime.Clone(context.Background(), RuntimeRequest{VMID: 4000, SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-1", TemplateVMID: 3900, SystemStorage: "local", WorkspaceStorage: "pool", WorkspaceSizeGiB: 32, Hostname: "codex-session-123"})
+	if err != nil {
+		t.Fatalf("Clone() error = %v", err)
+	}
+	if workspaceVolumeID != "pool:subvol-4000-disk-1" {
+		t.Fatalf("Clone() workspace volume = %q", workspaceVolumeID)
+	}
+	if cloneForm.Get("newid") != "4000" || cloneForm.Get("storage") != "local" || cloneForm.Get("full") != "1" || cloneForm.Get("hostname") != "codex-session-123" {
+		t.Fatalf("clone form = %v, want dedicated VMID and SSD root storage", cloneForm)
+	}
+	if !strings.HasPrefix(cloneForm.Get("description"), "codex-session:v1:") {
+		t.Fatalf("clone ownership metadata = %q", cloneForm.Get("description"))
+	}
+	if dhcpForm.Get("net0") != "name=eth0,bridge=vmbr0,ip=dhcp,tag=20" {
+		t.Fatalf("DHCP network config = %q", dhcpForm.Get("net0"))
+	}
+}
+
+func TestProxmoxTargetAvailabilityAndRuntimeRangeAreIsolated(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api2/json/cluster/resources" {
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"data":[{"vmid":4000},{"vmid":3010}]}`))
+	}))
+	defer server.Close()
+	runtime, err := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "token", Client: server.Client()})
+	if err != nil {
+		t.Fatalf("NewProxmoxRuntime() error = %v", err)
+	}
+	if available, err := runtime.TargetAvailable(context.Background(), 4000); err != nil || available {
+		t.Fatalf("TargetAvailable(4000) = %v, %v; want occupied", available, err)
+	}
+	if _, err := runtime.TargetAvailable(context.Background(), 3010); err == nil {
+		t.Fatal("worker VMID was accepted by Session runtime adapter")
+	}
+}
+
+func TestProxmoxRuntimeRejectsInsecureRemoteHTTP(t *testing.T) {
+	if _, err := NewProxmoxRuntime(ProxmoxConfig{BaseURL: "http://pve.example.invalid:8006", Node: "pve-node", Token: "secret"}); err == nil {
+		t.Fatal("Proxmox API token would be sent to a non-loopback HTTP endpoint")
+	}
+}
+
+func TestProxmoxCloneRequiresConfiguredSourceToBeATemplate(t *testing.T) {
+	cloneCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/pve-node/lxc/3900/config" {
+			_, _ = w.Write([]byte(`{"data":{"template":0}}`))
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/api2/json/nodes/pve-node/lxc/3900/clone" {
+			cloneCalls++
+		}
+		t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	runtime, err := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "token", Client: server.Client()})
+	if err != nil {
+		t.Fatalf("NewProxmoxRuntime() error = %v", err)
+	}
+	_, err = runtime.Clone(context.Background(), RuntimeRequest{VMID: 4000, SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-1", TemplateVMID: 3900, SystemStorage: "local", WorkspaceStorage: "pool", WorkspaceSizeGiB: 32, Hostname: "codex-session-123"})
+	if err == nil {
+		t.Fatal("Clone() succeeded from a non-template LXC")
+	}
+	if cloneCalls != 0 {
+		t.Fatalf("clone API calls = %d, want zero for a non-template source", cloneCalls)
+	}
+}
+
+func TestObserveDoesNotTreatAuthorizationFailureAsMissingRuntime(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api2/json/nodes/pve-node/lxc/4002/status/current":
+			http.Error(w, "permission denied", http.StatusForbidden)
+		case "/api2/json/cluster/resources":
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	runtime, err := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "token", Client: server.Client()})
+	if err != nil {
+		t.Fatalf("NewProxmoxRuntime() error = %v", err)
+	}
+	state, err := runtime.Observe(context.Background(), 4002)
+	if err == nil || state == RuntimeMissing {
+		t.Fatalf("Observe() = %s, %v; authorization failure must not imply missing runtime", state, err)
+	}
+}
+
+func TestProxmoxDeleteUsesDELETEAndIdentityRequiresExactOwnership(t *testing.T) {
+	deleteMethod := ""
+	unprivileged := 0
+	const vmid = 4001
+	owner, err := encodeOwnership(sessionOwnership{Version: 1, SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-1"})
+	if err != nil {
+		t.Fatalf("encodeOwnership() error = %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api2/json/nodes/pve-node/lxc/4001/config" && r.Method == http.MethodGet:
+			data, _ := json.Marshal(map[string]any{"data": map[string]any{"vmid": vmid, "hostname": sessionHostname("session-a", "epoch-a", "gen-1"), "description": owner, "unprivileged": unprivileged}})
+			_, _ = w.Write(data)
+		case r.URL.Path == "/api2/json/nodes/pve-node/lxc/4001" && r.Method == http.MethodDelete:
+			deleteMethod = r.Method
+			_, _ = w.Write([]byte(`{"data":"UPID:node:delete"}`))
+		case r.URL.Path == "/api2/json/nodes/pve-node/tasks/UPID:node:delete/status":
+			_, _ = w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"OK"}}`))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	runtime, err := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "token", Client: server.Client()})
+	if err != nil {
+		t.Fatalf("NewProxmoxRuntime() error = %v", err)
+	}
+	binding := store.SessionRuntimeBinding{VMID: vmid, SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-1"}
+	if err := runtime.VerifyIdentity(context.Background(), binding); err != nil {
+		t.Fatalf("VerifyIdentity() error = %v", err)
+	}
+	unprivileged = 1
+	if err := runtime.VerifyIdentity(context.Background(), binding); err == nil {
+		t.Fatal("VerifyIdentity() accepted unprivileged Session LXC")
+	}
+	unprivileged = 0
+	if err := runtime.Delete(context.Background(), vmid); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleteMethod != http.MethodDelete {
+		t.Fatalf("delete HTTP method = %q", deleteMethod)
+	}
+	if err := runtime.VerifyIdentity(context.Background(), store.SessionRuntimeBinding{VMID: vmid, SessionID: "other-session", EpochID: "epoch-a", Generation: "gen-1"}); err == nil {
+		t.Fatal("VerifyIdentity() accepted mismatched Session owner")
+	}
+}
+
+func TestDetachWorkspaceVerifiesUnusedVolumeAndKeepsItOnPool(t *testing.T) {
+	attached := true
+	const volumeID = "pool:subvol-4003-disk-1"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/pve-node/lxc/4003/config":
+			if attached {
+				_, _ = w.Write([]byte(`{"data":{"mp0":"pool:subvol-4003-disk-1,mp=/workspace,backup=1"}}`))
+			} else {
+				_, _ = w.Write([]byte(`{"data":{"unused0":"pool:subvol-4003-disk-1"}}`))
+			}
+		case r.Method == http.MethodPut && r.URL.Path == "/api2/json/nodes/pve-node/lxc/4003/config":
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("ParseForm: %v", err)
+			}
+			if r.Form.Get("delete") != "mp0" {
+				t.Errorf("delete config = %v, want delete=mp0", r.Form)
+			}
+			attached = false
+			_, _ = w.Write([]byte(`{"data":null}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/pve-node/storage/pool/content":
+			if r.URL.Query().Get("content") != "rootdir" {
+				t.Errorf("storage content filter = %q", r.URL.Query().Get("content"))
+			}
+			_, _ = w.Write([]byte(`{"data":[{"volid":"pool:subvol-4003-disk-1"}]}`))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	runtime, err := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "token", Client: server.Client()})
+	if err != nil {
+		t.Fatalf("NewProxmoxRuntime() error = %v", err)
+	}
+	if err := runtime.DetachWorkspace(context.Background(), 4003, volumeID); err != nil {
+		t.Fatalf("DetachWorkspace() error = %v", err)
+	}
+	if exists, err := runtime.WorkspaceVolumeExists(context.Background(), volumeID); err != nil || !exists {
+		t.Fatalf("WorkspaceVolumeExists() = %v, %v; want preserved workspace volume", exists, err)
+	}
+}
+
+func TestDetachWorkspaceRejectsSimilarButDifferentMountPath(t *testing.T) {
+	putCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/pve-node/lxc/4004/config" {
+			_, _ = w.Write([]byte(`{"data":{"mp0":"pool:subvol-4004-disk-1,mp=/workspace-other,backup=1"}}`))
+			return
+		}
+		if r.Method == http.MethodPut && r.URL.Path == "/api2/json/nodes/pve-node/lxc/4004/config" {
+			putCalls++
+		}
+		t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	runtime, err := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "token", Client: server.Client()})
+	if err != nil {
+		t.Fatalf("NewProxmoxRuntime() error = %v", err)
+	}
+	err = runtime.DetachWorkspace(context.Background(), 4004, "pool:subvol-4004-disk-1")
+	if err == nil {
+		t.Fatal("DetachWorkspace() accepted a mount path other than /workspace")
+	}
+	if putCalls != 0 {
+		t.Fatalf("workspace detach API calls = %d, want zero for a mismatched mount path", putCalls)
+	}
+}

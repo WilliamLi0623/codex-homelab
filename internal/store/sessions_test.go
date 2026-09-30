@@ -20,6 +20,12 @@ func TestSessionAndEpochSurviveStoreRestart(t *testing.T) {
 	if err := store.CreateSession(ctx, session); err != nil {
 		t.Fatalf("CreateSession() error = %v", err)
 	}
+	if err := store.SetSessionWorkspaceVolume(ctx, session.ID, "pool:subvol-4000-disk-1"); err != nil {
+		t.Fatalf("SetSessionWorkspaceVolume() error = %v", err)
+	}
+	if err := store.SetSessionWorkspaceVolume(ctx, session.ID, "pool:subvol-4000-disk-2"); err == nil {
+		t.Fatal("SetSessionWorkspaceVolume() replaced the existing durable workspace volume")
+	}
 	epoch := SessionEpoch{ID: "epoch-1", SessionID: session.ID, Sequence: 1, Backend: "codex-a", IdentityID: "identity-a", State: "ACTIVE", StartedAt: now}
 	if err := store.CreateSessionEpoch(ctx, epoch); err != nil {
 		t.Fatalf("CreateSessionEpoch() error = %v", err)
@@ -38,7 +44,7 @@ func TestSessionAndEpochSurviveStoreRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSession() error = %v", err)
 	}
-	if gotSession.ID != session.ID || gotSession.Title != session.Title || gotSession.PreferredBackend != session.PreferredBackend {
+	if gotSession.ID != session.ID || gotSession.Title != session.Title || gotSession.PreferredBackend != session.PreferredBackend || gotSession.WorkspaceVolumeID != "pool:subvol-4000-disk-1" {
 		t.Fatalf("GetSession() = %+v, want %+v", gotSession, session)
 	}
 	epochs, err := store.ListSessionEpochs(ctx, session.ID)

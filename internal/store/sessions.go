@@ -19,6 +19,7 @@ type Session struct {
 	Title             string
 	Repository        string
 	WorkspaceID       string
+	WorkspaceVolumeID string
 	State             string
 	PreferredBackend  string
 	AutomaticFailover bool
@@ -72,8 +73,9 @@ func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
 	var repository, workspace sql.NullString
 	var automaticFailover int
 	var createdAt, updatedAt string
-	err := s.db.QueryRowContext(ctx, `SELECT id, title, repository_id, workspace_id, state, preferred_backend, automatic_failover, created_at, updated_at
-		FROM sessions WHERE id = ?`, id).Scan(&session.ID, &session.Title, &repository, &workspace, &session.State, &session.PreferredBackend, &automaticFailover, &createdAt, &updatedAt)
+	var workspaceVolume sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT id, title, repository_id, workspace_id, workspace_volume_id, state, preferred_backend, automatic_failover, created_at, updated_at
+		FROM sessions WHERE id = ?`, id).Scan(&session.ID, &session.Title, &repository, &workspace, &workspaceVolume, &session.State, &session.PreferredBackend, &automaticFailover, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrSessionNotFound
 	}
@@ -82,6 +84,7 @@ func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
 	}
 	session.Repository = repository.String
 	session.WorkspaceID = workspace.String
+	session.WorkspaceVolumeID = workspaceVolume.String
 	session.AutomaticFailover = automaticFailover != 0
 	if session.CreatedAt, err = parseSessionTime(createdAt); err != nil {
 		return Session{}, fmt.Errorf("parse session created_at: %w", err)
@@ -90,6 +93,31 @@ func (s *Store) GetSession(ctx context.Context, id string) (Session, error) {
 		return Session{}, fmt.Errorf("parse session updated_at: %w", err)
 	}
 	return session, nil
+}
+
+func (s *Store) SetSessionWorkspaceVolume(ctx context.Context, sessionID, volumeID string) error {
+	if strings.TrimSpace(sessionID) != sessionID || sessionID == "" || strings.TrimSpace(volumeID) != volumeID || !strings.HasPrefix(volumeID, "pool:") {
+		return fmt.Errorf("%w: session ID and Proxmox pool volume ID are required", ErrSessionInvalid)
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET workspace_volume_id = ?
+		WHERE id = ? AND (workspace_volume_id IS NULL OR workspace_volume_id = ?)`, volumeID, sessionID, volumeID)
+	if err != nil {
+		return fmt.Errorf("persist Session workspace volume: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read Session workspace volume update count: %w", err)
+	}
+	if updated == 1 {
+		return nil
+	}
+	var exists int
+	if err := s.db.QueryRowContext(ctx, "SELECT 1 FROM sessions WHERE id = ?", sessionID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		return ErrSessionNotFound
+	} else if err != nil {
+		return fmt.Errorf("check Session for workspace volume conflict: %w", err)
+	}
+	return fmt.Errorf("%w: Session workspace volume is already bound to a different Proxmox volume", ErrSessionInvalid)
 }
 
 func (s *Store) CreateSessionEpoch(ctx context.Context, epoch SessionEpoch) error {

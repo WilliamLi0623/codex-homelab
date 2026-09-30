@@ -40,10 +40,16 @@ Preserve P25/P26 Controller, K3s, worker isolation, task UI/MCP boundaries, idem
 
 ## Task 4 — Add persistent Session-LXC capacity
 
-- Perform read-only Proxmox inventory before selecting a Session VMID range or template.
+- Read-only Proxmox inventory on 2026-09-30 found no current cluster resources in VMID 4000–4999; `/cluster/nextid --vmid 4000` returned 4000. Reserve 4000–4999 for `interactive-session-lxc`, separate from worker VMIDs 3000–3899, templates 3900–3902, and existing special LXC3990. Keep allocator boundaries explicit and collision-tested.
+- Use LXC3900 (`codex-template-base`) as the initial Session template candidate; verify its current CLI/App Server contents before cloning. LXC3901 is the fixed template and LXC3902 the GLM template; do not mutate templates in this task.
+- Storage inventory showed `local` at `/var/lib/vz` on the root ext4 filesystem backed by NVMe (`ROTA=0`), while `/pool` is an ONLINE ZFS pool of two HDD mirrors (`ROTA=1`). Put Session system/root disks on `local` SSD; keep workspace/data on `pool` only when the lifecycle implements a separate durable data mount. New dynamically allocated Session LXCs use DHCP, consistent with the user's fixed-vs-dynamic IP rule.
+- Read-only rootfs inventory found no Codex CLI/App Server executable or root auth file in templates 3900–3902. Template 3900 is stopped and PVE rejects starting template guests; inspection mounts were unmounted and all templates remained stopped. Do not treat the candidate as Codex-ready: provide a verified runtime bootstrap or a different approved source before Task 5.
+- Keep committed migration 7 immutable. Add runtime-binding reservation/history constraints in migration 8, including reserved-range DB guards, single current binding per epoch, unique live VMID, archived deleted runtime generations, and restart-safe replacement.
 - Add a dedicated `interactive-session-lxc` capacity class and lifecycle, separate from bounded worker cleanup.
 - Implement allocate/create/observe/start/stop/resume/replace/delete/reconcile with Controller ownership and UNKNOWN safety.
 - Keep workspaces recoverable independently of a disposable runtime LXC.
+
+**Current implementation checkpoint:** the SQLite reservation/history slice and isolated Proxmox Session runtime manager/adapter exist in source with fake lifecycle and HTTP tests. The manager owns only VMIDs 4000–4999, verifies the configured source is a Proxmox template before cloning, keeps the root disk on `local`, forces DHCP, and allocates a separate persistent workspace volume on `pool`; deletion/replacement detaches and verifies the exact `/workspace` mount before destroying the LXC, and replacement keeps the same VMID reserved across generations. The unsafe legacy Store API that could reassign a deleted binding to another VMID has been removed. Controller/API wiring and live Proxmox create/start/stop/delete remain open; no live Proxmox mutation has run.
 
 **Acceptance:** create → start → stop → resume → replace runtime → delete completes without VMID collision or accidental worker cleanup.
 
