@@ -17,6 +17,8 @@ import (
 	"github.com/WilliamLi0623/codex-homelab/internal/store"
 )
 
+const SessionPoolName = "codex-sessions"
+
 type ProxmoxConfig struct {
 	BaseURL string
 	Node    string
@@ -72,17 +74,29 @@ func (r *ProxmoxRuntime) TargetAvailable(ctx context.Context, vmid int) (bool, e
 		return false, fmt.Errorf("VMID %d outside interactive Session range", vmid)
 	}
 	var envelope struct {
-		Data []struct {
-			VMID int `json:"vmid"`
-		} `json:"data"`
+		Data json.RawMessage `json:"data"`
 	}
-	if err := r.request(ctx, http.MethodGet, "/cluster/resources?type=vm", nil, &envelope); err != nil {
-		return false, fmt.Errorf("read Proxmox VM inventory: %w", err)
-	}
-	for _, resource := range envelope.Data {
-		if resource.VMID == vmid {
+	// Inventory is permission-filtered: a guest outside this token's pool can
+	// be invisible but still occupy the global VMID. nextid checks all guests.
+	// This is only a preflight; the clone API remains the atomic collision gate.
+	path := "/cluster/nextid?vmid=" + strconv.Itoa(vmid)
+	if err := r.request(ctx, http.MethodGet, path, nil, &envelope); err != nil {
+		var statusErr *proxmoxHTTPError
+		var failure struct {
+			Errors map[string]string `json:"errors"`
+		}
+		if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusBadRequest && json.Unmarshal([]byte(statusErr.Body), &failure) == nil && failure.Errors["vmid"] == fmt.Sprintf("VM %d already exists", vmid) {
 			return false, nil
 		}
+		return false, fmt.Errorf("assert global Proxmox VMID availability: %w", err)
+	}
+	value := strings.TrimSpace(string(envelope.Data))
+	var decimal string
+	if json.Unmarshal(envelope.Data, &decimal) == nil {
+		value = decimal
+	}
+	if value != strconv.Itoa(vmid) {
+		return false, errors.New("Proxmox global availability check returned an invalid or different VMID")
 	}
 	return true, nil
 }
@@ -111,6 +125,7 @@ func (r *ProxmoxRuntime) Clone(ctx context.Context, request RuntimeRequest) (str
 		"full":        {"1"},
 		"hostname":    {request.Hostname},
 		"storage":     {request.SystemStorage},
+		"pool":        {SessionPoolName},
 		"description": {ownership},
 	}
 	upid, err := r.postTask(ctx, "/nodes/"+url.PathEscape(r.node)+"/lxc/"+strconv.Itoa(request.TemplateVMID)+"/clone", form)
@@ -369,14 +384,14 @@ func (r *ProxmoxRuntime) Observe(ctx context.Context, vmid int) (RuntimeState, e
 			return RuntimeUnknown, err
 		}
 	}
-	available, inventoryErr := r.TargetAvailable(ctx, vmid)
-	if inventoryErr != nil {
-		return RuntimeUnknown, inventoryErr
+	available, availabilityErr := r.TargetAvailable(ctx, vmid)
+	if availabilityErr != nil {
+		return RuntimeUnknown, availabilityErr
 	}
 	if available {
 		return RuntimeMissing, nil
 	}
-	return RuntimeUnknown, fmt.Errorf("Proxmox status request failed while VMID %d remains in inventory", vmid)
+	return RuntimeUnknown, fmt.Errorf("Proxmox status request failed while VMID %d remains globally occupied", vmid)
 }
 
 func (r *ProxmoxRuntime) VerifyIdentity(ctx context.Context, binding store.SessionRuntimeBinding) error {
@@ -490,11 +505,21 @@ func (r *ProxmoxRuntime) request(ctx context.Context, method, path string, form 
 	if output == nil || response.StatusCode == http.StatusNoContent {
 		return nil
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(output); err != nil {
-		if method != http.MethodGet {
-			return fmt.Errorf("%w: decode Proxmox %s %s response: %v", ErrOutcomeUnknown, method, path, err)
+	// Read one bounded, complete JSON document. Decoding only its first value
+	// would incorrectly accept trailing garbage or an oversized response.
+	payload, decodeErr := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
+	if decodeErr == nil {
+		if len(payload) > 1<<20 {
+			decodeErr = errors.New("Proxmox response exceeds the JSON size limit")
+		} else {
+			decodeErr = json.Unmarshal(payload, output)
 		}
-		return fmt.Errorf("decode Proxmox %s %s response: %w", method, path, err)
+	}
+	if decodeErr != nil {
+		if method != http.MethodGet {
+			return fmt.Errorf("%w: decode Proxmox %s %s response: %v", ErrOutcomeUnknown, method, path, decodeErr)
+		}
+		return fmt.Errorf("decode Proxmox %s %s response: %w", method, path, decodeErr)
 	}
 	return nil
 }

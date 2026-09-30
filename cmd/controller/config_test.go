@@ -92,6 +92,7 @@ func setControllerEnvironment(t *testing.T) {
 	t.Setenv("PROXMOX_BASE_URL", "https://proxmox.example")
 	t.Setenv("PROXMOX_NODE", "pve-node")
 	t.Setenv("PROXMOX_TOKEN", "proxmox-token")
+	t.Setenv("SESSION_PROXMOX_TOKEN", "")
 	t.Setenv("PROXMOX_TEMPLATE_VMID", "3900")
 	t.Setenv("KUBERNETES_BASE_URL", "https://kubernetes.example")
 	t.Setenv("KUBERNETES_NAMESPACE", "codex")
@@ -183,6 +184,7 @@ func TestLoadEnvironmentConfigLeavesSessionRuntimeDisabledByDefault(t *testing.T
 	setControllerEnvironment(t)
 	t.Setenv("SESSION_RUNTIME_TEMPLATE_VMID", "")
 	t.Setenv("SESSION_WORKSPACE_SIZE_GIB", "")
+	t.Setenv("SESSION_PROXMOX_TOKEN", "staged-session-token")
 
 	cfg, err := loadEnvironmentConfig()
 	if err != nil {
@@ -191,12 +193,16 @@ func TestLoadEnvironmentConfigLeavesSessionRuntimeDisabledByDefault(t *testing.T
 	if cfg.SessionRuntime != nil {
 		t.Fatalf("Session runtime config = %+v, want disabled", cfg.SessionRuntime)
 	}
+	if cfg.SessionProxmoxToken != "" {
+		t.Fatal("staged Session Proxmox token was retained while Session runtime was disabled")
+	}
 }
 
 func TestLoadEnvironmentConfigLoadsSessionRuntimeSeparatelyFromWorkerPool(t *testing.T) {
 	setControllerEnvironment(t)
 	t.Setenv("SESSION_RUNTIME_TEMPLATE_VMID", "3901")
 	t.Setenv("SESSION_WORKSPACE_SIZE_GIB", "48")
+	t.Setenv("SESSION_PROXMOX_TOKEN", "session-proxmox-token")
 
 	cfg, err := loadEnvironmentConfig()
 	if err != nil {
@@ -210,6 +216,43 @@ func TestLoadEnvironmentConfigLoadsSessionRuntimeSeparatelyFromWorkerPool(t *tes
 	}
 	if cfg.CapacityConfig.TemplateVMID != 3900 {
 		t.Fatalf("worker template VMID changed to %d", cfg.CapacityConfig.TemplateVMID)
+	}
+	if cfg.Proxmox.Token != "proxmox-token" || cfg.SessionProxmoxToken != "session-proxmox-token" {
+		t.Fatal("worker and Session Proxmox credentials were not kept separate")
+	}
+}
+
+func TestLoadEnvironmentConfigRequiresSessionTokenWhenSessionRuntimeEnabled(t *testing.T) {
+	setControllerEnvironment(t)
+	t.Setenv("SESSION_RUNTIME_TEMPLATE_VMID", "3901")
+	t.Setenv("SESSION_WORKSPACE_SIZE_GIB", "48")
+	const workerToken = "worker-proxmox-secret"
+	t.Setenv("PROXMOX_TOKEN", workerToken)
+	t.Setenv("SESSION_PROXMOX_TOKEN", "")
+
+	_, err := loadEnvironmentConfig()
+	if err == nil {
+		t.Fatal("Session runtime without SESSION_PROXMOX_TOKEN was accepted")
+	}
+	if strings.Contains(err.Error(), workerToken) {
+		t.Fatalf("configuration error leaked worker token: %q", err)
+	}
+}
+
+func TestLoadEnvironmentConfigRejectsReusedWorkerTokenForSessionRuntime(t *testing.T) {
+	setControllerEnvironment(t)
+	t.Setenv("SESSION_RUNTIME_TEMPLATE_VMID", "3901")
+	t.Setenv("SESSION_WORKSPACE_SIZE_GIB", "48")
+	const sharedToken = "shared-proxmox-secret"
+	t.Setenv("PROXMOX_TOKEN", sharedToken)
+	t.Setenv("SESSION_PROXMOX_TOKEN", sharedToken)
+
+	_, err := loadEnvironmentConfig()
+	if err == nil {
+		t.Fatal("Session runtime accepted the worker Proxmox token")
+	}
+	if strings.Contains(err.Error(), sharedToken) {
+		t.Fatalf("configuration error leaked shared token: %q", err)
 	}
 }
 

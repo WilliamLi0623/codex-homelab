@@ -21,11 +21,12 @@ const (
 )
 
 type environmentConfig struct {
-	Proxmox        capacity.ProxmoxConfig
-	Kubernetes     k3s.KubernetesConfig
-	CapacityConfig orchestrator.CapacityAdapterConfig
-	Routes         modelrouter.RouteConfig
-	SessionRuntime *sessionruntime.Config
+	Proxmox             capacity.ProxmoxConfig
+	Kubernetes          k3s.KubernetesConfig
+	CapacityConfig      orchestrator.CapacityAdapterConfig
+	Routes              modelrouter.RouteConfig
+	SessionRuntime      *sessionruntime.Config
+	SessionProxmoxToken string
 }
 
 func loadEnvironmentConfig() (environmentConfig, error) {
@@ -54,6 +55,16 @@ func loadEnvironmentConfig() (environmentConfig, error) {
 	sessionRuntimeConfig, err := loadSessionRuntimeConfig()
 	if err != nil {
 		return environmentConfig{}, err
+	}
+	sessionProxmoxToken := ""
+	if sessionRuntimeConfig != nil {
+		sessionProxmoxToken = strings.TrimSpace(os.Getenv("SESSION_PROXMOX_TOKEN"))
+		if sessionProxmoxToken == "" {
+			return environmentConfig{}, fmt.Errorf("SESSION_PROXMOX_TOKEN is required when Session runtime is configured")
+		}
+		if sessionProxmoxToken == values["PROXMOX_TOKEN"] {
+			return environmentConfig{}, fmt.Errorf("SESSION_PROXMOX_TOKEN must be distinct from PROXMOX_TOKEN")
+		}
 	}
 	model := strings.TrimSpace(os.Getenv("CODEX_MODEL"))
 	modelProfile := strings.TrimSpace(os.Getenv("CODEX_MODEL_PROFILE"))
@@ -115,8 +126,9 @@ func loadEnvironmentConfig() (environmentConfig, error) {
 			TemplateVMID: templateVMID,
 			Priority:     1,
 		},
-		Routes:         routes,
-		SessionRuntime: sessionRuntimeConfig,
+		Routes:              routes,
+		SessionRuntime:      sessionRuntimeConfig,
+		SessionProxmoxToken: sessionProxmoxToken,
 	}
 	if err := config.Proxmox.ValidateConfig(); err != nil {
 		return environmentConfig{}, fmt.Errorf("invalid Proxmox configuration: %w", err)

@@ -74,7 +74,7 @@ func newHandlerFromEnvironment(databasePath string) (http.Handler, func(), error
 	completer := orchestrator.NewResultConsumer(database, executor, capacityAdapter)
 	var sessionManager *sessionruntime.Manager
 	if config.SessionRuntime != nil {
-		sessionProxmoxRuntime, runtimeErr := sessionruntime.NewProxmoxRuntime(sessionruntime.ProxmoxConfig{BaseURL: config.Proxmox.BaseURL, Node: config.Proxmox.Node, Token: config.Proxmox.Token})
+		sessionProxmoxRuntime, runtimeErr := newSessionProxmoxRuntime(config)
 		if runtimeErr != nil {
 			closeStore()
 			return nil, nil, fmt.Errorf("configure Session Proxmox runtime: %w", runtimeErr)
@@ -87,6 +87,14 @@ func newHandlerFromEnvironment(databasePath string) (http.Handler, func(), error
 	}
 	observationDone = startObservationLoop(runtimeContext, orchestrator.NewObservationLoop(database, completer))
 	return api.NewServerWithRoutingStateAndRoutesAndSessionRuntime(database, dispatcher, completer, capacityAdapter, executor, routingStateTokenFromEnvironment(), config.Routes, true, sessionManager), closeStore, nil
+}
+
+func newSessionProxmoxRuntime(config environmentConfig) (*sessionruntime.ProxmoxRuntime, error) {
+	return sessionruntime.NewProxmoxRuntime(sessionruntime.ProxmoxConfig{
+		BaseURL: config.Proxmox.BaseURL,
+		Node:    config.Proxmox.Node,
+		Token:   config.SessionProxmoxToken,
+	})
 }
 
 func startObservationLoop(ctx context.Context, loop *orchestrator.ObservationLoop) <-chan struct{} {

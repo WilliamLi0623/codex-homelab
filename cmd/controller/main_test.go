@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/api"
+	"github.com/WilliamLi0623/codex-homelab/internal/capacity"
 	"github.com/WilliamLi0623/codex-homelab/internal/orchestrator"
 )
 
@@ -124,6 +125,7 @@ func TestNewHandlerFromEnvironmentConstructsOptionalSessionRuntime(t *testing.T)
 	t.Setenv("KUBERNETES_BASE_URL", proxmoxServer.URL)
 	t.Setenv("SESSION_RUNTIME_TEMPLATE_VMID", "3900")
 	t.Setenv("SESSION_WORKSPACE_SIZE_GIB", "32")
+	t.Setenv("SESSION_PROXMOX_TOKEN", "independent-session-proxmox-token")
 
 	handler, closeStore, err := newHandlerFromEnvironment(filepath.Join(t.TempDir(), "controller.sqlite"))
 	if err != nil {
@@ -139,5 +141,35 @@ func TestNewHandlerFromEnvironmentConstructsOptionalSessionRuntime(t *testing.T)
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("unauthenticated Session route status = %d, want 404", recorder.Code)
+	}
+}
+
+func TestNewSessionProxmoxRuntimeUsesSessionToken(t *testing.T) {
+	const sessionToken = "PVEAPIToken=session-user!session-v1=session-secret"
+	const workerToken = "PVEAPIToken=worker-user!worker-v1=worker-secret"
+	var authorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":4000}`))
+	}))
+	t.Cleanup(server.Close)
+
+	runtime, err := newSessionProxmoxRuntime(environmentConfig{
+		Proxmox:             capacity.ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: workerToken},
+		SessionProxmoxToken: sessionToken,
+	})
+	if err != nil {
+		t.Fatalf("newSessionProxmoxRuntime() error = %v", err)
+	}
+	available, err := runtime.TargetAvailable(context.Background(), 4000)
+	if err != nil {
+		t.Fatalf("TargetAvailable() error = %v", err)
+	}
+	if !available {
+		t.Fatal("TargetAvailable() = false, want available")
+	}
+	if authorization != sessionToken {
+		t.Fatalf("Session Proxmox Authorization = %q, want independent Session token", authorization)
 	}
 }

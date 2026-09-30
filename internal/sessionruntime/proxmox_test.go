@@ -115,6 +115,9 @@ func TestProxmoxCloneUsesSessionRangeSSDAndDHCP(t *testing.T) {
 	if cloneForm.Get("newid") != "4000" || cloneForm.Get("storage") != "local" || cloneForm.Get("full") != "1" || cloneForm.Get("hostname") != "codex-session-123" {
 		t.Fatalf("clone form = %v, want dedicated VMID and SSD root storage", cloneForm)
 	}
+	if cloneForm.Get("pool") != "codex-sessions" {
+		t.Fatalf("clone pool = %q, want dedicated Session pool codex-sessions", cloneForm.Get("pool"))
+	}
 	if !strings.HasPrefix(cloneForm.Get("description"), "codex-session:v1:") {
 		t.Fatalf("clone ownership metadata = %q", cloneForm.Get("description"))
 	}
@@ -125,10 +128,11 @@ func TestProxmoxCloneUsesSessionRangeSSDAndDHCP(t *testing.T) {
 
 func TestProxmoxTargetAvailabilityAndRuntimeRangeAreIsolated(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api2/json/cluster/resources" {
+		if r.URL.Path != "/api2/json/cluster/nextid" || r.URL.Query().Get("vmid") != "4000" {
 			t.Errorf("unexpected request %s", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"data":[{"vmid":4000},{"vmid":3010}]}`))
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"errors":{"vmid":"VM 4000 already exists"}}`))
 	}))
 	defer server.Close()
 	runtime, err := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "token", Client: server.Client()})
