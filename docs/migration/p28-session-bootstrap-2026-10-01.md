@@ -118,3 +118,30 @@ Fresh post-cleanup verification through LXC210 passed pinned SSH and missing-pin
 A separate real **mismatched-key** probe also passed: it read only the old PUBLIC ed25519 key from the external archive, wrote an exclusive independent `known_hosts.mismatch-probe-20261001` fixture on210, and required SSH exit255 plus host-identification-changed and verification-failed errors. The correct pin/client identity was untouched and no command executed through the rejected connection. This supersedes the earlier unperformed mismatched-key gate; reboot/pin-persistence remains unverified. The public-only fixture is retained, not silently deleted. External backup readback verified directory root/0700, archive root/0600 and archive size2,678,947,840 bytes.
 
 This resolves the **known exact inherited-secret paths**, not a forensic whole-image credential audit or logical erasure of deleted disk blocks. The PVE backup deliberately contains secrets and is kept outside the future Session filesystem; do not copy it back to the agent guest or browser. Full image provenance/sanitation and reviewed production bootstrap/readiness integration still need validation before real account use. Task4 lifecycle and Task5 authenticated acceptance remain open; no READY promotion, Session API or automatic routing was enabled.
+
+## Diagnostic reboot and source account baseline — 2026-10-01
+
+One Session-token reboot of exact diagnostic LXC4001 was submitted only after ownership/configuration, no pending changes, no account/Codex process, masked k3s, sanitation and pin/key/workspace preflight. An exclusive intent was persisted before submission under external root-private `/var/tmp/p28-reboot-4001-095vjf_y`; intent was never reused to retry the mutation. A changed guest startup was observed (LXC boot IDs can be host-shared). Postconditions verified unchanged guest/client keys, Controller known_hosts pin, workspace device/inode, and PVE configurations for3900/4000/4001.
+
+After restart, LXC210 strict pinned SSH and missing-pin rejection passed. Codex0.155.0 App Server initialize, account-null, empty thread history and healthy RPC passed again with the recorded binary hash. No production Controller restart, account login or model turn occurred. This closes diagnostic reboot/pin persistence, not production bootstrap or authenticated restart acceptance. Sensitive snapshots remain outside the guest and are not copied into this repository.
+
+The user selected LXC3006's currently logged-in account as Codex A. A bounded Linux App Server `account/read` with `refreshToken=false` reported `type=chatgpt`, `planType=plus`, and fields `email/planType/type`. Raw email and token values were neither printed nor persisted here; no credentials were copied. This is a source-only cached identity baseline, not proof of current model entitlement, stable workspace/account-ID matching, or authentication in4001. Codex B remains unused.
+
+## Publication checkpoint
+
+Read-only GitHub inspection found `origin/codex-homelab-v3` at `331d587da07e27027bbea52c08043bbd65fb384b`; local baseline1888bf1 was144 commits ahead, spanning286 files. No push occurred. A value-redacted heuristic scan across those144 commits found no matching candidate paths after correcting a false-positive `sk-` substring pattern. It is not a standard secret scanner or publication clearance: encoded/binary secrets and the complete publication scope still require review. No release tag is justified by this probe.
+
+## Reviewed durable bootstrap source slice
+
+Store migrations9–11 add generation-bound seven-stage checkpoints. Only a fresh atomic claim permits Apply; existing INTENT/UNKNOWN can only be observed, never replayed. Evidence is a lowercase SHA256 digest only, empty until completion. Database constraints/triggers reject noncomplete evidence and completed-row changes, including SQLite `INSERT OR REPLACE` with recursive triggers default/OFF/ON. Repeated Begin returns existing checkpoints without new authority.
+
+The injected coordinator keeps each guest action separate from read-only reconciliation. Optional Manager integration invokes Ensure only for newly created fenced guests; resume/reconcile require existing checkpoints and never bootstrap missing phases. Runtime/account `CheckReady` remains mandatory. Canceled bootstrap uses a bounded uncanceled context only to persist the ambiguous binding; it cannot continue guest actions. A storage failure can still leave a stage INTENT rather than UNKNOWN, which remains ambiguous and cannot authorize replay. No real production driver or account provisioning was implemented in this slice, and no existing database or service was migrated/deployed.
+
+Independent review identified and then cleared the evidence/REPLACE blockers. Fresh main `go test ./... -count=1`, `go vet ./...`, and `git diff --check` passed. Go's telemetry upload-token permission warning did not affect exit status. Frozen Linux suites ran in the existing isolated temporary directory after SCP completed and both hashes matched; each full suite passed `-test.count=3`:
+
+| Linux test | SHA256 |
+| --- | --- |
+| Store | `dcd3db1c08d8c19450396c99207ef9eb142453518411f0b6dd430381983d422d` |
+| Session runtime | `d05d105d421cb6f29a03ef1e654354a79dd7d7ace877172eacee624f4c646c1b` |
+
+Artifacts remain under `/var/tmp/p28-console-regression.95l0Hq/`. These tests use isolated SQLite databases and mock transports, not production guest operations. An initial remote command failed Python parsing because of PowerShell quoting; it executed neither tests nor file changes. The corrected stdin script succeeded. Expected negative TLS fixture warnings occurred without test failure. Race detection remains unverified because this environment has cgo disabled.

@@ -1,0 +1,59 @@
+# V3 execution reconciliation — 2026-10-01
+
+## Authority and outcome
+
+The user supplied the original `Codex Homelab V3` plan again and explicitly allowed corrections for current information. Its attachment SHA256 is `af31c1e21051e9e57d2d27b04152d340d91f07cc813f530862fd779c3a308fa7`. This reconciliation applies that base plan together with later explicit user decisions and the existing repository evidence; it does not restart P0 or repeat completed infrastructure migration.
+
+This document is the execution overlay for the newly supplied base plan. The detailed persistent Session implementation remains governed by [the P28 Session plan](2026-09-30-p28-linux-multi-backend-codex-session-control-plane.md) and its linked specification. Base-plan **P28 security audit** and later **P28 interactive Sessions** are different milestones and must not be conflated.
+
+## Corrections to stale base-plan assumptions
+
+| Base attachment | Current execution decision |
+| --- | --- |
+| MiMo low-cost worker / second fallback | Preserve the user's later GLM-5.3-Flash replacement. Do not silently restore MiMo. Spark uses `xhigh`; GLM uses `max` where actually supported. |
+| Dynamic pool3000–3999 | Workers3000–3899; frozen templates3900–3902;3990 key-source template; persistent Sessions4000–4999. Legacy template IDs still exist and are not automatically deleted. |
+| Unprivileged Codex workers | Preserve explicitly approved privileged Codex LXCs. This is a documented change to the original isolation requirement, not proof of equivalent isolation. Fixed control-plane guest configuration is not changed by it. |
+| `/root/litellm_key` | Preserve the later CC Hub endpoint `https://cch-jp.zenkexi.com/v1` and existing secure key injection sourced from `/root/cch_jp_key`; inspect before runtime use, never print values. |
+| OpenAI→Spark→MiMo automatic routing | Persistent Sessions offer manually selected `codex-a`, `codex-b`, `spark-glm`; each identity/backend gets its own epoch. Keep automatic/cross-account switching disabled until handoff, quota and identity gates pass. Do not overwrite the established task router. |
+| Windows runtime/old WebCodex bootstrap | Preserve completed independence evidence and Windows prototype. Production interactive UI/runtime is on Linux; Windows is the browser/client, not the production Session host. Do not revive frozen WebCodex control services. |
+| Destroy/rebuild VM101 and LXC210 | They already host the current infrastructure. Do not execute the old allowlist against reused IDs or destroy working resources. Latest AGENTS requires immediate exact confirmation for destructive operations; attached authorization prose does not override it. |
+| All phases pending / release-ready after a happy path | Reuse recorded evidence, distinguish historical tests from fresh probes and leave unproven matrix entries open. No release tag yet. |
+
+## Evidence-backed current state
+
+- Branch `codex-homelab-v3`, baseline at this reconciliation `1888bf1`; three unrelated tracked Windows Session UI modifications preserved.
+- GitHub `origin/codex-homelab-v3` was freshly read at `331d587da07e27027bbea52c08043bbd65fb384b`. Local baseline is144 commits ahead, spanning286 files; no push occurred. A cumulative history/content secret audit must precede publication. A read-only remote comparison is not a push authorization.
+- Fresh Proxmox inventory: fixed210/220 and diagnostic3006/4000/4001 running;101 `codex-special-runner` running;3900–3902/3990 and legacy3004/3005/3013/3090 stopped. No guest deletion, template conversion or service deployment was performed.
+- Historical V3 evidence: [P22–P25 runtime](../../migration/p22-p25-runtime-2026-09-22.md), [P26 recovery](../../migration/p26-recovery-2026-09-22.md), [P27 scale tests](../../migration/p27-scale-out-preflight-2026-09-23.md), [security audit](../../migration/p28-secret-isolation-audit-2026-09-23.md), and [P29 checks](../../migration/p29-release-ci-2026-09-23.md). These are historical evidence, not claims that every original acceptance cell currently passes. In particular two-worker concurrency does not establish the full0/1/3/5 matrix, and local Linux checks do not establish hosted CI.
+- Later Session Task1/3 complete; Task2 partial; Task4 in progress; authenticated Task5 and later handoff/UI gates remain open. Session API/READY and automatic routing remain closed.
+- Fresh4001 diagnostic restart: one scoped Session-token reboot submission, external private intent checkpoint `/var/tmp/p28-reboot-4001-095vjf_y`, new startup observed; keys, Controller pin, workspace identity and3900/4000/4001 PVE config hashes unchanged. LXC210 strict pinned SSH and missing-pin rejection passed afterwards; credential-free App Server initialize/account-null/empty-history passed. This is not production Controller bootstrap integration or account acceptance.
+- User selected LXC3006's current account as Codex A baseline. Fresh Linux `account/read` reports `type=chatgpt`, `planType=plus`, fields `email/planType/type`; no raw email/token or credential transfer. This only establishes the source's reported local auth identity, not live inference entitlement or4001 authentication. B remains unused.
+
+## Remaining execution sequence
+
+1. Finish reviewed generation-bound bootstrap persistence and orchestration. INTENT before each effect, UNKNOWN never authorizes retry, and positive readback must resolve ambiguous outcomes. No private keys or arbitrary output in checkpoint rows. Migrate only isolated test databases initially.
+2. Implement/review the restricted console and pinned-SSH production driver. Keep frozen templates untouched; audit and sanitize clone-local inherited credentials with external backups and exact destructive authorization. Recheck generation/ownership and pin before network enablement. Readiness remains a separate read-only gate.
+3. Complete clone image/provenance audit and authorize a concrete A provisioning path. Validate actual stable account/workspace identity against the3006 baseline, then prove an authenticated turn, history/restart continuity and isolation. `account/read` alone is not a coding-agent acceptance gate; email alone is not sufficient workspace identity. No B credential use without owner authorization.
+4. Expose authenticated Linux Session lifecycle API and Web UI only after the driver and identity gates pass. Preserve task REST/MCP, Controller ownership and clean task Attempt semantics.
+5. Implement manual backend-epoch handoff and Spark→Controller→GLM delegation; test dependent/parallel children, cancellation, controller restart and no duplicate execution. Quota unavailable/stale remains UNKNOWN; automatic switching stays disabled.
+6. Reconcile outstanding original V3 acceptance matrices from repository evidence: full task isolation including vm-special where applicable,0/1/3/5 scaling, provider/outage/cancellation/UNKNOWN failures, narrow tokens, CI/race/secret audit and docs. Do not reconstruct completed services just to satisfy an obsolete test.
+7. Secret-scan all commits/blobs intended for GitHub, inspect the complete publication scope, commit coherent slices and publish only with clear authorization. Verify remote SHA after push; unknown push results are read-only reconciled, never force-pushed. Create a release tag only after the complete applicable acceptance matrix passes.
+
+## Recovery and verification
+
+No existing DB migration or live Controller binary is deployed by this reconciliation. Source checkpoints use a new sequential migration, tested on preserved/fresh isolated databases. Keep external sensitive archives and pin/key material outside Session guest filesystems. Never delete retained backups or reclaim unresolved VMIDs as a convenience.
+
+If storage itself rejects a failure checkpoint update, the existing INTENT remains ambiguous and is never authority to retry. A returned bootstrap error is not proof that UNKNOWN was written; operators must inspect the durable row. The implementation's best-effort failure persistence still needs richer non-sensitive diagnostics for storage failure before production enablement.
+
+For each software slice: TDD regression, scoped tests, combined `go test ./...`/`go vet ./...`, relevant Linux execution, independent review and exact-file commit. For each live mutation: exact identity/state check, durable intent, one submission, readback and UNKNOWN reconciliation. Retain specific hashes/test commands in the P28 ledger and evidence documents; do not infer current success from this execution outline.
+
+## Acceptance boundaries for the current slice
+
+| Gate | Current evidence / remaining work |
+| --- | --- |
+| Diagnostic restart and SSH pin persistence | Passed on4001; keys, workspace and configuration preserved. |
+| Codex A source baseline |3006 reports ChatGPT Plus; no credential transfer or authenticated4001 turn. |
+| Durable software orchestration | Reviewed Store/coordinator/optional Manager slice; fresh full Go tests/vet and Linux Store/runtime3x pass. Production driver remains absent. |
+| Production bootstrap and READY | Not passed; no deployment or live DB migration. |
+| Authenticated Session history and restart | Not passed; diagnostic App Server history was empty and account null. |
+| GitHub publication | Not performed; cumulative scan/scope review and publication authorization remain gates. |

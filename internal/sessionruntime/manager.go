@@ -67,6 +67,8 @@ type Config struct {
 	SystemStorage    string
 	WorkspaceStorage string
 	WorkspaceSizeGiB int
+	// Bootstrap is optional for existing runtimes. It never replaces CheckReady.
+	Bootstrap *BootstrapCoordinator
 }
 
 type Manager struct {
@@ -78,6 +80,9 @@ type Manager struct {
 
 func NewManager(db *store.Store, runtime Runtime, config Config) (*Manager, error) {
 	if db == nil || runtime == nil || config.TemplateVMID < 3900 || config.TemplateVMID > 3902 || config.SystemStorage != SessionSystemStorage || config.WorkspaceStorage != "pool" || config.WorkspaceSizeGiB < 1 {
+		return nil, ErrInvalidConfig
+	}
+	if config.Bootstrap != nil && config.Bootstrap.store != db {
 		return nil, ErrInvalidConfig
 	}
 	return &Manager{store: db, runtime: runtime, config: config, clock: func() time.Time { return time.Now().UTC() }}, nil
@@ -151,6 +156,11 @@ func (m *Manager) createAllocated(ctx context.Context, binding store.SessionRunt
 	}
 	if state != RuntimeRunning {
 		return m.currentBindingWithError(ctx, binding, m.markFailed(ctx, binding, "STARTING", ErrRuntimeNotReady))
+	}
+	if m.config.Bootstrap != nil {
+		if err := m.config.Bootstrap.Ensure(ctx, binding); err != nil {
+			return m.bootstrapUnknown(ctx, binding, "STARTING", err)
+		}
 	}
 	if err := m.runtime.CheckReady(ctx, binding); err != nil {
 		return m.currentBindingWithError(ctx, binding, m.markUnknown(ctx, binding, "STARTING", err))
@@ -291,6 +301,12 @@ func (m *Manager) Resume(ctx context.Context, sessionID, epochID string) error {
 	if state != RuntimeRunning {
 		return m.markUnknown(ctx, binding, "RESUMING", ErrRuntimeNotReady)
 	}
+	if m.config.Bootstrap != nil {
+		if err := m.config.Bootstrap.Reconcile(ctx, binding); err != nil {
+			_, persistErr := m.bootstrapUnknown(ctx, binding, "RESUMING", err)
+			return persistErr
+		}
+	}
 	if err := m.runtime.CheckReady(ctx, binding); err != nil {
 		return m.markUnknown(ctx, binding, "RESUMING", err)
 	}
@@ -418,6 +434,11 @@ func (m *Manager) Reconcile(ctx context.Context, sessionID, epochID string) (sto
 		return binding, fmt.Errorf("unsupported pending operation %q: %w", binding.PendingOperation, ErrReconciliationNeeded)
 	}
 	if next == "READY" {
+		if m.config.Bootstrap != nil {
+			if err := m.config.Bootstrap.Reconcile(ctx, binding); err != nil {
+				return binding, err
+			}
+		}
 		if err := m.runtime.CheckReady(ctx, binding); err != nil {
 			return binding, fmt.Errorf("verify Session runtime readiness before reconciliation: %w", err)
 		}
@@ -456,6 +477,14 @@ func (m *Manager) markUnknown(ctx context.Context, binding store.SessionRuntimeB
 		return fmt.Errorf("operation failed (%v); persist UNKNOWN outcome: %w", cause, err)
 	}
 	return fmt.Errorf("%w: %v", ErrOutcomeUnknown, cause)
+}
+
+// Bootstrap cancellation must not prevent recording the ambiguous binding.
+// This bounded context is used only for persistence, never for guest actions.
+func (m *Manager) bootstrapUnknown(ctx context.Context, binding store.SessionRuntimeBinding, from string, cause error) (store.SessionRuntimeBinding, error) {
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bootstrapPersistenceTimeout)
+	defer cancel()
+	return m.currentBindingWithError(persistCtx, binding, m.markUnknown(persistCtx, binding, from, cause))
 }
 
 func (m *Manager) markFailed(ctx context.Context, binding store.SessionRuntimeBinding, from string, cause error) error {
