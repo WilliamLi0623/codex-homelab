@@ -5,9 +5,60 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestBootstrapK3sCredentialArchivePolicyMatchesAuditedExactPaths(t *testing.T) {
+	policy := bootstrapArchivePolicy(2)
+	roots, ok := bootstrapArchivePolicyRoots(policy)
+	want := []string{
+		"etc/rancher/node/password",
+		"etc/systemd/system/k3s-agent.service.env",
+		"var/lib/rancher/k3s/agent/client-ca.crt",
+		"var/lib/rancher/k3s/agent/client-k3s-controller.crt",
+		"var/lib/rancher/k3s/agent/client-k3s-controller.key",
+		"var/lib/rancher/k3s/agent/client-kube-proxy.crt",
+		"var/lib/rancher/k3s/agent/client-kube-proxy.key",
+		"var/lib/rancher/k3s/agent/client-kubelet.crt",
+		"var/lib/rancher/k3s/agent/client-kubelet.key",
+		"var/lib/rancher/k3s/agent/k3scontroller.kubeconfig",
+		"var/lib/rancher/k3s/agent/kubelet.kubeconfig",
+		"var/lib/rancher/k3s/agent/kubeproxy.kubeconfig",
+		"var/lib/rancher/k3s/agent/server-ca.crt",
+		"var/lib/rancher/k3s/agent/serving-kubelet.crt",
+		"var/lib/rancher/k3s/agent/serving-kubelet.key",
+	}
+	if !ok || !reflect.DeepEqual(roots, want) {
+		t.Fatalf("K3s archive roots = %#v, ok=%v; want audited exact path allowlist", roots, ok)
+	}
+	archive := bootstrapArchiveFromRoots(t, roots)
+	if err := validateBootstrapSanitationArchive(bytes.NewReader(archive), policy); err != nil {
+		t.Fatalf("valid audited K3s credential archive rejected: %v", err)
+	}
+	if err := validateBootstrapSanitationArchive(bytes.NewReader(archive), bootstrapArchivePolicyTLS); err == nil {
+		t.Fatal("K3s credential archive accepted under the TLS-only policy")
+	}
+}
+
+func bootstrapArchiveFromRoots(t *testing.T, roots []string) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	writer := tar.NewWriter(&output)
+	for _, name := range roots {
+		if err := writer.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0600, Size: 1, Format: tar.FormatUSTAR}); err != nil {
+			t.Fatalf("write audited archive member: %v", err)
+		}
+		if _, err := io.WriteString(writer, "x"); err != nil {
+			t.Fatalf("write audited archive body: %v", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close audited archive: %v", err)
+	}
+	return output.Bytes()
+}
 
 func TestValidateBootstrapSanitationArchivePoliciesAreIndependent(t *testing.T) {
 	archive := bootstrapSanitationArchive(t, nil)

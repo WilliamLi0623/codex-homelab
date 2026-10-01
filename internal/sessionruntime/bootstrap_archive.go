@@ -10,6 +10,7 @@ import (
 
 const (
 	bootstrapArchivePolicyTLS    bootstrapArchivePolicy = iota + 1
+	bootstrapArchivePolicyK3sCredentials
 	bootstrapArchiveMaxBytes     int64                  = 8 << 30
 	bootstrapArchiveMaxEntries                          = 100000
 	bootstrapArchiveMaxPathBytes                        = 4096
@@ -99,6 +100,24 @@ func bootstrapArchivePolicyRoots(policy bootstrapArchivePolicy) ([]string, bool)
 		return []string{
 			"etc/ssl/private/ssl-cert-snakeoil.key",
 			"etc/ssl/certs/ssl-cert-snakeoil.pem",
+		}, true
+	case bootstrapArchivePolicyK3sCredentials:
+		return []string{
+			"etc/rancher/node/password",
+			"etc/systemd/system/k3s-agent.service.env",
+			"var/lib/rancher/k3s/agent/client-ca.crt",
+			"var/lib/rancher/k3s/agent/client-k3s-controller.crt",
+			"var/lib/rancher/k3s/agent/client-k3s-controller.key",
+			"var/lib/rancher/k3s/agent/client-kube-proxy.crt",
+			"var/lib/rancher/k3s/agent/client-kube-proxy.key",
+			"var/lib/rancher/k3s/agent/client-kubelet.crt",
+			"var/lib/rancher/k3s/agent/client-kubelet.key",
+			"var/lib/rancher/k3s/agent/k3scontroller.kubeconfig",
+			"var/lib/rancher/k3s/agent/kubelet.kubeconfig",
+			"var/lib/rancher/k3s/agent/kubeproxy.kubeconfig",
+			"var/lib/rancher/k3s/agent/server-ca.crt",
+			"var/lib/rancher/k3s/agent/serving-kubelet.crt",
+			"var/lib/rancher/k3s/agent/serving-kubelet.key",
 		}, true
 	default:
 		return nil, false
