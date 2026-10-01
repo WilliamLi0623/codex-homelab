@@ -2,6 +2,7 @@ package sessionruntime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -65,6 +66,47 @@ func TestBootstrapBackupStorePersistsReopensAndNeverReplays(t *testing.T) {
 	changed.Generation = "different"
 	if _, ok, err := registry.observe(context.Background(), changed); ok || err == nil {
 		t.Fatal("wrong generation adopted backup")
+	}
+}
+
+func TestBootstrapBackupStorePersistsCombinedSessionImageCredentialArchive(t *testing.T) {
+	registry, binding := backupStoreFixture(t)
+	if !strings.HasPrefix(filepath.Base(registry.directory(binding)), "tls-") {
+		t.Fatal("existing backup storage namespace changed")
+	}
+	tlsRoots, _ := bootstrapArchivePolicyRoots(bootstrapArchivePolicyTLS)
+	k3sRoots, ok := bootstrapArchivePolicyRoots(bootstrapArchivePolicyK3sCredentials)
+	if !ok {
+		t.Fatal("audited K3s credential archive policy unavailable")
+	}
+	roots := append(append([]string(nil), tlsRoots...), k3sRoots...)
+	archive := bootstrapArchiveFromRoots(t, roots)
+	export := func(ctx context.Context, b store.SessionRuntimeBinding, w io.Writer) (bootstrapTLSArchiveEvidence, error) {
+		if b != binding {
+			t.Fatal("credential archive binding changed")
+		}
+		_, err := w.Write(archive)
+		return bootstrapTLSArchiveEvidence{Bytes: int64(len(archive)), SHA256: materialDigest(archive), IsolationSHA256: strings.Repeat("d", 64)}, err
+	}
+	evidence, err := registry.save(context.Background(), binding, export)
+	if err != nil || !validBootstrapEvidence(evidence) {
+		t.Fatalf("combined session image credential backup save: %v", err)
+	}
+	reopened, err := newBootstrapBackupStore(registry.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed, ok, err := reopened.observe(context.Background(), binding)
+	if err != nil || !ok || observed != evidence {
+		t.Fatal("combined session image credential backup cannot reconcile after reopen")
+	}
+	manifestData, err := os.ReadFile(filepath.Join(registry.directory(binding), "complete.json"))
+	if err != nil {
+		t.Fatal("completed backup manifest missing")
+	}
+	var manifest bootstrapBackupManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil || manifest.Policy != "session-image-credentials-v1" {
+		t.Fatalf("completed archive policy = %q, error=%v", manifest.Policy, err)
 	}
 }
 

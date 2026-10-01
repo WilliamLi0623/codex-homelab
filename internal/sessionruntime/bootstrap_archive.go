@@ -9,11 +9,12 @@ import (
 )
 
 const (
-	bootstrapArchivePolicyTLS    bootstrapArchivePolicy = iota + 1
+	bootstrapArchivePolicyTLS bootstrapArchivePolicy = iota + 1
 	bootstrapArchivePolicyK3sCredentials
-	bootstrapArchiveMaxBytes     int64                  = 8 << 30
-	bootstrapArchiveMaxEntries                          = 100000
-	bootstrapArchiveMaxPathBytes                        = 4096
+	bootstrapArchivePolicySessionImageCredentials
+	bootstrapArchiveMaxBytes     int64 = 8 << 30
+	bootstrapArchiveMaxEntries         = 100000
+	bootstrapArchiveMaxPathBytes       = 4096
 )
 
 type bootstrapArchivePolicy uint8
@@ -119,9 +120,35 @@ func bootstrapArchivePolicyRoots(policy bootstrapArchivePolicy) ([]string, bool)
 			"var/lib/rancher/k3s/agent/serving-kubelet.crt",
 			"var/lib/rancher/k3s/agent/serving-kubelet.key",
 		}, true
+	case bootstrapArchivePolicySessionImageCredentials:
+		tlsRoots, _ := bootstrapArchivePolicyRoots(bootstrapArchivePolicyTLS)
+		k3sRoots, _ := bootstrapArchivePolicyRoots(bootstrapArchivePolicyK3sCredentials)
+		return append(tlsRoots, k3sRoots...), true
 	default:
 		return nil, false
 	}
+}
+
+func bootstrapArchivePolicyName(policy bootstrapArchivePolicy) (string, bool) {
+	switch policy {
+	case bootstrapArchivePolicyTLS:
+		return "tls-v1", true
+	case bootstrapArchivePolicyK3sCredentials:
+		return "k3s-credentials-v1", true
+	case bootstrapArchivePolicySessionImageCredentials:
+		return "session-image-credentials-v1", true
+	default:
+		return "", false
+	}
+}
+
+func bootstrapArchivePolicyFromName(name string) (bootstrapArchivePolicy, bool) {
+	for _, policy := range []bootstrapArchivePolicy{bootstrapArchivePolicyTLS, bootstrapArchivePolicyK3sCredentials, bootstrapArchivePolicySessionImageCredentials} {
+		if candidate, ok := bootstrapArchivePolicyName(policy); ok && candidate == name {
+			return policy, true
+		}
+	}
+	return 0, false
 }
 
 type bootstrapArchiveCountingReader struct {
