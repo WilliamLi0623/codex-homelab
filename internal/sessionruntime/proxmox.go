@@ -149,7 +149,9 @@ func (r *ProxmoxRuntime) configureNetworkAndWorkspace(ctx context.Context, reque
 	if err := r.request(ctx, http.MethodGet, path, nil, &envelope); err != nil {
 		return err
 	}
-	form := url.Values{}
+	// A clone may inherit worker startup and shared SSH identity. Keep it
+	// disconnected until the separate trusted bootstrap has completed.
+	form := url.Values{"onboot": {"0"}, "cmode": {"shell"}}
 	found := false
 	for key, raw := range envelope.Data {
 		if !strings.HasPrefix(key, "net") {
@@ -178,6 +180,35 @@ func (r *ProxmoxRuntime) configureNetworkAndWorkspace(ctx context.Context, reque
 	form.Set("mp0", mount)
 	if err := r.request(ctx, http.MethodPut, path, form, nil); err != nil {
 		return err
+	}
+	var configured struct {
+		Data map[string]json.RawMessage `json:"data"`
+	}
+	if err := r.request(ctx, http.MethodGet, path, nil, &configured); err != nil {
+		return fmt.Errorf("%w: verify bootstrap isolation: %v", ErrOutcomeUnknown, err)
+	}
+	for key := range configured.Data {
+		if strings.HasPrefix(key, "net") && !form.Has(key) {
+			return fmt.Errorf("%w: unexpected network interface %s during bootstrap isolation readback", ErrOutcomeUnknown, key)
+		}
+	}
+	for key, expected := range form {
+		if key == "mp0" {
+			continue
+		}
+		var actual string
+		raw := configured.Data[key]
+		if key == "onboot" {
+			var value int
+			if json.Unmarshal(raw, &value) == nil {
+				actual = strconv.Itoa(value)
+			}
+		} else {
+			_ = json.Unmarshal(raw, &actual)
+		}
+		if actual != expected[0] {
+			return fmt.Errorf("%w: bootstrap isolation readback mismatch for %s", ErrOutcomeUnknown, key)
+		}
 	}
 	attached, err := r.WorkspaceVolume(ctx, request.VMID)
 	if err != nil {
@@ -298,14 +329,22 @@ func hasMountPoint(mount, expected string) bool {
 func withDHCP(network string) string {
 	parts := strings.Split(network, ",")
 	foundIP := false
+	foundLinkDown := false
 	for index, part := range parts {
 		if strings.HasPrefix(part, "ip=") {
 			parts[index] = "ip=dhcp"
 			foundIP = true
 		}
+		if strings.HasPrefix(part, "link_down=") {
+			parts[index] = "link_down=1"
+			foundLinkDown = true
+		}
 	}
 	if !foundIP {
 		parts = append(parts, "ip=dhcp")
+	}
+	if !foundLinkDown {
+		parts = append(parts, "link_down=1")
 	}
 	return strings.Join(parts, ",")
 }
@@ -538,6 +577,16 @@ func encodeOwnership(owner sessionOwnership) (string, error) {
 
 func decodeOwnership(description string, owner *sessionOwnership) error {
 	const prefix = "codex-session:v1:"
+	// PVE appends one terminal line ending. Base64 decoding otherwise ignores
+	// arbitrary CR/LF, which would silently accept malformed ownership text.
+	if strings.HasSuffix(description, "\r\n") {
+		description = strings.TrimSuffix(description, "\r\n")
+	} else {
+		description = strings.TrimSuffix(description, "\n")
+	}
+	if strings.ContainsAny(description, "\r\n") {
+		return errors.New("Proxmox Session ownership metadata contains an unexpected line ending")
+	}
 	if !strings.HasPrefix(description, prefix) {
 		return errors.New("Proxmox guest has no recognized Session ownership metadata")
 	}

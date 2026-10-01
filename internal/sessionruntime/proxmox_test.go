@@ -81,7 +81,7 @@ func TestProxmoxCloneUsesSessionRangeSSDAndDHCP(t *testing.T) {
 			_, _ = w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"OK"}}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/pve-node/lxc/4000/config":
 			if workspaceAttached {
-				_, _ = w.Write([]byte(`{"data":{"net0":"name=eth0,bridge=vmbr0,ip=192.0.2.20/24,tag=20","mp0":"pool:subvol-4000-disk-1,mp=/workspace,backup=1"}}`))
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"net0": dhcpForm.Get("net0"), "cmode": dhcpForm.Get("cmode"), "onboot": 0, "mp0": "pool:subvol-4000-disk-1,mp=/workspace,backup=1"}})
 			} else {
 				_, _ = w.Write([]byte(`{"data":{"net0":"name=eth0,bridge=vmbr0,ip=192.0.2.20/24,tag=20"}}`))
 			}
@@ -121,8 +121,94 @@ func TestProxmoxCloneUsesSessionRangeSSDAndDHCP(t *testing.T) {
 	if !strings.HasPrefix(cloneForm.Get("description"), "codex-session:v1:") {
 		t.Fatalf("clone ownership metadata = %q", cloneForm.Get("description"))
 	}
-	if dhcpForm.Get("net0") != "name=eth0,bridge=vmbr0,ip=dhcp,tag=20" {
+	if dhcpForm.Get("net0") != "name=eth0,bridge=vmbr0,ip=dhcp,tag=20,link_down=1" {
 		t.Fatalf("DHCP network config = %q", dhcpForm.Get("net0"))
+	}
+	if dhcpForm.Get("onboot") != "0" || dhcpForm.Get("cmode") != "shell" {
+		t.Fatalf("unsafe bootstrap startup/console config: %v", dhcpForm)
+	}
+}
+
+func TestSessionOwnershipAcceptsOnlyOneTerminalPVELineEnding(t *testing.T) {
+	encoded, err := encodeOwnership(sessionOwnership{Version: 1, SessionID: "s", EpochID: "e", Generation: "g"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"", "\n", "\r\n"} {
+		var owner sessionOwnership
+		if err := decodeOwnership(encoded+suffix, &owner); err != nil || owner.SessionID != "s" {
+			t.Errorf("PVE suffix %q: owner=%+v error=%v", suffix, owner, err)
+		}
+	}
+	for _, description := range []string{" " + encoded, encoded + " ", encoded + "\n\n", encoded + "\r", encoded[:20] + "\n" + encoded[20:], encoded + "\nother"} {
+		var owner sessionOwnership
+		if err := decodeOwnership(description, &owner); err == nil {
+			t.Errorf("accepted malformed description %q", description)
+		}
+	}
+}
+
+func TestDHCPBootstrapFencesExistingAndAdditionalInterfaces(t *testing.T) {
+	for _, test := range []struct{ input, want string }{
+		{"name=eth0,ip=10.0.0.1/24,link_down=0,tag=20", "name=eth0,ip=dhcp,link_down=1,tag=20"},
+		{"name=eth1,bridge=vmbr0", "name=eth1,bridge=vmbr0,ip=dhcp,link_down=1"},
+	} {
+		if got := withDHCP(test.input); got != test.want {
+			t.Errorf("network %q: got %q want %q", test.input, got, test.want)
+		}
+	}
+}
+
+func TestBootstrapIsolationReadbackFailureIsUnknownAndNeverReplayed(t *testing.T) {
+	for _, fault := range []string{"net0", "cmode", "onboot", "unobserved-interface", "read-error"} {
+		t.Run(fault, func(t *testing.T) {
+			puts := 0
+			config := map[string]any{"net0": "name=eth0,bridge=vmbr0,ip=dhcp", "net1": "name=eth1,bridge=vmbr0,link_down=0"}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api2/json/nodes/pve-node/lxc/4001/config" {
+					t.Errorf("unexpected path %s", r.URL.Path)
+					http.NotFound(w, r)
+					return
+				}
+				if r.Method == http.MethodPut {
+					puts++
+					if err := r.ParseForm(); err != nil {
+						t.Error(err)
+					}
+					if r.Form.Get("net1") != "name=eth1,bridge=vmbr0,link_down=1,ip=dhcp" {
+						t.Errorf("second NIC not fenced: %v", r.Form)
+					}
+					config["net0"], config["net1"], config["cmode"], config["onboot"] = r.Form.Get("net0"), r.Form.Get("net1"), r.Form.Get("cmode"), 0
+					config["mp0"] = "pool:subvol-4001-disk-1,mp=/workspace,backup=1"
+					switch fault {
+					case "onboot":
+						config["onboot"] = 1
+					case "net0":
+						config["net0"] = "name=eth0,bridge=vmbr0,ip=dhcp,link_down=0"
+					case "cmode":
+						config["cmode"] = "tty"
+					case "unobserved-interface":
+						config["net2"] = "name=eth2,bridge=vmbr0,ip=dhcp,link_down=0"
+					}
+					_, _ = w.Write([]byte(`{"data":null}`))
+					return
+				}
+				if puts > 0 && fault == "read-error" {
+					http.Error(w, "unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": config})
+			}))
+			defer server.Close()
+			runtime, err := NewProxmoxRuntime(ProxmoxConfig{BaseURL: server.URL, Node: "pve-node", Token: "token", Client: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = runtime.configureNetworkAndWorkspace(context.Background(), RuntimeRequest{VMID: 4001, WorkspaceStorage: "pool", WorkspaceSizeGiB: 8})
+			if !errors.Is(err, ErrOutcomeUnknown) || puts != 1 {
+				t.Fatalf("error=%v puts=%d; want UNKNOWN without mutation replay", err, puts)
+			}
+		})
 	}
 }
 
