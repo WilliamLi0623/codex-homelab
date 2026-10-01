@@ -112,6 +112,17 @@ func TestBootstrapCodex0155BundlePinsObservedLXC3006Files(t *testing.T) {
 	}
 }
 
+func TestBootstrapCodex0155BundleValidatesConfiguredArtifactRoot(t *testing.T) {
+	root := os.Getenv("CODEX_P28_ARTIFACT_ROOT")
+	if root == "" {
+		t.Skip("set CODEX_P28_ARTIFACT_ROOT for an opt-in live artifact verification")
+	}
+	evidence, err := verifyBootstrapArtifactBundle(context.Background(), root, bootstrapCodex0155Bundle)
+	if err != nil || !validBootstrapEvidence(evidence) {
+		t.Fatalf("configured Codex artifact root failed verification: evidence=%+v err=%v", evidence, err)
+	}
+}
+
 func testArtifactBundle(t *testing.T, root string) codexArtifactBundle {
 	t.Helper()
 	files := []codexArtifactFile{{path: "bin/codex", mode: 0755}, {path: "data/package.json", mode: 0644}}
