@@ -1,6 +1,6 @@
 # P28 Task 4 — new-clone bootstrap feasibility
 
-Status: **bootstrap without Codex account auth passed; inherited infrastructure secrets block real Session use**.
+Status: **bootstrap without Codex account auth passed; approved inherited-credential paths cleaned; production readiness remains gated**. The sanitation addendum below supersedes the original retained-secret stop gate for the exact approved targets, not for the entire image.
 Date: 2026-10-01 (client Asia/Taipei). Baseline: `codex-homelab-v3`, `ab722e0`.
 
 ## Approved scope and actual boundary
@@ -90,3 +90,31 @@ Cleanup requires a non-destructive exact-target inventory and immediately prior 
 ## Source regression
 
 Fresh `go test ./internal/sessionruntime ./internal/codexsession -count=1` and `git diff --check` passed. Go emitted the existing Windows telemetry-cache permission warning but exited zero. No production source was changed; scratch diagnostics are not shipped code. The three pre-existing tracked Windows Session UI modifications were preserved.
+
+## Approved clone-only sanitation — 2026-10-01
+
+The user explicitly confirmed the proposed backup and deletion. A fresh non-destructive preview verified ownership of running LXC4001, all ten targets existed without root symlinks, and no target contained a live mount. The fixed-target helper used unconditional guards, required the clone hostname/pool/rootfs/workspace metadata, no Codex/k3s process or account auth, and masked k3s-agent. It was not a production bootstrap adapter.
+
+Before deletion, all ten targets were streamed directly from guest tar to a PVE-host backup; private material never passed through Windows or stdout. The PVE directory is `/var/tmp/p28-sanitize-4001-svgxne67` (root/0700); `inherited-sensitive-state.tar` and `manifest.json` are root/0600. The tar metadata was parsed, all approved roots were present, and every archive member was within those roots (34,227 members). Backup SHA-256:
+
+```text
+5ee1e906b4f6d6c72340197b180c0a0e645a20918336d6c6576813f7e19cb010
+```
+
+Deleted **only inside LXC4001**, after that backup:
+
+- `/etc/rancher`
+- `/var/lib/rancher/k3s`
+- `/etc/systemd/system/k3s-agent.service.env`
+- `/root/p28-bootstrap-4001-backup`
+- `/etc/ssh/ssh_host_rsa_key` and `/etc/ssh/ssh_host_rsa_key.pub`
+- `/etc/ssh/ssh_host_ecdsa_key` and `/etc/ssh/ssh_host_ecdsa_key.pub`
+- `/etc/ssh/ssh_host_ed25519_key` and `/etc/ssh/ssh_host_ed25519_key.pub`
+
+Postconditions verified every exact target absent, new P28 host key/private and public files, sshd drop-in, authorized client public key, and Codex binary byte-identical; `/workspace` device/inode unchanged; sshd config valid and SSH active; no account auth file. PVE configs for3900,4000,4001 remained byte-identical. No guest/volume was destroyed, no frozen template or other guest file was cleaned, and the original controller identity/pin on210 was untouched. The removed material can be recovered from the sensitive PVE backup; archive extraction/restoration was **not** rehearsed and must be separately authorized, not automatic.
+
+Fresh post-cleanup verification through LXC210 passed pinned SSH and missing-pin rejection, plus App Server initialize/initialized, `account=null`, empty thread history and healthy RPC transport with the same Codex hash. No login or model request was performed. The prior guest-local SSH/worker backup path in the retained-state section is now absent; its contents are recoverable only from the external archive. Earlier “no cleanup authorized” statements describe the pre-confirmation checkpoint, not current authorization/state.
+
+A separate real **mismatched-key** probe also passed: it read only the old PUBLIC ed25519 key from the external archive, wrote an exclusive independent `known_hosts.mismatch-probe-20261001` fixture on210, and required SSH exit255 plus host-identification-changed and verification-failed errors. The correct pin/client identity was untouched and no command executed through the rejected connection. This supersedes the earlier unperformed mismatched-key gate; reboot/pin-persistence remains unverified. The public-only fixture is retained, not silently deleted. External backup readback verified directory root/0700, archive root/0600 and archive size2,678,947,840 bytes.
+
+This resolves the **known exact inherited-secret paths**, not a forensic whole-image credential audit or logical erasure of deleted disk blocks. The PVE backup deliberately contains secrets and is kept outside the future Session filesystem; do not copy it back to the agent guest or browser. Full image provenance/sanitation and reviewed production bootstrap/readiness integration still need validation before real account use. Task4 lifecycle and Task5 authenticated acceptance remain open; no READY promotion, Session API or automatic routing was enabled.
