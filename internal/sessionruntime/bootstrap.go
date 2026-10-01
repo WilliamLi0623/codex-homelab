@@ -44,7 +44,7 @@ func NewBootstrapCoordinator(db *store.Store, driver BootstrapDriver) (*Bootstra
 	return &BootstrapCoordinator{store: db, driver: driver}, nil
 }
 
-// Ensure advances the fixed seven-stage production bootstrap for the exact
+// Ensure advances the fixed ordered production bootstrap for the exact
 // current binding. Existing INTENT or UNKNOWN stages are only observed; they
 // are never applied again.
 func (c *BootstrapCoordinator) Ensure(ctx context.Context, expected store.SessionRuntimeBinding) error {
@@ -217,6 +217,7 @@ func bootstrapStages() []store.SessionBootstrapStage {
 		store.SessionBootstrapIsolation,
 		store.SessionBootstrapGuestIdentity,
 		store.SessionBootstrapHostPin,
+		store.SessionBootstrapImageBackup,
 		store.SessionBootstrapImageSanitized,
 		store.SessionBootstrapNetworkEnabled,
 		store.SessionBootstrapArtifactVerified,

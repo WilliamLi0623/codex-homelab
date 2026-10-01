@@ -60,6 +60,67 @@ func TestSessionBootstrapPersistsOrderedStagesAcrossReopen(t *testing.T) {
 	}
 }
 
+func TestSessionBootstrapV12AddsImageBackupStageAndPreservesCompletedEvidence(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "bootstrap-v11.sqlite")
+	legacy, err := openPreBootstrapStore(t, path)
+	if err != nil {
+		t.Fatalf("open migration 9 Store: %v", err)
+	}
+	for _, migration := range schemaMigrations {
+		if migration.Version < 10 || migration.Version > 11 {
+			continue
+		}
+		for _, statement := range migration.Statements {
+			if _, err := legacy.db.ExecContext(ctx, statement); err != nil {
+				t.Fatalf("apply legacy migration %d: %v", migration.Version, err)
+			}
+		}
+		if _, err := legacy.db.ExecContext(ctx, "INSERT INTO schema_migrations(version) VALUES (?)", migration.Version); err != nil {
+			t.Fatalf("record legacy migration %d: %v", migration.Version, err)
+		}
+	}
+	now := time.Now().UTC()
+	if err := legacy.CreateSession(ctx, Session{ID: "session-1", Title: "Bootstrap", State: "READY", PreferredBackend: "codex-a", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateSession(): %v", err)
+	}
+	if err := legacy.CreateSessionEpoch(ctx, SessionEpoch{ID: "epoch-1", SessionID: "session-1", Sequence: 1, Backend: "codex-a", IdentityID: "account-a", State: "ACTIVE", StartedAt: now}); err != nil {
+		t.Fatalf("CreateSessionEpoch(): %v", err)
+	}
+	if err := legacy.CreateSessionRuntimeBinding(ctx, SessionRuntimeBinding{ID: "binding-1", SessionID: "session-1", EpochID: "epoch-1", VMID: 4010, Generation: "bootstrap-generation-1", State: "ALLOCATING", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateSessionRuntimeBinding(): %v", err)
+	}
+	if _, err := legacy.db.ExecContext(ctx, "INSERT INTO session_bootstrap_checkpoints (runtime_binding_id, generation, stage, status, evidence_sha256) VALUES (?, ?, ?, 'COMPLETE', ?)", "binding-1", "bootstrap-generation-1", SessionBootstrapHostPin, bootstrapTestDigest); err != nil {
+		t.Fatalf("insert prior completed evidence: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close migration 11 Store: %v", err)
+	}
+
+	migrated, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() migration 12: %v", err)
+	}
+	t.Cleanup(func() { _ = migrated.Close() })
+	preserved, err := migrated.GetSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", SessionBootstrapHostPin)
+	if err != nil || preserved.Status != SessionBootstrapComplete || preserved.Evidence.SHA256 != bootstrapTestDigest {
+		t.Fatalf("preserved host pin = (%+v, %v), want original COMPLETE evidence", preserved, err)
+	}
+	backup, claimed, err := migrated.BeginSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", SessionBootstrapImageBackup)
+	if err != nil || !claimed || backup.Status != SessionBootstrapIntent {
+		t.Fatalf("claim image backup = (%+v, %t, %v), want new INTENT", backup, claimed, err)
+	}
+	if _, _, err := migrated.BeginSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", SessionBootstrapImageSanitized); !errors.Is(err, ErrSessionBootstrapConflict) {
+		t.Fatalf("claim sanitation before backup completion = %v, want conflict", err)
+	}
+	if err := migrated.CompleteSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", SessionBootstrapImageBackup, SessionBootstrapIntent, SessionBootstrapEvidence{SHA256: bootstrapTestDigest}); err != nil {
+		t.Fatalf("complete image backup: %v", err)
+	}
+	if _, claimed, err := migrated.BeginSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", SessionBootstrapImageSanitized); err != nil || !claimed {
+		t.Fatalf("claim sanitation after backup completion = claimed %t, err %v", claimed, err)
+	}
+}
+
 func TestSessionBootstrapBeginNeverReplaysExistingIntentUnknownOrComplete(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -477,7 +538,10 @@ func openPreBootstrapStore(t *testing.T, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	for _, migration := range schemaMigrations[:len(schemaMigrations)-2] {
+	for _, migration := range schemaMigrations {
+		if migration.Version > 9 {
+			break
+		}
 		for _, statement := range migration.Statements {
 			if _, err := db.Exec(statement); err != nil {
 				_ = db.Close()

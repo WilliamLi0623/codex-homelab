@@ -40,7 +40,7 @@ func TestManagerBootstrapCreateAndResume(t *testing.T) {
 	manager.config.Bootstrap = coordinator
 	ctx := context.Background()
 	binding, err := manager.Create(ctx, CreateRequest{ID: "binding-a", SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-1"})
-	if err != nil || binding.State != "READY" || driver.applyCalls != 7 || runtime.readyCalls != 1 {
+	if err != nil || binding.State != "READY" || driver.applyCalls != 8 || runtime.readyCalls != 1 {
 		t.Fatalf("create: state=%s applies=%d ready=%d error=%v", binding.State, driver.applyCalls, runtime.readyCalls, err)
 	}
 	if err := manager.Stop(ctx, "session-a", "epoch-a"); err != nil {
@@ -49,7 +49,7 @@ func TestManagerBootstrapCreateAndResume(t *testing.T) {
 	if err := manager.Resume(ctx, "session-a", "epoch-a"); err != nil {
 		t.Fatal(err)
 	}
-	if driver.applyCalls != 7 || runtime.readyCalls != 2 {
+	if driver.applyCalls != 8 || runtime.readyCalls != 2 {
 		t.Fatalf("resume replayed bootstrap or skipped readiness: apply=%d ready=%d", driver.applyCalls, runtime.readyCalls)
 	}
 }
@@ -98,7 +98,7 @@ func TestManagerBootstrapCompletionDoesNotReplaceAccountReadiness(t *testing.T) 
 	}
 	manager.config.Bootstrap = coordinator
 	binding, err := manager.Create(context.Background(), CreateRequest{ID: "binding-a", SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-1"})
-	if !errors.Is(err, ErrOutcomeUnknown) || binding.State != "UNKNOWN" || driver.applyCalls != 7 || runtime.readyCalls != 1 {
+	if !errors.Is(err, ErrOutcomeUnknown) || binding.State != "UNKNOWN" || driver.applyCalls != 8 || runtime.readyCalls != 1 {
 		t.Fatalf("bootstrap bypassed readiness: binding=%+v error=%v", binding, err)
 	}
 }

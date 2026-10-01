@@ -39,7 +39,7 @@ func (s *bootstrapBackupStore) directory(binding store.SessionRuntimeBinding) st
 }
 
 // save is exclusive, never repairs a partial directory and never removes data.
-// The production caller must hold a fresh durable ImageSanitized-stage claim
+// The production caller must hold a fresh durable ImageBackupCreated-stage claim
 // before invoking it. Completion proves a private durable archive only,
 // not permission to delete guest files or a completed sanitation stage.
 func (s *bootstrapBackupStore) save(ctx context.Context, binding store.SessionRuntimeBinding, export func(context.Context, store.SessionRuntimeBinding, io.Writer) (bootstrapTLSArchiveEvidence, error)) (store.SessionBootstrapEvidence, error) {

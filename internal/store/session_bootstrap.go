@@ -15,6 +15,7 @@ const (
 	SessionBootstrapIsolation        SessionBootstrapStage = "isolation"
 	SessionBootstrapGuestIdentity    SessionBootstrapStage = "guest_identity"
 	SessionBootstrapHostPin          SessionBootstrapStage = "host_pin"
+	SessionBootstrapImageBackup      SessionBootstrapStage = "image_backup_created"
 	SessionBootstrapImageSanitized   SessionBootstrapStage = "image_sanitized"
 	SessionBootstrapNetworkEnabled   SessionBootstrapStage = "network_enabled"
 	SessionBootstrapArtifactVerified SessionBootstrapStage = "artifact_verified"
@@ -26,6 +27,7 @@ var sessionBootstrapStages = []SessionBootstrapStage{
 	SessionBootstrapIsolation,
 	SessionBootstrapGuestIdentity,
 	SessionBootstrapHostPin,
+	SessionBootstrapImageBackup,
 	SessionBootstrapImageSanitized,
 	SessionBootstrapNetworkEnabled,
 	SessionBootstrapArtifactVerified,
