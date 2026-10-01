@@ -78,7 +78,7 @@ func makeBootstrapGuestIdentityCommand(binding store.SessionRuntimeBinding, clie
 		"[ -d /root/.ssh ] || mkdir -m 700 /root/.ssh || fail\n" +
 		"if [ ! -e " + bootstrapGuestIdentityAuthorizedKeysPath + " ]; then : > " + bootstrapGuestIdentityAuthorizedKeysPath + " || fail; fi\n" +
 		"chmod 700 /root/.ssh 2>/dev/null || fail; chmod 600 " + bootstrapGuestIdentityAuthorizedKeysPath + " 2>/dev/null || fail\n" +
-		"if grep -F -x -q -- \"$CLIENT_KEY\" " + bootstrapGuestIdentityAuthorizedKeysPath + " 2>/dev/null; then fail; fi\n" +
+		"if grep -F -x -q -- \"$CLIENT_KEY\" " + bootstrapGuestIdentityAuthorizedKeysPath + " 2>/dev/null; then fail; else grep_status=$?; [ \"$grep_status\" = 1 ] || fail; fi\n" +
 		"ssh-keygen -q -t ed25519 -N '' -f " + bootstrapGuestIdentityHostKeyPath + " -C p28-session-host 2>/dev/null || fail\n" +
 		"[ -f " + bootstrapGuestIdentityHostKeyPath + " ] && [ ! -L " + bootstrapGuestIdentityHostKeyPath + " ] && [ -f " + bootstrapGuestIdentityHostPublicKeyPath + " ] && [ ! -L " + bootstrapGuestIdentityHostPublicKeyPath + " ] || fail\n" +
 		"chmod 600 " + bootstrapGuestIdentityHostKeyPath + " " + bootstrapGuestIdentityHostPublicKeyPath + " 2>/dev/null || fail\n" +

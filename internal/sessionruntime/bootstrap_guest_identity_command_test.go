@@ -270,6 +270,38 @@ func TestBootstrapGuestIdentityCommandPreflightsArtifactsBeforeCreatingDirectori
 	}
 }
 
+func TestBootstrapGuestIdentityCommandFailsClosedWhenAuthorizedKeysCannotBeRead(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("safe command execution fixture requires Linux shell semantics")
+	}
+	binding := store.SessionRuntimeBinding{ID: "binding-fixture", SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-a", VMID: 4002}
+	key := publicMaterialFixture(t)
+	markers, command, err := makeBootstrapGuestIdentityCommand(binding, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	paths := makeGuestIdentityFixturePaths(t, root)
+	script := rewriteGuestIdentityFixturePaths(t, decodeGuestIdentityScript(t, command), paths)
+	shimDir := filepath.Join(root, "bin")
+	if err := os.Mkdir(shimDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeGuestIdentityShimsMinimal(t, shimDir, binding)
+	writeGuestIdentityShim(t, shimDir, "grep", "exit 2\n")
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Env = []string{"PATH=" + shimDir + ":/usr/bin:/bin", "LANG=C"}
+	if out, err := cmd.CombinedOutput(); err == nil || strings.Contains(string(out), markers[5]) {
+		t.Fatalf("unreadable authorized_keys did not fail closed: %q, %v", out, err)
+	}
+	if got, err := os.ReadFile(paths[bootstrapGuestIdentityAuthorizedKeysPath]); err != nil || string(got) != "existing-key-line\n" {
+		t.Fatalf("authorized_keys changed despite grep error: %q, %v", got, err)
+	}
+	if _, err := os.Stat(paths[bootstrapGuestIdentityHostKeyPath]); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("host key generation continued after grep error: %v", err)
+	}
+}
+
 func decodeGuestIdentityScript(t *testing.T, command string) string {
 	t.Helper()
 	if !strings.HasPrefix(command, "printf %s '") || !strings.HasSuffix(command, "' | base64 -d | sh\n") {
