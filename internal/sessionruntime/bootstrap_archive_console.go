@@ -39,7 +39,7 @@ func (r *ProxmoxRuntime) exportBootstrapTLSArchive(ctx context.Context, binding 
 }
 
 func (r *ProxmoxRuntime) exportBootstrapSessionImageArchive(ctx context.Context, binding store.SessionRuntimeBinding, destination io.Writer) (bootstrapTLSArchiveEvidence, error) {
-	return r.exportBootstrapArchivePolicy(ctx, binding, destination, bootstrapArchivePolicySessionImageCredentials)
+	return r.exportBootstrapArchivePolicy(ctx, binding, destination, bootstrapArchivePolicySessionImageCredentialsV2)
 }
 
 func (r *ProxmoxRuntime) exportBootstrapArchivePolicy(ctx context.Context, binding store.SessionRuntimeBinding, destination io.Writer, policy bootstrapArchivePolicy) (bootstrapTLSArchiveEvidence, error) {

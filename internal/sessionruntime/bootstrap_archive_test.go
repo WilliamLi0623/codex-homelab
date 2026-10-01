@@ -42,6 +42,34 @@ func TestBootstrapK3sCredentialArchivePolicyMatchesAuditedExactPaths(t *testing.
 	}
 }
 
+func TestBootstrapSessionImageArchivePolicyV2AddsAuditedSSHHostKeysWithoutChangingV1(t *testing.T) {
+	v1, ok := bootstrapArchivePolicyRoots(bootstrapArchivePolicySessionImageCredentials)
+	if !ok || len(v1) != 17 {
+		t.Fatalf("v1 roots = %d, valid=%v; want stable 17-root policy", len(v1), ok)
+	}
+	v2, ok := bootstrapArchivePolicyRoots(bootstrapArchivePolicySessionImageCredentialsV2)
+	if !ok || len(v2) != 23 {
+		t.Fatalf("v2 roots = %d, valid=%v; want 23-root policy", len(v2), ok)
+	}
+	if !reflect.DeepEqual(v2[:len(v1)], v1) {
+		t.Fatal("v2 changed the existing v1 root sequence")
+	}
+	wantSSH := []string{
+		"etc/ssh/ssh_host_rsa_key",
+		"etc/ssh/ssh_host_rsa_key.pub",
+		"etc/ssh/ssh_host_ecdsa_key",
+		"etc/ssh/ssh_host_ecdsa_key.pub",
+		"etc/ssh/ssh_host_ed25519_key",
+		"etc/ssh/ssh_host_ed25519_key.pub",
+	}
+	if !reflect.DeepEqual(v2[len(v1):], wantSSH) {
+		t.Fatalf("v2 SSH roots = %q, want %q", v2[len(v1):], wantSSH)
+	}
+	if name, ok := bootstrapArchivePolicyName(bootstrapArchivePolicySessionImageCredentialsV2); !ok || name != "session-image-credentials-v2" {
+		t.Fatalf("v2 policy identity = %q, valid=%v", name, ok)
+	}
+}
+
 func bootstrapArchiveFromRoots(t *testing.T, roots []string) []byte {
 	t.Helper()
 	var output bytes.Buffer

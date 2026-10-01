@@ -54,7 +54,7 @@ func TestBootstrapBackupStorePersistsReopensAndNeverReplays(t *testing.T) {
 	if err != nil || !ok || observed != evidence {
 		t.Fatal("durable backup cannot reconcile after reopen")
 	}
-	if _, ok, err := reopened.observePolicy(context.Background(), binding, bootstrapArchivePolicySessionImageCredentials); err == nil || ok {
+	if _, ok, err := reopened.observePolicy(context.Background(), binding, bootstrapArchivePolicySessionImageCredentialsV2); err == nil || ok {
 		t.Fatal("TLS-only backup incorrectly satisfied the Session-image credential policy")
 	}
 	if _, err := registry.save(context.Background(), binding, export); err == nil || calls != 1 {
@@ -77,12 +77,10 @@ func TestBootstrapBackupStorePersistsCombinedSessionImageCredentialArchive(t *te
 	if !strings.HasPrefix(filepath.Base(registry.directory(binding)), "tls-") {
 		t.Fatal("existing backup storage namespace changed")
 	}
-	tlsRoots, _ := bootstrapArchivePolicyRoots(bootstrapArchivePolicyTLS)
-	k3sRoots, ok := bootstrapArchivePolicyRoots(bootstrapArchivePolicyK3sCredentials)
+	roots, ok := bootstrapArchivePolicyRoots(bootstrapArchivePolicySessionImageCredentialsV2)
 	if !ok {
-		t.Fatal("audited K3s credential archive policy unavailable")
+		t.Fatal("audited Session-image credential archive policy unavailable")
 	}
-	roots := append(append([]string(nil), tlsRoots...), k3sRoots...)
 	archive := bootstrapArchiveFromRoots(t, roots)
 	export := func(ctx context.Context, b store.SessionRuntimeBinding, w io.Writer) (bootstrapTLSArchiveEvidence, error) {
 		if b != binding {
@@ -103,7 +101,7 @@ func TestBootstrapBackupStorePersistsCombinedSessionImageCredentialArchive(t *te
 	if err != nil || !ok || observed != evidence {
 		t.Fatal("combined session image credential backup cannot reconcile after reopen")
 	}
-	if policyEvidence, ok, err := reopened.observePolicy(context.Background(), binding, bootstrapArchivePolicySessionImageCredentials); err != nil || !ok || policyEvidence != evidence {
+	if policyEvidence, ok, err := reopened.observePolicy(context.Background(), binding, bootstrapArchivePolicySessionImageCredentialsV2); err != nil || !ok || policyEvidence != evidence {
 		t.Fatalf("exact Session-image archive policy observation: ok=%v err=%v", ok, err)
 	}
 	manifestData, err := os.ReadFile(filepath.Join(registry.directory(binding), "complete.json"))
@@ -111,7 +109,7 @@ func TestBootstrapBackupStorePersistsCombinedSessionImageCredentialArchive(t *te
 		t.Fatal("completed backup manifest missing")
 	}
 	var manifest bootstrapBackupManifest
-	if err := json.Unmarshal(manifestData, &manifest); err != nil || manifest.Policy != "session-image-credentials-v1" {
+	if err := json.Unmarshal(manifestData, &manifest); err != nil || manifest.Policy != "session-image-credentials-v2" {
 		t.Fatalf("completed archive policy = %q, error=%v", manifest.Policy, err)
 	}
 }

@@ -75,10 +75,10 @@ func TestBootstrapTLSArchiveCommandMarkersAlwaysMatchArchiveDecoderAlphabet(t *t
 }
 
 func TestBootstrapSessionImageArchiveCommandUsesExactAllowlistedRoots(t *testing.T) {
-	policy := bootstrapArchivePolicySessionImageCredentials
+	policy := bootstrapArchivePolicySessionImageCredentialsV2
 	roots, ok := bootstrapArchivePolicyRoots(policy)
-	if !ok || len(roots) != 17 {
-		t.Fatalf("Session-image archive roots = %d, valid=%v; want exactly 17", len(roots), ok)
+	if !ok || len(roots) != 23 {
+		t.Fatalf("Session-image archive roots = %d, valid=%v; want exactly 23", len(roots), ok)
 	}
 	markers, command, err := makeBootstrapArchiveCommand(policy)
 	if err != nil {
@@ -126,7 +126,7 @@ func TestExportBootstrapSessionImageArchiveUsesCombinedPolicy(t *testing.T) {
 	options.terminal = func(conn *websocket.Conn, command string) {
 		markers := bootstrapTLSArchiveMarkersFromCommand(t, command)
 		script := bootstrapTLSArchiveScriptFromCommand(t, command)
-		roots, _ := bootstrapArchivePolicyRoots(bootstrapArchivePolicySessionImageCredentials)
+		roots, _ := bootstrapArchivePolicyRoots(bootstrapArchivePolicySessionImageCredentialsV2)
 		for _, root := range roots {
 			if !strings.Contains(script, " /"+root) {
 				t.Errorf("session-image export omitted audited path /%s", root)

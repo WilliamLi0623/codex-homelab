@@ -178,7 +178,7 @@ func verifyBootstrapBackupArchive(ctx context.Context, file string) (string, int
 }
 
 func verifyBootstrapBackupArchiveAny(ctx context.Context, file string) (string, int64, bootstrapArchivePolicy, error) {
-	return verifyBootstrapBackupArchivePolicies(ctx, file, bootstrapArchivePolicyTLS, bootstrapArchivePolicyK3sCredentials, bootstrapArchivePolicySessionImageCredentials)
+	return verifyBootstrapBackupArchivePolicies(ctx, file, bootstrapArchivePolicyTLS, bootstrapArchivePolicyK3sCredentials, bootstrapArchivePolicySessionImageCredentials, bootstrapArchivePolicySessionImageCredentialsV2)
 }
 
 func verifyBootstrapBackupArchiveWithPolicy(ctx context.Context, file string, policy bootstrapArchivePolicy) (string, int64, error) {

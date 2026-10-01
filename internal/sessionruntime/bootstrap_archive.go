@@ -12,6 +12,7 @@ const (
 	bootstrapArchivePolicyTLS bootstrapArchivePolicy = iota + 1
 	bootstrapArchivePolicyK3sCredentials
 	bootstrapArchivePolicySessionImageCredentials
+	bootstrapArchivePolicySessionImageCredentialsV2
 	bootstrapArchiveMaxBytes     int64 = 8 << 30
 	bootstrapArchiveMaxEntries         = 100000
 	bootstrapArchiveMaxPathBytes       = 4096
@@ -124,6 +125,16 @@ func bootstrapArchivePolicyRoots(policy bootstrapArchivePolicy) ([]string, bool)
 		tlsRoots, _ := bootstrapArchivePolicyRoots(bootstrapArchivePolicyTLS)
 		k3sRoots, _ := bootstrapArchivePolicyRoots(bootstrapArchivePolicyK3sCredentials)
 		return append(tlsRoots, k3sRoots...), true
+	case bootstrapArchivePolicySessionImageCredentialsV2:
+		roots, _ := bootstrapArchivePolicyRoots(bootstrapArchivePolicySessionImageCredentials)
+		return append(roots,
+			"etc/ssh/ssh_host_rsa_key",
+			"etc/ssh/ssh_host_rsa_key.pub",
+			"etc/ssh/ssh_host_ecdsa_key",
+			"etc/ssh/ssh_host_ecdsa_key.pub",
+			"etc/ssh/ssh_host_ed25519_key",
+			"etc/ssh/ssh_host_ed25519_key.pub",
+		), true
 	default:
 		return nil, false
 	}
@@ -137,13 +148,15 @@ func bootstrapArchivePolicyName(policy bootstrapArchivePolicy) (string, bool) {
 		return "k3s-credentials-v1", true
 	case bootstrapArchivePolicySessionImageCredentials:
 		return "session-image-credentials-v1", true
+	case bootstrapArchivePolicySessionImageCredentialsV2:
+		return "session-image-credentials-v2", true
 	default:
 		return "", false
 	}
 }
 
 func bootstrapArchivePolicyFromName(name string) (bootstrapArchivePolicy, bool) {
-	for _, policy := range []bootstrapArchivePolicy{bootstrapArchivePolicyTLS, bootstrapArchivePolicyK3sCredentials, bootstrapArchivePolicySessionImageCredentials} {
+	for _, policy := range []bootstrapArchivePolicy{bootstrapArchivePolicyTLS, bootstrapArchivePolicyK3sCredentials, bootstrapArchivePolicySessionImageCredentials, bootstrapArchivePolicySessionImageCredentialsV2} {
 		if candidate, ok := bootstrapArchivePolicyName(policy); ok && candidate == name {
 			return policy, true
 		}
