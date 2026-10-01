@@ -74,6 +74,81 @@ func TestBootstrapTLSArchiveCommandMarkersAlwaysMatchArchiveDecoderAlphabet(t *t
 	}
 }
 
+func TestBootstrapSessionImageArchiveCommandUsesExactAllowlistedRoots(t *testing.T) {
+	policy := bootstrapArchivePolicySessionImageCredentials
+	roots, ok := bootstrapArchivePolicyRoots(policy)
+	if !ok || len(roots) != 17 {
+		t.Fatalf("Session-image archive roots = %d, valid=%v; want exactly 17", len(roots), ok)
+	}
+	markers, command, err := makeBootstrapArchiveCommand(policy)
+	if err != nil {
+		t.Fatalf("makeBootstrapArchiveCommand(SessionImage): %v", err)
+	}
+	startQuote, endQuote := strings.IndexByte(command, '\''), strings.LastIndexByte(command, '\'')
+	if startQuote < 0 || endQuote <= startQuote {
+		t.Fatalf("generated command lacks encoded script: %q", command)
+	}
+	scriptBytes, err := base64.StdEncoding.DecodeString(command[startQuote+1 : endQuote])
+	if err != nil {
+		t.Fatalf("decode generated script: %v", err)
+	}
+	script := string(scriptBytes)
+	start := strings.Index(script, "tar -C / -cf - -- ")
+	if start < 0 {
+		t.Fatalf("archive command lacks fixed tar invocation: %q", script)
+	}
+	end := strings.Index(script[start:], " 2>/dev/null")
+	if end < 0 {
+		t.Fatalf("archive command lacks bounded tar stderr redirection: %q", script)
+	}
+	got := strings.Fields(script[start+len("tar -C / -cf - -- ") : start+end])
+	if len(got) != len(roots) {
+		t.Fatalf("tar roots = %d, want %d: %q", len(got), len(roots), got)
+	}
+	for i, root := range roots {
+		if got[i] != "/"+root {
+			t.Fatalf("tar root[%d] = %q, want /%s", i, got[i], root)
+		}
+	}
+	for _, marker := range markers {
+		if !validArchiveMarker(marker) {
+			t.Fatalf("generated marker %q is rejected by the archive decoder", marker)
+		}
+	}
+	if _, _, err := makeBootstrapArchiveCommand(bootstrapArchivePolicy(255)); err == nil {
+		t.Fatal("unknown archive policy unexpectedly produced a guest command")
+	}
+}
+
+func TestExportBootstrapSessionImageArchiveUsesCombinedPolicy(t *testing.T) {
+	archive := []byte("mock-session-image-archive")
+	options := &bootstrapHostKeyConsoleOptions{}
+	options.terminal = func(conn *websocket.Conn, command string) {
+		markers := bootstrapTLSArchiveMarkersFromCommand(t, command)
+		script := bootstrapTLSArchiveScriptFromCommand(t, command)
+		roots, _ := bootstrapArchivePolicyRoots(bootstrapArchivePolicySessionImageCredentials)
+		for _, root := range roots {
+			if !strings.Contains(script, " /"+root) {
+				t.Errorf("session-image export omitted audited path /%s", root)
+				return
+			}
+		}
+		if err := websocket.Message.Send(conn, []byte(bootstrapTLSArchiveConsoleTranscript(command, markers, options.identity, archive))); err != nil {
+			t.Errorf("send combined archive fixture: %v", err)
+		}
+	}
+	runtime, server := newBootstrapHostKeyRuntime(t, options)
+	defer server.Close()
+	var destination bytes.Buffer
+	result, err := runtime.exportBootstrapSessionImageArchive(context.Background(), options.binding, &destination)
+	if err != nil {
+		t.Fatalf("exportBootstrapSessionImageArchive() error = %v", err)
+	}
+	if !bytes.Equal(destination.Bytes(), archive) || result.Bytes != int64(len(archive)) || result.SHA256 == "" || result.IsolationSHA256 == "" {
+		t.Fatalf("combined export bytes/evidence = %q / %+v", destination.Bytes(), result)
+	}
+}
+
 func TestBootstrapTLSArchiveFixedCommandRequiresSuccessfulTarPipeline(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux shell characterization; skipped explicitly on non-Linux hosts")
@@ -320,7 +395,7 @@ func extractTLSArchiveEndMarker(t *testing.T, script string) string {
 
 func bootstrapTLSArchiveMarkersFromScript(t *testing.T, script string) [5]string {
 	t.Helper()
-	re := regexp.MustCompile(`__CODEX_TLSARCHIVE_[A-Za-z0-9_-]+__`)
+	re := regexp.MustCompile(`__CODEX_ARCHIVE_[A-Za-z0-9_-]+__`)
 	matches := re.FindAllString(script, -1)
 	var markers [5]string
 	if len(matches) != len(markers) {
@@ -346,7 +421,7 @@ func bootstrapTLSArchiveConsoleOutput(markers [5]string, identity [3]string, arc
 func bootstrapTLSArchiveMarkersFromCommand(t *testing.T, command string) [5]string {
 	t.Helper()
 	script := bootstrapTLSArchiveScriptFromCommand(t, command)
-	re := regexp.MustCompile(`__CODEX_TLSARCHIVE_[A-Za-z0-9_-]+__`)
+	re := regexp.MustCompile(`__CODEX_ARCHIVE_[A-Za-z0-9_-]+__`)
 	matches := re.FindAllString(script, -1)
 	var markers [5]string
 	if len(matches) != len(markers) {

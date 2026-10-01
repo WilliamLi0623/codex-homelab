@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 
@@ -34,7 +35,18 @@ type bootstrapTLSArchiveEvidence struct {
 // exportBootstrapTLSArchive is a fixed, read-only Proxmox console export.
 // Partial destination output after any failure is unverified and must be quarantined by its caller.
 func (r *ProxmoxRuntime) exportBootstrapTLSArchive(ctx context.Context, binding store.SessionRuntimeBinding, destination io.Writer) (bootstrapTLSArchiveEvidence, error) {
+	return r.exportBootstrapArchivePolicy(ctx, binding, destination, bootstrapArchivePolicyTLS)
+}
+
+func (r *ProxmoxRuntime) exportBootstrapSessionImageArchive(ctx context.Context, binding store.SessionRuntimeBinding, destination io.Writer) (bootstrapTLSArchiveEvidence, error) {
+	return r.exportBootstrapArchivePolicy(ctx, binding, destination, bootstrapArchivePolicySessionImageCredentials)
+}
+
+func (r *ProxmoxRuntime) exportBootstrapArchivePolicy(ctx context.Context, binding store.SessionRuntimeBinding, destination io.Writer, policy bootstrapArchivePolicy) (bootstrapTLSArchiveEvidence, error) {
 	var empty bootstrapTLSArchiveEvidence
+	if _, ok := bootstrapArchivePolicyRoots(policy); !ok {
+		return empty, ErrConsoleOwnership
+	}
 	if ctx == nil {
 		return empty, fmt.Errorf("%w: missing context", ErrConsoleCanceled)
 	}
@@ -110,7 +122,7 @@ func (r *ProxmoxRuntime) exportBootstrapTLSArchive(ctx context.Context, binding 
 		return empty, ErrConsoleHandshake
 	}
 
-	markers, command, err := makeBootstrapTLSArchiveCommand()
+	markers, command, err := makeBootstrapArchiveCommand(policy)
 	if err != nil {
 		return empty, ErrConsoleMalformedOutput
 	}
@@ -167,18 +179,38 @@ func (r *ProxmoxRuntime) exportBootstrapTLSArchive(ctx context.Context, binding 
 }
 
 func makeBootstrapTLSArchiveCommand() ([5]string, string, error) {
+	return makeBootstrapArchiveCommand(bootstrapArchivePolicyTLS)
+}
+
+func makeBootstrapArchiveCommand(policy bootstrapArchivePolicy) ([5]string, string, error) {
 	var markers [5]string
+	roots, ok := bootstrapArchivePolicyRoots(policy)
+	if !ok || len(roots) == 0 {
+		return markers, "", ErrConsoleOwnership
+	}
 	nonce := make([]byte, 16)
 	if _, err := rand.Read(nonce); err != nil {
 		return markers, "", err
 	}
-	base := "__CODEX_TLSARCHIVE_" + hex.EncodeToString(nonce)
+	base := "__CODEX_ARCHIVE_" + hex.EncodeToString(nonce)
 	markers = [5]string{base + "_UID__", base + "_OS__", base + "_HOST__", base + "_BEGIN__", base + "_END__"}
+	paths := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if root == "" || strings.HasPrefix(root, "/") || path.Clean(root) != root || strings.HasPrefix(root, "../") || strings.ContainsAny(root, "'\"`$\\ \t\n\r") {
+			return [5]string{}, "", ErrConsoleOwnership
+		}
+		paths = append(paths, "/"+root)
+	}
+	var tarPaths strings.Builder
+	for _, guestPath := range paths {
+		tarPaths.WriteByte(' ')
+		tarPaths.WriteString(guestPath)
+	}
 	script := "printf '%s\\n' '" + markers[0] + "'; id -u; " +
 		"printf '%s\\n' '" + markers[1] + "'; uname -s; " +
 		"printf '%s\\n' '" + markers[2] + "'; hostname; " +
 		"printf '%s\\n' '" + markers[3] + "'; " +
-		"bash -o pipefail -c 'tar -C / -cf - -- " + bootstrapTLSArchiveKeyGuestPath + " " + bootstrapTLSArchiveCertGuestPath + " 2>/dev/null | base64 -w 76 2>/dev/null' 2>/dev/null && " +
+		"bash -o pipefail -c 'tar -C / -cf - --" + tarPaths.String() + " 2>/dev/null | base64 -w 76 2>/dev/null' 2>/dev/null && " +
 		"printf '%s\\n' '" + markers[4] + "'"
 	encoded := base64.StdEncoding.EncodeToString([]byte(script))
 	return markers, "printf %s '" + encoded + "' | base64 -d | sh\n", nil
