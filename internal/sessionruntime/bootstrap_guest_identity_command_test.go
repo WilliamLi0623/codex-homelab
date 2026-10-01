@@ -304,10 +304,14 @@ func TestBootstrapGuestIdentityCommandFailsClosedWhenAuthorizedKeysCannotBeRead(
 
 func decodeGuestIdentityScript(t *testing.T, command string) string {
 	t.Helper()
-	if !strings.HasPrefix(command, "printf %s '") || !strings.HasSuffix(command, "' | base64 -d | sh\n") {
+	suffix := "' | base64 -d | sh\n"
+	if strings.HasSuffix(command, "' | base64 -d | bash\n") {
+		suffix = "' | base64 -d | bash\n"
+	}
+	if !strings.HasPrefix(command, "printf %s '") || !strings.HasSuffix(command, suffix) {
 		t.Fatalf("unexpected fixed command envelope: %q", command)
 	}
-	encoded := strings.TrimSuffix(strings.TrimPrefix(command, "printf %s '"), "' | base64 -d | sh\n")
+	encoded := strings.TrimSuffix(strings.TrimPrefix(command, "printf %s '"), suffix)
 	decoded, err := base64.StdEncoding.Strict().DecodeString(encoded)
 	if err != nil {
 		t.Fatal(err)
