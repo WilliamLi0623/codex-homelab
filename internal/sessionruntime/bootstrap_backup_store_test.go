@@ -54,6 +54,9 @@ func TestBootstrapBackupStorePersistsReopensAndNeverReplays(t *testing.T) {
 	if err != nil || !ok || observed != evidence {
 		t.Fatal("durable backup cannot reconcile after reopen")
 	}
+	if _, ok, err := reopened.observePolicy(context.Background(), binding, bootstrapArchivePolicySessionImageCredentials); err == nil || ok {
+		t.Fatal("TLS-only backup incorrectly satisfied the Session-image credential policy")
+	}
 	if _, err := registry.save(context.Background(), binding, export); err == nil || calls != 1 {
 		t.Fatal("existing backup replayed")
 	}
@@ -99,6 +102,9 @@ func TestBootstrapBackupStorePersistsCombinedSessionImageCredentialArchive(t *te
 	observed, ok, err := reopened.observe(context.Background(), binding)
 	if err != nil || !ok || observed != evidence {
 		t.Fatal("combined session image credential backup cannot reconcile after reopen")
+	}
+	if policyEvidence, ok, err := reopened.observePolicy(context.Background(), binding, bootstrapArchivePolicySessionImageCredentials); err != nil || !ok || policyEvidence != evidence {
+		t.Fatalf("exact Session-image archive policy observation: ok=%v err=%v", ok, err)
 	}
 	manifestData, err := os.ReadFile(filepath.Join(registry.directory(binding), "complete.json"))
 	if err != nil {

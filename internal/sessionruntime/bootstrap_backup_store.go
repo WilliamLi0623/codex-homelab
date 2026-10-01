@@ -89,7 +89,19 @@ func (s *bootstrapBackupStore) observe(ctx context.Context, binding store.Sessio
 	return evidence, err == nil, err
 }
 
+func (s *bootstrapBackupStore) observePolicy(ctx context.Context, binding store.SessionRuntimeBinding, expected bootstrapArchivePolicy) (store.SessionBootstrapEvidence, bool, error) {
+	if _, ok := bootstrapArchivePolicyName(expected); !ok {
+		return store.SessionBootstrapEvidence{}, false, errBootstrapBackup
+	}
+	evidence, err := s.observedEvidenceForPolicy(ctx, binding, &expected)
+	return evidence, err == nil, err
+}
+
 func (s *bootstrapBackupStore) observedEvidence(ctx context.Context, binding store.SessionRuntimeBinding) (store.SessionBootstrapEvidence, error) {
+	return s.observedEvidenceForPolicy(ctx, binding, nil)
+}
+
+func (s *bootstrapBackupStore) observedEvidenceForPolicy(ctx context.Context, binding store.SessionRuntimeBinding, expected *bootstrapArchivePolicy) (store.SessionBootstrapEvidence, error) {
 	empty := store.SessionBootstrapEvidence{}
 	if s == nil || ctx == nil || ctx.Err() != nil || !validMaterialBinding(binding) || privateMaterialDirectory(s.root) != nil {
 		return empty, errBootstrapBackup
@@ -111,6 +123,9 @@ func (s *bootstrapBackupStore) observedEvidence(ctx context.Context, binding sto
 		return empty, errBootstrapBackup
 	}
 	policy, _ := bootstrapArchivePolicyFromName(complete.Policy)
+	if expected != nil && policy != *expected {
+		return empty, errBootstrapBackup
+	}
 	actual, bytes, err := verifyBootstrapBackupArchiveWithPolicy(ctx, filepath.Join(dir, "archive.tar"), policy)
 	if err != nil || ctx.Err() != nil || actual != complete.Export.SHA256 || bytes != complete.Export.Bytes {
 		return empty, errBootstrapBackup
