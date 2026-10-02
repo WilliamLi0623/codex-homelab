@@ -17,7 +17,6 @@ import (
 
 var p28HostKeyAliasPattern = regexp.MustCompile(`^p28-session-[0-9a-f]{64}$`)
 var p28ArtifactDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
-var p28ArtifactVersionPattern = regexp.MustCompile(`^0\.(155|160)\.0$`)
 var safeRemotePathPattern = regexp.MustCompile(`^/[A-Za-z0-9._/-]+$`)
 
 // SSHAppServerConfig contains the generation-bound connection material for one
@@ -99,20 +98,22 @@ func StartSSHAppServerProcess(ctx context.Context, config SSHAppServerConfig) (*
 }
 
 // BuildSSHArtifactInstallCommand returns the fixed, pinned SSH invocation for
-// the one-shot Codex bundle receiver. Remote arguments are a pinned release
-// version and lowercase generation-bound digest; archive bytes travel on stdin.
-func BuildSSHArtifactInstallCommand(config SSHAppServerConfig, version, generationDigest string, localEnvironment []string) (string, []string, []string, error) {
-	return buildSSHArtifactCommand(config, []string{version, generationDigest}, localEnvironment)
+// the one-shot Codex bundle receiver. The generation-bound digest is the only
+// remote selector; the receiver selects the release from the verified stream.
+func BuildSSHArtifactInstallCommand(config SSHAppServerConfig, generationDigest string, localEnvironment []string) (string, []string, []string, error) {
+	return buildSSHArtifactCommand(config, []string{generationDigest}, localEnvironment)
 }
 
 // BuildSSHArtifactObserveCommand constructs the fixed read-only reconciliation
 // command. It cannot accept a shell fragment or an arbitrary remote path.
-func BuildSSHArtifactObserveCommand(config SSHAppServerConfig, version, generationDigest string, localEnvironment []string) (string, []string, []string, error) {
-	return buildSSHArtifactCommand(config, []string{"--observe", version, generationDigest}, localEnvironment)
+func BuildSSHArtifactObserveCommand(config SSHAppServerConfig, generationDigest string, localEnvironment []string) (string, []string, []string, error) {
+	return buildSSHArtifactCommand(config, []string{"--observe", generationDigest}, localEnvironment)
 }
 
 func buildSSHArtifactCommand(config SSHAppServerConfig, remoteArguments, localEnvironment []string) (string, []string, []string, error) {
-	if len(remoteArguments) < 2 || len(remoteArguments) > 3 || !p28ArtifactVersionPattern.MatchString(remoteArguments[len(remoteArguments)-2]) || !p28ArtifactDigestPattern.MatchString(remoteArguments[len(remoteArguments)-1]) || (len(remoteArguments) == 3 && remoteArguments[0] != "--observe") {
+	validInstall := len(remoteArguments) == 1 && p28ArtifactDigestPattern.MatchString(remoteArguments[0])
+	validObserve := len(remoteArguments) == 2 && remoteArguments[0] == "--observe" && p28ArtifactDigestPattern.MatchString(remoteArguments[1])
+	if !validInstall && !validObserve {
 		return "", nil, nil, errors.New("Codex artifact command arguments are invalid")
 	}
 	if err := validateSSHAppServerConfig(config); err != nil {
@@ -147,18 +148,18 @@ func buildSSHArtifactCommand(config SSHAppServerConfig, remoteArguments, localEn
 // RunSSHArtifactInstall sends one framed artifact stream and never retries.
 // All remote diagnostics are discarded so they cannot disclose paths or
 // guest output; callers receive only a stable error class.
-func RunSSHArtifactInstall(ctx context.Context, config SSHAppServerConfig, version, generationDigest string, archive io.Reader) error {
-	_, err := RunSSHArtifactInstallWithEvidence(ctx, config, version, generationDigest, archive)
+func RunSSHArtifactInstall(ctx context.Context, config SSHAppServerConfig, generationDigest string, archive io.Reader) error {
+	_, err := RunSSHArtifactInstallWithEvidence(ctx, config, generationDigest, archive)
 	return err
 }
 
 // RunSSHArtifactInstallWithEvidence performs exactly one pinned SSH request
 // and accepts only the installer's fixed, bounded digest acknowledgment.
-func RunSSHArtifactInstallWithEvidence(ctx context.Context, config SSHAppServerConfig, version, generationDigest string, archive io.Reader) (string, error) {
+func RunSSHArtifactInstallWithEvidence(ctx context.Context, config SSHAppServerConfig, generationDigest string, archive io.Reader) (string, error) {
 	if runtime.GOOS != "linux" || ctx == nil || archive == nil {
 		return "", errors.New("pinned Codex artifact transfer requires a Linux Controller and stream")
 	}
-	executable, args, environment, err := BuildSSHArtifactInstallCommand(config, version, generationDigest, os.Environ())
+	executable, args, environment, err := BuildSSHArtifactInstallCommand(config, generationDigest, os.Environ())
 	if err != nil {
 		return "", errors.New("pinned Codex artifact transfer configuration is invalid")
 	}
@@ -183,11 +184,11 @@ func RunSSHArtifactInstallWithEvidence(ctx context.Context, config SSHAppServerC
 
 // RunSSHArtifactObserve reconciles a prior upload with a bounded fixed-token
 // response. It performs only one read-only command and never retries.
-func RunSSHArtifactObserve(ctx context.Context, config SSHAppServerConfig, version, generationDigest string) (string, error) {
+func RunSSHArtifactObserve(ctx context.Context, config SSHAppServerConfig, generationDigest string) (string, error) {
 	if runtime.GOOS != "linux" || ctx == nil {
 		return "", errors.New("pinned Codex artifact observation requires a Linux Controller")
 	}
-	executable, args, environment, err := BuildSSHArtifactObserveCommand(config, version, generationDigest, os.Environ())
+	executable, args, environment, err := BuildSSHArtifactObserveCommand(config, generationDigest, os.Environ())
 	if err != nil {
 		return "", errors.New("pinned Codex artifact observation configuration is invalid")
 	}

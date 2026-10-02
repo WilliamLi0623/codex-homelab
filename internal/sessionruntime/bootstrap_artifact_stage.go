@@ -74,7 +74,7 @@ func (s *bootstrapArtifactStage) Apply(ctx context.Context, binding store.Sessio
 		}
 		writeResult <- writeErr
 	}()
-	remoteEvidence, remoteErr := codexsession.RunSSHArtifactInstallWithEvidence(transferCtx, config, s.bundle.version, generationDigest, reader)
+	remoteEvidence, remoteErr := codexsession.RunSSHArtifactInstallWithEvidence(transferCtx, config, generationDigest, reader)
 	_ = reader.Close()
 	writeErr := <-writeResult
 	if remoteErr != nil || writeErr != nil {
@@ -115,7 +115,7 @@ func (s *bootstrapArtifactStage) Observe(ctx context.Context, binding store.Sess
 	config.IdentityFile = material.IdentityFile
 	config.KnownHostsFile = material.KnownHostsFile
 	config.HostKeyAlias = material.Alias
-	remoteEvidence, err := codexsession.RunSSHArtifactObserve(ctx, config, s.bundle.version, generationDigest)
+	remoteEvidence, err := codexsession.RunSSHArtifactObserve(ctx, config, generationDigest)
 	if err != nil {
 		return empty, false, errBootstrapArtifactStage
 	}

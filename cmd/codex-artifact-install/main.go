@@ -13,17 +13,18 @@ import (
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
+	observe, digest, ok := parseArgs(os.Args)
+	if !ok {
+		fail()
+	}
 	var evidenceSHA string
 	var err error
-	switch {
-	case len(os.Args) == 3:
-		result, installErr := sessionruntime.InstallBootstrapCodexArtifactVersion(ctx, os.Stdin, os.Args[1], os.Args[2])
-		evidenceSHA, err = result.SHA256, installErr
-	case len(os.Args) == 4 && os.Args[1] == "--observe":
-		result, observeErr := sessionruntime.ObserveBootstrapCodexArtifactVersion(ctx, os.Args[2], os.Args[3])
+	if observe {
+		result, observeErr := sessionruntime.ObserveBootstrapCodexArtifact(ctx, digest)
 		evidenceSHA, err = result.SHA256, observeErr
-	default:
-		fail()
+	} else {
+		result, installErr := sessionruntime.InstallBootstrapCodexArtifact(ctx, os.Stdin, digest)
+		evidenceSHA, err = result.SHA256, installErr
 	}
 	if err != nil || len(evidenceSHA) != 64 {
 		fail()
@@ -31,6 +32,16 @@ func main() {
 	if _, err := fmt.Fprintf(os.Stdout, "P28_CODEX_INSTALL_COMPLETE:%s\n", evidenceSHA); err != nil {
 		fail()
 	}
+}
+
+func parseArgs(args []string) (observe bool, digest string, ok bool) {
+	if len(args) == 2 {
+		return false, args[1], true
+	}
+	if len(args) == 3 && args[1] == "--observe" {
+		return true, args[2], true
+	}
+	return false, "", false
 }
 
 func fail() {

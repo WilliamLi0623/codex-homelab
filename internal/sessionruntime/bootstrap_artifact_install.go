@@ -25,7 +25,10 @@ var errBootstrapCodexInstall = errors.New("Codex artifact installation could not
 // The caller supplies only the validated generation-bound install digest; the
 // installer accepts one framed archive and never repairs or replaces paths.
 func InstallBootstrapCodexArtifact(ctx context.Context, input io.Reader, generationDigest string) (store.SessionBootstrapEvidence, error) {
-	return InstallBootstrapCodexArtifactVersion(ctx, input, bootstrapCodex0155Version, generationDigest)
+	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
+		return store.SessionBootstrapEvidence{}, errBootstrapCodexInstall
+	}
+	return installBootstrapCodexArtifactAt(ctx, input, generationDigest, "/opt/codex", "/usr/local/bin/codex")
 }
 
 // InstallBootstrapCodexArtifactVersion selects only a compiled-in, immutable
@@ -44,7 +47,29 @@ func InstallBootstrapCodexArtifactVersion(ctx context.Context, input io.Reader, 
 // ObserveBootstrapCodexArtifact verifies the generation install and launcher
 // without creating, replacing, or deleting guest paths.
 func ObserveBootstrapCodexArtifact(ctx context.Context, generationDigest string) (store.SessionBootstrapEvidence, error) {
-	return ObserveBootstrapCodexArtifactVersion(ctx, bootstrapCodex0155Version, generationDigest)
+	if runtime.GOOS != "linux" || os.Geteuid() != 0 || ctx == nil || ctx.Err() != nil {
+		return store.SessionBootstrapEvidence{}, errBootstrapCodexInstall
+	}
+	var match store.SessionBootstrapEvidence
+	matches := 0
+	for _, version := range []string{bootstrapCodex0160Version, bootstrapCodex0155Version} {
+		if ctx.Err() != nil {
+			return store.SessionBootstrapEvidence{}, errBootstrapCodexInstall
+		}
+		bundle, err := bootstrapCodexBundleForVersion(version)
+		if err != nil {
+			return store.SessionBootstrapEvidence{}, errBootstrapCodexInstall
+		}
+		evidence, verified, err := observeBootstrapCodexBundleAt(ctx, generationDigest, bundle, "/opt/codex", "/usr/local/bin/codex")
+		if err == nil && verified {
+			match = evidence
+			matches++
+		}
+	}
+	if matches != 1 {
+		return store.SessionBootstrapEvidence{}, errBootstrapCodexInstall
+	}
+	return match, nil
 }
 
 // ObserveBootstrapCodexArtifactVersion performs read-only verification for
@@ -94,8 +119,16 @@ func observeBootstrapCodexBundleAt(ctx context.Context, generationDigest string,
 	return bootstrapCodexInstallEvidence(generationDigest, bundle, manifest), true, nil
 }
 
+func installBootstrapCodexArtifactAt(ctx context.Context, input io.Reader, generationDigest, installRoot, launcher string) (store.SessionBootstrapEvidence, error) {
+	return installBootstrapCodexBundleSelectionAt(ctx, input, generationDigest, nil, installRoot, launcher)
+}
+
 func installBootstrapCodexBundleAt(ctx context.Context, input io.Reader, generationDigest string, bundle codexArtifactBundle, installRoot, launcher string) (store.SessionBootstrapEvidence, error) {
-	if ctx == nil || ctx.Err() != nil || input == nil || runtime.GOOS != "linux" || os.Geteuid() != 0 || !bootstrapDigestPattern.MatchString(generationDigest) || !validInstallBundle(bundle) || !filepath.IsAbs(installRoot) || filepath.Clean(installRoot) != installRoot || !filepath.IsAbs(launcher) || filepath.Clean(launcher) != launcher {
+	return installBootstrapCodexBundleSelectionAt(ctx, input, generationDigest, &bundle, installRoot, launcher)
+}
+
+func installBootstrapCodexBundleSelectionAt(ctx context.Context, input io.Reader, generationDigest string, requestedBundle *codexArtifactBundle, installRoot, launcher string) (store.SessionBootstrapEvidence, error) {
+	if ctx == nil || ctx.Err() != nil || input == nil || runtime.GOOS != "linux" || os.Geteuid() != 0 || !bootstrapDigestPattern.MatchString(generationDigest) || (requestedBundle != nil && !validInstallBundle(*requestedBundle)) || !filepath.IsAbs(installRoot) || filepath.Clean(installRoot) != installRoot || !filepath.IsAbs(launcher) || filepath.Clean(launcher) != launcher {
 		return store.SessionBootstrapEvidence{}, errBootstrapCodexInstall
 	}
 	if err := validateArtifactInstallDirectory(installRoot, true); err != nil {
@@ -130,7 +163,15 @@ func installBootstrapCodexBundleAt(ctx context.Context, input io.Reader, generat
 	archiveHash := sha256.New()
 	archiveBody := io.TeeReader(bounded, archiveHash)
 	archive := tar.NewReader(archiveBody)
-	manifest, err := readBootstrapCodexManifest(archive, bundle)
+	var bundle codexArtifactBundle
+	var manifest bootstrapCodexManifest
+	var err error
+	if requestedBundle == nil {
+		manifest, bundle, err = readBootstrapCodexManifestSelectingVersion(archive)
+	} else {
+		bundle = *requestedBundle
+		manifest, err = readBootstrapCodexManifest(archive, bundle)
+	}
 	if err != nil {
 		return store.SessionBootstrapEvidence{}, errBootstrapCodexInstall
 	}
@@ -194,6 +235,29 @@ func makeBootstrapCodexManifest(bundle codexArtifactBundle, entries []verifiedCo
 
 func readBootstrapCodexManifest(archive *tar.Reader, bundle codexArtifactBundle) (bootstrapCodexManifest, error) {
 	var empty bootstrapCodexManifest
+	manifest, err := decodeBootstrapCodexManifest(archive)
+	if err != nil || validateBootstrapCodexManifest(manifest, bundle) != nil {
+		return empty, errBootstrapCodexInstall
+	}
+	return manifest, nil
+}
+
+func readBootstrapCodexManifestSelectingVersion(archive *tar.Reader) (bootstrapCodexManifest, codexArtifactBundle, error) {
+	var empty bootstrapCodexManifest
+	var emptyBundle codexArtifactBundle
+	manifest, err := decodeBootstrapCodexManifest(archive)
+	if err != nil {
+		return empty, emptyBundle, errBootstrapCodexInstall
+	}
+	bundle, err := bootstrapCodexBundleForVersion(manifest.Version)
+	if err != nil || validateBootstrapCodexManifest(manifest, bundle) != nil {
+		return empty, emptyBundle, errBootstrapCodexInstall
+	}
+	return manifest, bundle, nil
+}
+
+func decodeBootstrapCodexManifest(archive *tar.Reader) (bootstrapCodexManifest, error) {
+	var empty bootstrapCodexManifest
 	header, err := archive.Next()
 	if err != nil || header.Name != bootstrapArtifactManifestPath || header.Typeflag != tar.TypeReg || header.Mode != 0600 || header.Size <= 0 || header.Size > 1<<20 || header.Uid != 0 || header.Gid != 0 || header.Linkname != "" {
 		return empty, errBootstrapCodexInstall
@@ -210,8 +274,15 @@ func readBootstrapCodexManifest(archive *tar.Reader, bundle codexArtifactBundle)
 	}
 	var trailing any
 	canonical, marshalErr := json.Marshal(manifest)
-	if decoder.Decode(&trailing) != io.EOF || marshalErr != nil || !bytes.Equal(canonical, data) || manifest.Version != bundle.version || manifest.Target != bundle.target || len(manifest.Files) != len(bundle.files) {
+	if decoder.Decode(&trailing) != io.EOF || marshalErr != nil || !bytes.Equal(canonical, data) {
 		return empty, errBootstrapCodexInstall
+	}
+	return manifest, nil
+}
+
+func validateBootstrapCodexManifest(manifest bootstrapCodexManifest, bundle codexArtifactBundle) error {
+	if !validInstallBundle(bundle) || manifest.Version != bundle.version || manifest.Target != bundle.target || len(manifest.Files) != len(bundle.files) {
+		return errBootstrapCodexInstall
 	}
 	expected := append([]codexArtifactFile(nil), bundle.files...)
 	sort.Slice(expected, func(i, j int) bool { return expected[i].path < expected[j].path })
@@ -219,14 +290,14 @@ func readBootstrapCodexManifest(archive *tar.Reader, bundle codexArtifactBundle)
 	for i, file := range expected {
 		entry := manifest.Files[i]
 		if entry.Path != file.path || entry.SHA256 != file.sha256 || entry.Mode != uint32(file.mode.Perm()) || entry.Size <= 0 || entry.Size > bootstrapArtifactMaxFile {
-			return empty, errBootstrapCodexInstall
+			return errBootstrapCodexInstall
 		}
 		total += entry.Size
 		if total > bootstrapArtifactMaxBytes {
-			return empty, errBootstrapCodexInstall
+			return errBootstrapCodexInstall
 		}
 	}
-	return manifest, nil
+	return nil
 }
 
 func extractBootstrapCodexFiles(ctx context.Context, archive *tar.Reader, staging string, manifest bootstrapCodexManifest) error {

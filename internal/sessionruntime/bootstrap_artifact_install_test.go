@@ -1,16 +1,58 @@
 package sessionruntime
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 )
+
+func TestReadBootstrapCodexManifestSelectsPinnedVersionAndRejectsUnknownOrMismatchedVersion(t *testing.T) {
+	manifest := bootstrapCodexManifest{Version: bootstrapCodex0160Version, Target: bootstrapCodex0160Bundle.target}
+	for _, file := range bootstrapCodex0160Bundle.files {
+		manifest.Files = append(manifest.Files, verifiedCodexArtifact{Path: file.path, SHA256: file.sha256, Size: 1, Mode: uint32(file.mode.Perm())})
+	}
+	read := func(value bootstrapCodexManifest) (codexArtifactBundle, error) {
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var archive bytes.Buffer
+		writer := tar.NewWriter(&archive)
+		if err := writer.WriteHeader(&tar.Header{Name: bootstrapArtifactManifestPath, Mode: 0600, Size: int64(len(data)), Typeflag: tar.TypeReg, Uid: 0, Gid: 0}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(data); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		_, selected, err := readBootstrapCodexManifestSelectingVersion(tar.NewReader(bytes.NewReader(archive.Bytes())))
+		return selected, err
+	}
+	selected, err := read(manifest)
+	if err != nil || selected.version != bootstrapCodex0160Version {
+		t.Fatalf("selected bundle=%q err=%v, want %q", selected.version, err, bootstrapCodex0160Version)
+	}
+	unknown := manifest
+	unknown.Version = "0.159.0"
+	if _, err := read(unknown); err == nil {
+		t.Fatal("unknown manifest version was accepted")
+	}
+	mismatched := manifest
+	mismatched.Version = bootstrapCodex0155Version
+	if _, err := read(mismatched); err == nil {
+		t.Fatal("manifest version did not match the pinned bundle file set")
+	}
+}
 
 func TestBootstrapCodexInstallPromotesOnlyVerifiedBundle(t *testing.T) {
 	requireLinuxRoot(t)

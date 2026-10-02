@@ -70,18 +70,18 @@ func TestBuildSSHAppServerCommandUsesPinnedHostAndFixedRemoteCommand(t *testing.
 	}
 }
 
-func TestBuildSSHArtifactInstallCommandUsesPinnedSSHAndExplicitVersion(t *testing.T) {
+func TestBuildSSHArtifactInstallCommandUsesPinnedSSHAndDigestOnlySelector(t *testing.T) {
 	config := newSSHTestConfig(t)
 	digest := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	executable, args, environment, err := BuildSSHArtifactInstallCommand(config, "0.160.0", digest, []string{"PATH=/usr/bin:/bin", "OPENAI_API_KEY=do-not-leak", "HTTPS_PROXY=http://proxy.invalid"})
+	executable, args, environment, err := BuildSSHArtifactInstallCommand(config, digest, []string{"PATH=/usr/bin:/bin", "OPENAI_API_KEY=do-not-leak", "HTTPS_PROXY=http://proxy.invalid"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if executable != config.SSHExecutable || indexOfSSHArg(args, "-oStrictHostKeyChecking=yes") < 0 {
 		t.Fatalf("artifact SSH target/options = %q %q", executable, args)
 	}
-	remote := args[len(args)-3:]
-	if strings.Join(remote, "\n") != "/usr/local/libexec/codex-artifact-install\n0.160.0\n"+digest {
+	remote := args[len(args)-2:]
+	if strings.Join(remote, "\n") != "/usr/local/libexec/codex-artifact-install\n"+digest {
 		t.Fatalf("remote installer argv = %q", remote)
 	}
 	joined := strings.Join(args, "\n")
@@ -98,23 +98,20 @@ func TestBuildSSHArtifactInstallCommandUsesPinnedSSHAndExplicitVersion(t *testin
 func TestBuildSSHArtifactInstallCommandRejectsUnsafeDigest(t *testing.T) {
 	config := newSSHTestConfig(t)
 	for _, digest := range []string{"", "../target", "ABCDEF0123456789", strings.Repeat("a", 63), strings.Repeat("a", 65), strings.Repeat("a", 63) + "g"} {
-		if _, _, _, err := BuildSSHArtifactInstallCommand(config, "0.160.0", digest, nil); err == nil {
+		if _, _, _, err := BuildSSHArtifactInstallCommand(config, digest, nil); err == nil {
 			t.Errorf("unsafe digest %q was accepted", digest)
 		}
-	}
-	if _, _, _, err := BuildSSHArtifactInstallCommand(config, "latest", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", nil); err == nil {
-		t.Fatal("unresolved latest version was accepted")
 	}
 }
 
 func TestBuildSSHArtifactObserveCommandUsesReadOnlyFixedMode(t *testing.T) {
 	config := newSSHTestConfig(t)
 	digest := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	_, args, _, err := BuildSSHArtifactObserveCommand(config, "0.160.0", digest, nil)
+	_, args, _, err := BuildSSHArtifactObserveCommand(config, digest, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(args[len(args)-4:], " "); got != "/usr/local/libexec/codex-artifact-install --observe 0.160.0 "+digest {
+	if got := strings.Join(args[len(args)-3:], " "); got != "/usr/local/libexec/codex-artifact-install --observe "+digest {
 		t.Fatalf("read-only command tail = %q", got)
 	}
 	if _, _, _, err := buildSSHArtifactCommand(config, []string{"--delete", digest}, nil); err == nil {
