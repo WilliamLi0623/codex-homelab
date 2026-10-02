@@ -218,3 +218,59 @@ func TestProbeBootstrapGuestIPv4RejectsMalformedAndMultipleAddresses(t *testing.
 		})
 	}
 }
+
+func TestBootstrapAddressSSHConfigResolverUsesEphemeralAddressAndBindingScopedHome(t *testing.T) {
+	options := &bootstrapGuestAddressConsoleOptions{digests: []string{strings.Repeat("a", 40), strings.Repeat("a", 40)}}
+	runtime, server := newBootstrapGuestAddressRuntime(t, options)
+	defer server.Close()
+	resolver, err := newBootstrapAddressSSHConfigResolver(runtime, "/usr/bin/ssh")
+	if err != nil {
+		t.Fatalf("newBootstrapAddressSSHConfigResolver() error = %v", err)
+	}
+	material := SSHMaterial{
+		IdentityFile:   "/var/lib/codex-session-ssh/client",
+		KnownHostsFile: "/var/lib/codex-session-ssh/known_hosts",
+		Alias:          "p28-session-" + strings.Repeat("a", 64),
+	}
+	config, err := resolver(context.Background(), options.binding, material)
+	if err != nil {
+		t.Fatalf("resolver() error = %v", err)
+	}
+	if config.Address != "10.58.2.231" || config.SSHExecutable != "/usr/bin/ssh" || config.IdentityFile != material.IdentityFile || config.KnownHostsFile != material.KnownHostsFile || config.HostKeyAlias != material.Alias {
+		t.Fatalf("resolver returned unexpected pinned SSH config: %+v", config)
+	}
+	if !strings.HasPrefix(config.CodexHome, "/root/.codex-p28/") || len(strings.TrimPrefix(config.CodexHome, "/root/.codex-p28/")) != 64 {
+		t.Fatalf("resolver returned unsafe/non-generation-scoped CODEX_HOME %q", config.CodexHome)
+	}
+	other := options.binding
+	other.Generation = "gen-2"
+	if otherHome := bootstrapCodexHome(other); otherHome == config.CodexHome {
+		t.Fatalf("different generations share CODEX_HOME %q", config.CodexHome)
+	}
+	if options.configCalls != 2 || options.consolePosts != 1 || options.websocketHits != 1 {
+		t.Fatalf("resolver probes: config reads=%d termproxy=%d websocket=%d; want one fenced pair", options.configCalls, options.consolePosts, options.websocketHits)
+	}
+}
+
+func TestBootstrapAddressSSHConfigResolverRejectsInvalidConfigurationAndBinding(t *testing.T) {
+	options := &bootstrapGuestAddressConsoleOptions{}
+	runtime, server := newBootstrapGuestAddressRuntime(t, options)
+	defer server.Close()
+	for _, executable := range []string{"", "ssh", "/usr/bin/../bin/ssh"} {
+		if _, err := newBootstrapAddressSSHConfigResolver(runtime, executable); err == nil {
+			t.Errorf("resolver accepted SSH executable %q", executable)
+		}
+	}
+	resolver, err := newBootstrapAddressSSHConfigResolver(runtime, "/usr/bin/ssh")
+	if err != nil {
+		t.Fatal("valid resolver configuration rejected")
+	}
+	badBinding := options.binding
+	badBinding.Generation = "gen/../../other"
+	if _, err := resolver(context.Background(), badBinding, SSHMaterial{}); !errors.Is(err, ErrBootstrapGuestAddress) {
+		t.Fatalf("invalid binding error = %v, want ErrBootstrapGuestAddress", err)
+	}
+	if options.consolePosts != 0 || options.websocketHits != 0 {
+		t.Fatalf("invalid resolver inputs reached guest console: termproxy=%d websocket=%d", options.consolePosts, options.websocketHits)
+	}
+}
