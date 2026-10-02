@@ -362,6 +362,11 @@ P28 is complete only when the Linux Web UI can create and continue persistent Se
 - Linux test execution is not yet verified: this Windows environment has no exact trusted `known_hosts` entry for PVE `10.58.2.187`, so strict SSH rejected the read-only connection attempt. Host-key checking was not bypassed and no live host key was accepted from an unauthenticated source. The test binary is retained locally under `artifacts/p28-transport-driver-20261002/`; no remote paths were created.
 - The dispatcher and stage adapter are source components only and are not assembled into `BootstrapCoordinator` or Controller production configuration. No live address was used for SSH; no LXC/template/service/database/configuration/credential was changed. Account identity, authenticated turns, Session API/READY and Task 5 remain closed. Continue only after the trusted Linux test route is restored, then add the concrete production stage factory/Controller wiring under an explicit disabled-by-default configuration gate.
 
+### Task 4 — concrete ordered stage factory — 2026-10-02
+
+- Added `NewBootstrapDriver` to construct the complete ordered stage set around one Session `ProxmoxRuntime`, using only caller-supplied existing SSH-material, keygen, backup, artifact and SSH paths. The factory creates no paths and invokes no external action. The `BootstrapCoordinator` and Session `Manager` are still not wired to this factory; environment parsing remains unchanged and Session API/READY remain fail-closed.
+- Added path/config rejection tests. Full `go test ./... -count=1`, `go vet ./...`, and `git diff --check` pass on Windows. The Linux-only full runtime package suite remains pending the trusted SSH route noted above; Controller build/runtime configuration and authenticated accountA acceptance remain open.
+
 ### Task 4 — verified Codex artifact transfer source implementation — 2026-10-02
 
 - Added deterministic manifest-first tar encoding and a two-pass framed upload protocol. The frame binds the archive length and SHA256; the sender emits its commit marker only after both streamed passes and exact source-bundle reverification succeed. Any interrupted/ambiguous transfer has no commit marker and has no automatic retry path.
