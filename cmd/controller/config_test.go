@@ -142,7 +142,7 @@ func TestLoadSessionBootstrapConfigRequiresSessionRuntimeAndEveryPath(t *testing
 			t.Setenv("SESSION_SSH_MATERIAL_ROOT", "/var/lib/codex-session/ssh")
 			t.Setenv("SESSION_SSH_KEYGEN", "/usr/bin/ssh-keygen")
 			t.Setenv("SESSION_BOOTSTRAP_BACKUP_ROOT", "/var/lib/codex-session/backups")
-			t.Setenv("SESSION_BOOTSTRAP_ARTIFACT_ROOT", "/var/lib/codex-bootstrap-artifacts/codex-0.155.0-x86_64-unknown-linux-musl")
+			t.Setenv("SESSION_BOOTSTRAP_ARTIFACT_ROOT", "/var/lib/codex-bootstrap-artifacts")
 			t.Setenv("SESSION_SSH_EXECUTABLE", "/usr/bin/ssh")
 			if !tc.runtimeSet {
 				if _, err := loadSessionBootstrapConfig(false); err == nil {
@@ -164,15 +164,44 @@ func TestLoadSessionBootstrapConfigLoadsExactPaths(t *testing.T) {
 	t.Setenv("SESSION_SSH_MATERIAL_ROOT", "/var/lib/codex-session/ssh")
 	t.Setenv("SESSION_SSH_KEYGEN", "/usr/bin/ssh-keygen")
 	t.Setenv("SESSION_BOOTSTRAP_BACKUP_ROOT", "/var/lib/codex-session/backups")
-	t.Setenv("SESSION_BOOTSTRAP_ARTIFACT_ROOT", "/var/lib/codex-bootstrap-artifacts/codex-0.155.0-x86_64-unknown-linux-musl")
+	t.Setenv("SESSION_BOOTSTRAP_ARTIFACT_ROOT", "/var/lib/codex-bootstrap-artifacts")
 	t.Setenv("SESSION_SSH_EXECUTABLE", "/usr/bin/ssh")
 	config, err := loadSessionBootstrapConfig(true)
 	if err != nil {
 		t.Fatalf("loadSessionBootstrapConfig() error: %v", err)
 	}
-	want := &sessionruntime.BootstrapDriverConfig{SSHMaterialRoot: "/var/lib/codex-session/ssh", SSHKeygen: "/usr/bin/ssh-keygen", BackupRoot: "/var/lib/codex-session/backups", ArtifactRoot: "/var/lib/codex-bootstrap-artifacts/codex-0.155.0-x86_64-unknown-linux-musl", SSHExecutable: "/usr/bin/ssh"}
+	want := &sessionruntime.BootstrapDriverConfig{SSHMaterialRoot: "/var/lib/codex-session/ssh", SSHKeygen: "/usr/bin/ssh-keygen", BackupRoot: "/var/lib/codex-session/backups", ArtifactRoot: "/var/lib/codex-bootstrap-artifacts", CodexVersion: "0.160.0", SSHExecutable: "/usr/bin/ssh"}
 	if config == nil || *config != *want {
 		t.Fatalf("bootstrap config = %+v, want %+v", config, want)
+	}
+}
+
+func TestLoadSessionBootstrapConfigPinsRollbackVersionOnlyWhenExplicit(t *testing.T) {
+	setControllerEnvironment(t)
+	t.Setenv("SESSION_BOOTSTRAP_ENABLED", "true")
+	t.Setenv("SESSION_SSH_MATERIAL_ROOT", "/var/lib/codex-session/ssh")
+	t.Setenv("SESSION_SSH_KEYGEN", "/usr/bin/ssh-keygen")
+	t.Setenv("SESSION_BOOTSTRAP_BACKUP_ROOT", "/var/lib/codex-session/backups")
+	t.Setenv("SESSION_BOOTSTRAP_ARTIFACT_ROOT", "/var/lib/codex-bootstrap-artifacts")
+	t.Setenv("SESSION_SSH_EXECUTABLE", "/usr/bin/ssh")
+	t.Setenv("SESSION_BOOTSTRAP_CODEX_VERSION", "0.155.0")
+	cfg, err := loadSessionBootstrapConfig(true)
+	if err != nil || cfg.CodexVersion != "0.155.0" {
+		t.Fatalf("rollback bootstrap config=%+v error=%v", cfg, err)
+	}
+	t.Setenv("SESSION_BOOTSTRAP_CODEX_VERSION", "latest")
+	if _, err := loadSessionBootstrapConfig(true); err == nil {
+		t.Fatal("mutable/unresolved Codex version was accepted")
+	}
+}
+
+func TestDisabledSessionBootstrapIgnoresUnusedCodexVersionOverride(t *testing.T) {
+	setControllerEnvironment(t)
+	t.Setenv("SESSION_BOOTSTRAP_ENABLED", "false")
+	t.Setenv("SESSION_BOOTSTRAP_CODEX_VERSION", "latest")
+	config, err := loadSessionBootstrapConfig(true)
+	if err != nil || config != nil {
+		t.Fatalf("disabled bootstrap config=%+v error=%v; unused version override must not affect existing behavior", config, err)
 	}
 }
 

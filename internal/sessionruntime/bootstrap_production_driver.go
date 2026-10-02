@@ -16,6 +16,7 @@ type BootstrapDriverConfig struct {
 	SSHKeygen       string
 	BackupRoot      string
 	ArtifactRoot    string
+	CodexVersion    string
 	SSHExecutable   string
 }
 
@@ -24,6 +25,9 @@ type BootstrapDriverConfig struct {
 // to a BootstrapCoordinator and keep the API/READY release gates closed.
 func NewBootstrapDriver(runtime *ProxmoxRuntime, config BootstrapDriverConfig) (BootstrapDriver, error) {
 	if runtime == nil || !validBootstrapPOSIXPath(config.SSHMaterialRoot) || !validBootstrapPOSIXPath(config.SSHKeygen) || !validBootstrapPOSIXPath(config.BackupRoot) || !validBootstrapPOSIXPath(config.ArtifactRoot) || !validBootstrapPOSIXPath(config.SSHExecutable) {
+		return nil, ErrBootstrapConfiguration
+	}
+	if _, err := bootstrapCodexBundleForVersion(config.CodexVersion); err != nil {
 		return nil, ErrBootstrapConfiguration
 	}
 	material, err := NewSSHMaterialRegistry(config.SSHMaterialRoot, config.SSHKeygen)
@@ -58,7 +62,7 @@ func NewBootstrapDriver(runtime *ProxmoxRuntime, config BootstrapDriverConfig) (
 	if err != nil {
 		return nil, ErrBootstrapConfiguration
 	}
-	artifact, err := newBootstrapArtifactStage(config.ArtifactRoot, material, resolver)
+	artifact, err := newBootstrapArtifactStage(config.ArtifactRoot, config.CodexVersion, material, resolver)
 	if err != nil {
 		return nil, ErrBootstrapConfiguration
 	}

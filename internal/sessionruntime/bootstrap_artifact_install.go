@@ -25,19 +25,39 @@ var errBootstrapCodexInstall = errors.New("Codex artifact installation could not
 // The caller supplies only the validated generation-bound install digest; the
 // installer accepts one framed archive and never repairs or replaces paths.
 func InstallBootstrapCodexArtifact(ctx context.Context, input io.Reader, generationDigest string) (store.SessionBootstrapEvidence, error) {
+	return InstallBootstrapCodexArtifactVersion(ctx, input, bootstrapCodex0155Version, generationDigest)
+}
+
+// InstallBootstrapCodexArtifactVersion selects only a compiled-in, immutable
+// bundle version; callers cannot supply a mutable channel such as "latest".
+func InstallBootstrapCodexArtifactVersion(ctx context.Context, input io.Reader, version, generationDigest string) (store.SessionBootstrapEvidence, error) {
 	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
 		return store.SessionBootstrapEvidence{}, errBootstrapCodexInstall
 	}
-	return installBootstrapCodexBundleAt(ctx, input, generationDigest, bootstrapCodex0155Bundle, "/opt/codex", "/usr/local/bin/codex")
+	bundle, err := bootstrapCodexBundleForVersion(version)
+	if err != nil {
+		return store.SessionBootstrapEvidence{}, errBootstrapCodexInstall
+	}
+	return installBootstrapCodexBundleAt(ctx, input, generationDigest, bundle, "/opt/codex", "/usr/local/bin/codex")
 }
 
 // ObserveBootstrapCodexArtifact verifies the generation install and launcher
 // without creating, replacing, or deleting guest paths.
 func ObserveBootstrapCodexArtifact(ctx context.Context, generationDigest string) (store.SessionBootstrapEvidence, error) {
+	return ObserveBootstrapCodexArtifactVersion(ctx, bootstrapCodex0155Version, generationDigest)
+}
+
+// ObserveBootstrapCodexArtifactVersion performs read-only verification for
+// one explicitly selected, compiled-in immutable Codex bundle.
+func ObserveBootstrapCodexArtifactVersion(ctx context.Context, version, generationDigest string) (store.SessionBootstrapEvidence, error) {
 	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
 		return store.SessionBootstrapEvidence{}, errBootstrapCodexInstall
 	}
-	evidence, verified, err := observeBootstrapCodexBundleAt(ctx, generationDigest, bootstrapCodex0155Bundle, "/opt/codex", "/usr/local/bin/codex")
+	bundle, err := bootstrapCodexBundleForVersion(version)
+	if err != nil {
+		return store.SessionBootstrapEvidence{}, errBootstrapCodexInstall
+	}
+	evidence, verified, err := observeBootstrapCodexBundleAt(ctx, generationDigest, bundle, "/opt/codex", "/usr/local/bin/codex")
 	if err != nil || !verified {
 		return store.SessionBootstrapEvidence{}, errBootstrapCodexInstall
 	}

@@ -1,7 +1,11 @@
 package sessionruntime
 
 import (
+	"context"
 	"testing"
+
+	"github.com/WilliamLi0623/codex-homelab/internal/codexsession"
+	"github.com/WilliamLi0623/codex-homelab/internal/store"
 )
 
 func TestNewBootstrapDriverRejectsIncompleteConfiguration(t *testing.T) {
@@ -9,7 +13,8 @@ func TestNewBootstrapDriverRejectsIncompleteConfiguration(t *testing.T) {
 		SSHMaterialRoot: "/var/lib/codex-session/ssh",
 		SSHKeygen:       "/usr/bin/ssh-keygen",
 		BackupRoot:      "/var/lib/codex-session/backups",
-		ArtifactRoot:    "/var/lib/codex-bootstrap-artifacts/codex-0.155.0-x86_64-unknown-linux-musl",
+		ArtifactRoot:    "/var/lib/codex-bootstrap-artifacts",
+		CodexVersion:    "0.160.0",
 		SSHExecutable:   "/usr/bin/ssh",
 	}
 	for _, tc := range []struct {
@@ -17,8 +22,8 @@ func TestNewBootstrapDriverRejectsIncompleteConfiguration(t *testing.T) {
 		config BootstrapDriverConfig
 	}{
 		{name: "nil runtime", config: validPaths},
-		{name: "relative keygen", config: BootstrapDriverConfig{SSHMaterialRoot: validPaths.SSHMaterialRoot, SSHKeygen: "ssh-keygen", BackupRoot: validPaths.BackupRoot, ArtifactRoot: validPaths.ArtifactRoot, SSHExecutable: validPaths.SSHExecutable}},
-		{name: "unclean material path", config: BootstrapDriverConfig{SSHMaterialRoot: "/var/lib/codex-session/../ssh", SSHKeygen: validPaths.SSHKeygen, BackupRoot: validPaths.BackupRoot, ArtifactRoot: validPaths.ArtifactRoot, SSHExecutable: validPaths.SSHExecutable}},
+		{name: "relative keygen", config: BootstrapDriverConfig{SSHMaterialRoot: validPaths.SSHMaterialRoot, SSHKeygen: "ssh-keygen", BackupRoot: validPaths.BackupRoot, ArtifactRoot: validPaths.ArtifactRoot, CodexVersion: validPaths.CodexVersion, SSHExecutable: validPaths.SSHExecutable}},
+		{name: "unclean material path", config: BootstrapDriverConfig{SSHMaterialRoot: "/var/lib/codex-session/../ssh", SSHKeygen: validPaths.SSHKeygen, BackupRoot: validPaths.BackupRoot, ArtifactRoot: validPaths.ArtifactRoot, CodexVersion: validPaths.CodexVersion, SSHExecutable: validPaths.SSHExecutable}},
 		{name: "missing artifact path", config: BootstrapDriverConfig{SSHMaterialRoot: validPaths.SSHMaterialRoot, SSHKeygen: validPaths.SSHKeygen, BackupRoot: validPaths.BackupRoot, SSHExecutable: validPaths.SSHExecutable}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -30,5 +35,25 @@ func TestNewBootstrapDriverRejectsIncompleteConfiguration(t *testing.T) {
 				t.Fatal("NewBootstrapDriver() succeeded with incomplete or unsafe configuration")
 			}
 		})
+	}
+}
+
+func TestBootstrapArtifactStageUsesExplicitCodexVersion(t *testing.T) {
+	material := &SSHMaterialRegistry{}
+	root := t.TempDir()
+	resolve := func(context.Context, store.SessionRuntimeBinding, SSHMaterial) (codexsession.SSHAppServerConfig, error) {
+		return codexsession.SSHAppServerConfig{}, nil
+	}
+	for _, version := range []string{"0.155.0", "0.160.0"} {
+		stage, err := newBootstrapArtifactStage(root, version, material, resolve)
+		if err != nil {
+			t.Fatalf("newBootstrapArtifactStage(%s) error = %v", version, err)
+		}
+		if stage.bundle.version != version {
+			t.Fatalf("stage bundle version = %q, want %q", stage.bundle.version, version)
+		}
+	}
+	if _, err := newBootstrapArtifactStage(root, "0.159.3", material, resolve); err == nil {
+		t.Fatal("unsupported CLI version was accepted")
 	}
 }

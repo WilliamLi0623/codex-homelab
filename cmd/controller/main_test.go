@@ -170,7 +170,7 @@ func TestNewHandlerFromEnvironmentConstructsSessionBootstrapWithoutExposingAPI(t
 	t.Setenv("SESSION_SSH_MATERIAL_ROOT", materialRoot)
 	t.Setenv("SESSION_SSH_KEYGEN", "/usr/bin/ssh-keygen")
 	t.Setenv("SESSION_BOOTSTRAP_BACKUP_ROOT", backupRoot)
-	t.Setenv("SESSION_BOOTSTRAP_ARTIFACT_ROOT", "/var/lib/codex-bootstrap-artifacts/codex-0.155.0-x86_64-unknown-linux-musl")
+	t.Setenv("SESSION_BOOTSTRAP_ARTIFACT_ROOT", "/var/lib/codex-bootstrap-artifacts")
 	t.Setenv("SESSION_SSH_EXECUTABLE", "/usr/bin/ssh")
 
 	handler, closeStore, err := newHandlerFromEnvironment(filepath.Join(root, "controller.sqlite"))

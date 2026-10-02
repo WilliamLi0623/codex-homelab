@@ -172,6 +172,13 @@ func loadSessionBootstrapConfig(sessionRuntimeConfigured bool) (*sessionruntime.
 		}
 		return nil, nil
 	}
+	codexVersion := strings.TrimSpace(os.Getenv("SESSION_BOOTSTRAP_CODEX_VERSION"))
+	if codexVersion == "" {
+		codexVersion = "0.160.0"
+	}
+	if codexVersion != "0.155.0" && codexVersion != "0.160.0" {
+		return nil, fmt.Errorf("SESSION_BOOTSTRAP_CODEX_VERSION must be a pinned supported release")
+	}
 	if !sessionRuntimeConfigured {
 		return nil, fmt.Errorf("Session bootstrap requires Session runtime configuration")
 	}
@@ -185,6 +192,7 @@ func loadSessionBootstrapConfig(sessionRuntimeConfigured bool) (*sessionruntime.
 		SSHKeygen:       paths["SESSION_SSH_KEYGEN"],
 		BackupRoot:      paths["SESSION_BOOTSTRAP_BACKUP_ROOT"],
 		ArtifactRoot:    paths["SESSION_BOOTSTRAP_ARTIFACT_ROOT"],
+		CodexVersion:    codexVersion,
 		SSHExecutable:   paths["SESSION_SSH_EXECUTABLE"],
 	}, nil
 }

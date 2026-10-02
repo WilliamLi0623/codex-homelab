@@ -25,11 +25,15 @@ type bootstrapArtifactStage struct {
 	resolve  bootstrapArtifactSSHConfigResolver
 }
 
-func newBootstrapArtifactStage(root string, material *SSHMaterialRegistry, resolve bootstrapArtifactSSHConfigResolver) (*bootstrapArtifactStage, error) {
+func newBootstrapArtifactStage(root, version string, material *SSHMaterialRegistry, resolve bootstrapArtifactSSHConfigResolver) (*bootstrapArtifactStage, error) {
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root || material == nil || resolve == nil {
 		return nil, ErrBootstrapConfiguration
 	}
-	return &bootstrapArtifactStage{root: root, material: material, bundle: bootstrapCodex0155Bundle, resolve: resolve}, nil
+	bundle, err := bootstrapCodexBundleForVersion(version)
+	if err != nil {
+		return nil, ErrBootstrapConfiguration
+	}
+	return &bootstrapArtifactStage{root: root, material: material, bundle: bundle, resolve: resolve}, nil
 }
 
 func (s *bootstrapArtifactStage) Apply(ctx context.Context, binding store.SessionRuntimeBinding) (store.SessionBootstrapEvidence, error) {
@@ -70,7 +74,7 @@ func (s *bootstrapArtifactStage) Apply(ctx context.Context, binding store.Sessio
 		}
 		writeResult <- writeErr
 	}()
-	remoteEvidence, remoteErr := codexsession.RunSSHArtifactInstallWithEvidence(transferCtx, config, generationDigest, reader)
+	remoteEvidence, remoteErr := codexsession.RunSSHArtifactInstallWithEvidence(transferCtx, config, s.bundle.version, generationDigest, reader)
 	_ = reader.Close()
 	writeErr := <-writeResult
 	if remoteErr != nil || writeErr != nil {
@@ -111,7 +115,7 @@ func (s *bootstrapArtifactStage) Observe(ctx context.Context, binding store.Sess
 	config.IdentityFile = material.IdentityFile
 	config.KnownHostsFile = material.KnownHostsFile
 	config.HostKeyAlias = material.Alias
-	remoteEvidence, err := codexsession.RunSSHArtifactObserve(ctx, config, generationDigest)
+	remoteEvidence, err := codexsession.RunSSHArtifactObserve(ctx, config, s.bundle.version, generationDigest)
 	if err != nil {
 		return empty, false, errBootstrapArtifactStage
 	}

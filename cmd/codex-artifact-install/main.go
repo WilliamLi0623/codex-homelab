@@ -16,11 +16,11 @@ func main() {
 	var evidenceSHA string
 	var err error
 	switch {
-	case len(os.Args) == 2:
-		result, installErr := sessionruntime.InstallBootstrapCodexArtifact(ctx, os.Stdin, os.Args[1])
+	case len(os.Args) == 3:
+		result, installErr := sessionruntime.InstallBootstrapCodexArtifactVersion(ctx, os.Stdin, os.Args[1], os.Args[2])
 		evidenceSHA, err = result.SHA256, installErr
-	case len(os.Args) == 3 && os.Args[1] == "--observe":
-		result, observeErr := sessionruntime.ObserveBootstrapCodexArtifact(ctx, os.Args[2])
+	case len(os.Args) == 4 && os.Args[1] == "--observe":
+		result, observeErr := sessionruntime.ObserveBootstrapCodexArtifactVersion(ctx, os.Args[2], os.Args[3])
 		evidenceSHA, err = result.SHA256, observeErr
 	default:
 		fail()

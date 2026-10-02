@@ -52,6 +52,45 @@ func TestBootstrapCodexInstallPromotesOnlyVerifiedBundle(t *testing.T) {
 	}
 }
 
+func TestBootstrapCodex0160InstallAndObserveOfficialBundleWhenProvided(t *testing.T) {
+	requireLinuxRoot(t)
+	root := os.Getenv("P28_CODEX0160_ARTIFACT_ROOT")
+	if root == "" {
+		t.Skip("set P28_CODEX0160_ARTIFACT_ROOT to install the verified official Linux release into an isolated temp directory")
+	}
+	entries, err := bootstrapArtifactEntries(root, bootstrapCodex0160Bundle)
+	if err != nil {
+		t.Fatalf("enumerate verified release bundle: %v", err)
+	}
+	if _, err := verifyBootstrapArtifactBundle(context.Background(), root, bootstrapCodex0160Bundle); err != nil {
+		t.Fatalf("verify official release bundle: %v", err)
+	}
+
+	archive := makeArtifactTar(t, root, bootstrapCodex0160Bundle, entries)
+	installRoot := filepath.Join(t.TempDir(), "opt", "codex")
+	launcherDir := filepath.Join(filepath.Dir(filepath.Dir(installRoot)), "usr", "local", "bin")
+	if err := os.MkdirAll(installRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(launcherDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	digest := "0160000000000000000000000000000000000000000000000000000000000000"
+	launcher := filepath.Join(launcherDir, "codex")
+	evidence, err := installBootstrapCodexBundleAt(context.Background(), bytes.NewReader(frameArtifactTar(archive, true)), digest, bootstrapCodex0160Bundle, installRoot, launcher)
+	if err != nil || !validBootstrapEvidence(evidence) {
+		t.Fatalf("install evidence=%+v err=%v", evidence, err)
+	}
+	observed, verified, err := observeBootstrapCodexBundleAt(context.Background(), digest, bootstrapCodex0160Bundle, installRoot, launcher)
+	if err != nil || !verified || observed != evidence {
+		t.Fatalf("read-only observe evidence=%+v verified=%v err=%v", observed, verified, err)
+	}
+	output, err := os.ReadFile(filepath.Join(installRoot, digest, "bin", "codex"))
+	if err != nil || sha256Hex(output) != bootstrapCodex0160Bundle.files[0].sha256 {
+		t.Fatalf("installed codex binary hash=%s err=%v", sha256Hex(output), err)
+	}
+}
+
 func TestBootstrapCodexInstallRejectsExistingTargetsWithoutReplacing(t *testing.T) {
 	requireLinuxRoot(t)
 	root := t.TempDir()
