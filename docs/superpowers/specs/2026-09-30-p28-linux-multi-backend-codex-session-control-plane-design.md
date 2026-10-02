@@ -120,6 +120,8 @@ glm
 
 Phase 1 must prove a safe supported way to provision A/B auth into multiple Linux runtime instances and verify each effective identity. A UI profile label is not proof of authentication identity. Use an identity adapter that can prepare, verify, and revoke a runtime binding. Never print credentials, commit credential snapshots, or store credentials in SQLite/browser state/logs.
 
+For Codex CLI 0.155.0, do not provision concurrent runtimes by copying the same `auth.json`: the tagged implementation serializes refreshes only inside one `AuthManager` process, while file-backed saves truncate/write the file without a cross-process lock. A Session runtime should obtain its own ChatGPT OAuth login/session (the pinned CLI exposes `codex login --device-auth`) unless a separate broker provides tested rotation serialization. The authenticated identity must still match the selected Codex A/B account. Any temporary device authorization code is a short-lived secret: do not persist it, log it, or put it in browser storage.
+
 Do not use Codex B's identity without its owner's explicit authorization. Test safe login/refresh concurrency before allowing multiple simultaneous runtime LXCs to share an account.
 
 ## Quota monitor and routing policy
