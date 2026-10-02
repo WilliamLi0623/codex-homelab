@@ -63,7 +63,12 @@ func (d *bootstrapDriverFuncs) calls() (apply, observe []store.SessionBootstrapS
 
 func newBootstrapFixture(t *testing.T) (*store.Store, store.SessionRuntimeBinding) {
 	t.Helper()
-	db, err := store.Open(filepath.Join(t.TempDir(), "bootstrap.sqlite"))
+	return newBootstrapFixtureAt(t, filepath.Join(t.TempDir(), "bootstrap.sqlite"))
+}
+
+func newBootstrapFixtureAt(t *testing.T, path string) (*store.Store, store.SessionRuntimeBinding) {
+	t.Helper()
+	db, err := store.Open(path)
 	if err != nil {
 		t.Fatalf("store.Open(): %v", err)
 	}
@@ -80,6 +85,38 @@ func newBootstrapFixture(t *testing.T) (*store.Store, store.SessionRuntimeBindin
 		t.Fatalf("CreateSessionRuntimeBinding(): %v", err)
 	}
 	return db, binding
+}
+
+func TestBootstrapEnsureReportsWhenUnknownCheckpointCannotBePersisted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bootstrap-persistence-failure.sqlite")
+	db, binding := newBootstrapFixtureAt(t, path)
+	driver := &bootstrapDriverFuncs{apply: func(context.Context, store.SessionRuntimeBinding, store.SessionBootstrapStage) (store.SessionBootstrapEvidence, error) {
+		if err := db.Close(); err != nil {
+			t.Fatalf("close store to simulate checkpoint persistence failure: %v", err)
+		}
+		return store.SessionBootstrapEvidence{}, errors.New("provider token must not leak")
+	}}
+	coordinator, err := NewBootstrapCoordinator(db, driver)
+	if err != nil {
+		t.Fatalf("NewBootstrapCoordinator(): %v", err)
+	}
+	err = coordinator.Ensure(context.Background(), binding)
+	if !errors.Is(err, ErrOutcomeUnknown) || !errors.Is(err, ErrBootstrapCheckpointPersistence) {
+		t.Fatalf("Ensure() error = %v, want unknown outcome and checkpoint persistence failure", err)
+	}
+	if strings.Contains(err.Error(), "provider token must not leak") {
+		t.Fatalf("Ensure() error leaked driver details: %v", err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	checkpoint, err := reopened.GetSessionBootstrapStage(context.Background(), binding.ID, binding.Generation, store.SessionBootstrapIsolation)
+	if err != nil || checkpoint.Status != store.SessionBootstrapIntent {
+		t.Fatalf("checkpoint after unavailable UNKNOWN write = (%+v, %v), want retained INTENT", checkpoint, err)
+	}
 }
 
 func TestBootstrapEnsurePersistsIntentBeforeApplyingEveryOrderedStage(t *testing.T) {

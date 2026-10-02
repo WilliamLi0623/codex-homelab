@@ -40,6 +40,10 @@ func materialRegistryFixture(t *testing.T) (*SSHMaterialRegistry, store.SessionR
 	if err != nil {
 		t.Fatal("Linux bootstrap requires installed ssh-keygen")
 	}
+	keygen, err = filepath.EvalSymlinks(keygen)
+	if err != nil {
+		t.Fatalf("resolve installed ssh-keygen path: %v", err)
+	}
 	root := t.TempDir()
 	if err := os.Chmod(root, 0700); err != nil {
 		t.Fatal(err)

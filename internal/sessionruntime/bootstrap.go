@@ -12,9 +12,10 @@ import (
 )
 
 var (
-	ErrBootstrapConfiguration = errors.New("session bootstrap configuration is invalid")
-	ErrBootstrapBinding       = errors.New("session bootstrap binding is stale or mismatched")
-	bootstrapDigestPattern    = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	ErrBootstrapConfiguration         = errors.New("session bootstrap configuration is invalid")
+	ErrBootstrapBinding               = errors.New("session bootstrap binding is stale or mismatched")
+	ErrBootstrapCheckpointPersistence = errors.New("session bootstrap UNKNOWN checkpoint persistence could not be confirmed")
+	bootstrapDigestPattern            = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
 const bootstrapPersistenceTimeout = 3 * time.Second
@@ -61,8 +62,7 @@ func (c *BootstrapCoordinator) Ensure(ctx context.Context, expected store.Sessio
 		}
 		checkpoint, newlyClaimed, err := c.store.BeginSessionBootstrapStage(ctx, current.ID, current.Generation, stage)
 		if err != nil {
-			c.preserveUnknown(ctx, current, stage)
-			return fmt.Errorf("bootstrap stage %s checkpoint: %w", stage, ErrOutcomeUnknown)
+			return c.stageFailure(ctx, current, stage, "checkpoint")
 		}
 		if checkpoint.Status == store.SessionBootstrapComplete {
 			continue
@@ -74,20 +74,23 @@ func (c *BootstrapCoordinator) Ensure(ctx context.Context, expected store.Sessio
 		current, err = c.currentBinding(ctx, expected)
 		if err != nil {
 			if newlyClaimed {
-				c.preserveUnknown(ctx, expected, stage)
+				if persistErr := c.preserveUnknown(ctx, expected, stage); persistErr != nil {
+					return bootstrapCheckpointFailure(stage, "binding")
+				}
 			}
 			return err
 		}
 		if err := c.driver.VerifyIdentity(ctx, current); err != nil {
-			c.preserveUnknown(ctx, expected, stage)
-			return bootstrapStageError(stage, "driver_identity")
+			return c.stageFailure(ctx, expected, stage, "driver_identity")
 		}
 		// Re-read after ownership verification so a replaced generation cannot
 		// inherit authority from a check against its predecessor.
 		current, err = c.currentBinding(ctx, expected)
 		if err != nil {
 			if newlyClaimed {
-				c.preserveUnknown(ctx, expected, stage)
+				if persistErr := c.preserveUnknown(ctx, expected, stage); persistErr != nil {
+					return bootstrapCheckpointFailure(stage, "binding")
+				}
 			}
 			return err
 		}
@@ -95,36 +98,29 @@ func (c *BootstrapCoordinator) Ensure(ctx context.Context, expected store.Sessio
 		if newlyClaimed {
 			evidence, applyErr := c.driver.Apply(ctx, current, stage)
 			if applyErr != nil {
-				c.preserveUnknown(ctx, expected, stage)
-				return bootstrapStageError(stage, "driver")
+				return c.stageFailure(ctx, expected, stage, "driver")
 			}
 			if !validBootstrapEvidence(evidence) {
-				c.preserveUnknown(ctx, expected, stage)
-				return bootstrapStageError(stage, "invalid_evidence")
+				return c.stageFailure(ctx, expected, stage, "invalid_evidence")
 			}
 			if err := c.store.CompleteSessionBootstrapStage(ctx, current.ID, current.Generation, stage, store.SessionBootstrapIntent, evidence); err != nil {
-				c.preserveUnknown(ctx, expected, stage)
-				return bootstrapStageError(stage, "checkpoint")
+				return c.stageFailure(ctx, expected, stage, "checkpoint")
 			}
 			continue
 		}
 
 		evidence, verified, observeErr := c.driver.Observe(ctx, current, stage)
 		if observeErr != nil {
-			c.preserveUnknown(ctx, expected, stage)
-			return bootstrapStageError(stage, "driver")
+			return c.stageFailure(ctx, expected, stage, "driver")
 		}
 		if !verified {
-			c.preserveUnknown(ctx, expected, stage)
-			return bootstrapStageError(stage, "outcome_unknown")
+			return c.stageFailure(ctx, expected, stage, "outcome_unknown")
 		}
 		if !validBootstrapEvidence(evidence) {
-			c.preserveUnknown(ctx, expected, stage)
-			return bootstrapStageError(stage, "invalid_evidence")
+			return c.stageFailure(ctx, expected, stage, "invalid_evidence")
 		}
 		if err := c.store.CompleteSessionBootstrapStage(ctx, current.ID, current.Generation, stage, checkpoint.Status, evidence); err != nil {
-			c.preserveUnknown(ctx, expected, stage)
-			return bootstrapStageError(stage, "checkpoint")
+			return c.stageFailure(ctx, expected, stage, "checkpoint")
 		}
 	}
 	return nil
@@ -169,30 +165,27 @@ func (c *BootstrapCoordinator) Reconcile(ctx context.Context, expected store.Ses
 			return err
 		}
 		if err := c.driver.VerifyIdentity(ctx, current); err != nil {
-			c.preserveUnknown(ctx, expected, stage)
-			return bootstrapStageError(stage, "driver_identity")
+			return c.stageFailure(ctx, expected, stage, "driver_identity")
 		}
 		current, err = c.currentBinding(ctx, expected)
 		if err != nil {
-			c.preserveUnknown(ctx, expected, stage)
+			if persistErr := c.preserveUnknown(ctx, expected, stage); persistErr != nil {
+				return bootstrapCheckpointFailure(stage, "binding")
+			}
 			return err
 		}
 		evidence, verified, observeErr := c.driver.Observe(ctx, current, stage)
 		if observeErr != nil {
-			c.preserveUnknown(ctx, expected, stage)
-			return bootstrapStageError(stage, "driver")
+			return c.stageFailure(ctx, expected, stage, "driver")
 		}
 		if !verified {
-			c.preserveUnknown(ctx, expected, stage)
-			return bootstrapStageError(stage, "outcome_unknown")
+			return c.stageFailure(ctx, expected, stage, "outcome_unknown")
 		}
 		if !validBootstrapEvidence(evidence) {
-			c.preserveUnknown(ctx, expected, stage)
-			return bootstrapStageError(stage, "invalid_evidence")
+			return c.stageFailure(ctx, expected, stage, "invalid_evidence")
 		}
 		if err := c.store.CompleteSessionBootstrapStage(ctx, current.ID, current.Generation, stage, checkpoint.Status, evidence); err != nil {
-			c.preserveUnknown(ctx, expected, stage)
-			return bootstrapStageError(stage, "checkpoint")
+			return c.stageFailure(ctx, expected, stage, "checkpoint")
 		}
 	}
 	return nil
@@ -251,10 +244,28 @@ func (c *BootstrapCoordinator) currentBinding(ctx context.Context, expected stor
 	return current, nil
 }
 
-func (c *BootstrapCoordinator) preserveUnknown(ctx context.Context, binding store.SessionRuntimeBinding, stage store.SessionBootstrapStage) {
+func (c *BootstrapCoordinator) preserveUnknown(ctx context.Context, binding store.SessionRuntimeBinding, stage store.SessionBootstrapStage) error {
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bootstrapPersistenceTimeout)
 	defer cancel()
-	_ = c.store.MarkSessionBootstrapStageUnknown(persistCtx, binding.ID, binding.Generation, stage, store.SessionBootstrapIntent)
+	if err := c.store.MarkSessionBootstrapStageUnknown(persistCtx, binding.ID, binding.Generation, stage, store.SessionBootstrapIntent); err == nil {
+		return nil
+	}
+	checkpoint, err := c.store.GetSessionBootstrapStage(persistCtx, binding.ID, binding.Generation, stage)
+	if err == nil && checkpoint.Generation == binding.Generation && checkpoint.Status == store.SessionBootstrapUnknown {
+		return nil
+	}
+	return ErrBootstrapCheckpointPersistence
+}
+
+func (c *BootstrapCoordinator) stageFailure(ctx context.Context, binding store.SessionRuntimeBinding, stage store.SessionBootstrapStage, class string) error {
+	if err := c.preserveUnknown(ctx, binding, stage); err != nil {
+		return bootstrapCheckpointFailure(stage, class)
+	}
+	return bootstrapStageError(stage, class)
+}
+
+func bootstrapCheckpointFailure(stage store.SessionBootstrapStage, class string) error {
+	return fmt.Errorf("bootstrap stage %s %s; durable UNKNOWN checkpoint could not be confirmed: %w", stage, class, errors.Join(ErrOutcomeUnknown, ErrBootstrapCheckpointPersistence))
 }
 
 func bootstrapStages() []store.SessionBootstrapStage {
