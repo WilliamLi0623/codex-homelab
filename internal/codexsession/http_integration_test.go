@@ -251,8 +251,19 @@ func TestSessionHTTPFullMockedRouteApprovalContinuationAndRecovery(t *testing.T)
 	}
 	awaitIntegrationTurnCompletion(t, manager.Get(recovered.Session.ID))
 	resumed, err := manager.ResumeThread(context.Background(), first.Session.ID)
-	if err != nil || resumed.Pin.Provider != "openai" || resumed.Pin.Model != "gpt-6-luna" || resumed.Pin.Generation != 1 {
-		t.Fatalf("original thread did not resume with its initial pin: pin=%+v err=%v", resumed.Pin, err)
+	if err != nil {
+		select {
+		case serverErr := <-serverDone:
+			t.Fatalf("original thread resume failed: %v; fake App Server exited: %v", err, serverErr)
+		default:
+			t.Fatalf("original thread resume failed: %v", err)
+		}
+	}
+	if resumed == nil {
+		t.Fatal("original thread resume returned no managed session")
+	}
+	if resumed.Pin.Provider != "openai" || resumed.Pin.Model != "gpt-6-luna" || resumed.Pin.Generation != 1 {
+		t.Fatalf("original thread did not resume with its initial pin: pin=%+v", resumed.Pin)
 	}
 	if err := <-serverDone; err != nil {
 		t.Fatal(err)

@@ -72,6 +72,57 @@ func TestProtocolClientCorrelatesCallAndDeliversNotifications(t *testing.T) {
 	}
 }
 
+func TestProtocolClientDeliversResponseWhenPeerClosesImmediatelyAfterReply(t *testing.T) {
+	for attempt := 0; attempt < 100; attempt++ {
+		clientConn, serverConn := net.Pipe()
+		client := NewProtocolClient(clientConn, clientConn)
+		if err := client.Start(); err != nil {
+			t.Fatal(err)
+		}
+		serverDone := make(chan error, 1)
+		go func() {
+			defer serverConn.Close()
+			line, err := bufio.NewReader(serverConn).ReadBytes('\n')
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			var request struct {
+				ID json.RawMessage `json:"id"`
+			}
+			if err := json.Unmarshal(line, &request); err != nil {
+				serverDone <- err
+				return
+			}
+			response, err := json.Marshal(map[string]any{
+				"id": request.ID, "result": map[string]string{"value": "delivered"},
+			})
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			_, err = serverConn.Write(append(response, '\n'))
+			serverDone <- err
+		}()
+
+		var result struct {
+			Value string `json:"value"`
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		err := client.Call(ctx, "test/read", map[string]string{}, &result)
+		cancel()
+		if err != nil || result.Value != "delivered" {
+			_ = client.Close()
+			t.Fatalf("attempt %d: Call() result=%+v err=%v; want delivered response despite peer EOF", attempt, result, err)
+		}
+		if err := <-serverDone; err != nil {
+			_ = client.Close()
+			t.Fatalf("attempt %d: server response write: %v", attempt, err)
+		}
+		_ = client.Close()
+	}
+}
+
 func TestProtocolClientMultiplexesConcurrentCalls(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	client := NewProtocolClient(clientConn, clientConn)

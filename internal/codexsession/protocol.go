@@ -160,8 +160,7 @@ func (c *ProtocolClient) Call(ctx context.Context, method string, params, result
 		return fmt.Errorf("write App Server RPC %s: %w", method, err)
 	}
 
-	select {
-	case response := <-call.result:
+	decodeResponse := func(response callResult) error {
 		if response.err != nil {
 			return response.err
 		}
@@ -172,10 +171,23 @@ func (c *ProtocolClient) Call(ctx context.Context, method string, params, result
 			return fmt.Errorf("decode App Server RPC %s result: %w", method, err)
 		}
 		return nil
+	}
+
+	select {
+	case response := <-call.result:
+		return decodeResponse(response)
 	case <-ctx.Done():
 		c.removePending(key)
 		return ctx.Err()
 	case <-c.done:
+		// readLoop may have delivered the final response and then observed EOF
+		// before this select runs. Prefer that already-buffered response over
+		// the closed stream notification.
+		select {
+		case response := <-call.result:
+			return decodeResponse(response)
+		default:
+		}
 		c.removePending(key)
 		if err := c.Err(); err != nil {
 			return err
