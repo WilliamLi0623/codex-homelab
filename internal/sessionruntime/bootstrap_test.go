@@ -122,6 +122,52 @@ func TestBootstrapEnsurePersistsIntentBeforeApplyingEveryOrderedStage(t *testing
 	}
 }
 
+func TestBootstrapVerifyReadyRequiresCompleteMatchingReadOnlyObservations(t *testing.T) {
+	db, binding := newBootstrapFixture(t)
+	driver := &bootstrapDriverFuncs{observe: func(_ context.Context, _ store.SessionRuntimeBinding, _ store.SessionBootstrapStage) (store.SessionBootstrapEvidence, bool, error) {
+		return store.SessionBootstrapEvidence{SHA256: bootstrapTestSHA256}, true, nil
+	}}
+	coordinator, err := NewBootstrapCoordinator(db, driver)
+	if err != nil {
+		t.Fatalf("NewBootstrapCoordinator(): %v", err)
+	}
+	if err := coordinator.Ensure(context.Background(), binding); err != nil {
+		t.Fatalf("Ensure(): %v", err)
+	}
+	driver.mu.Lock()
+	driver.applyCalls = nil
+	driver.observeCalls = nil
+	driver.mu.Unlock()
+	if err := coordinator.VerifyReady(context.Background(), binding); err != nil {
+		t.Fatalf("VerifyReady(): %v", err)
+	}
+	apply, observe, _ := driver.calls()
+	if len(apply) != 0 || fmt.Sprint(observe) != fmt.Sprint(bootstrapStages()) {
+		t.Fatalf("VerifyReady() apply=%v observe=%v, want only every ordered stage observed", apply, observe)
+	}
+}
+
+func TestBootstrapVerifyReadyRejectsChangedObservedEvidence(t *testing.T) {
+	db, binding := newBootstrapFixture(t)
+	driver := &bootstrapDriverFuncs{observe: func(_ context.Context, _ store.SessionRuntimeBinding, _ store.SessionBootstrapStage) (store.SessionBootstrapEvidence, bool, error) {
+		return store.SessionBootstrapEvidence{SHA256: strings.Repeat("b", 64)}, true, nil
+	}}
+	coordinator, err := NewBootstrapCoordinator(db, driver)
+	if err != nil {
+		t.Fatalf("NewBootstrapCoordinator(): %v", err)
+	}
+	if err := coordinator.Ensure(context.Background(), binding); err != nil {
+		t.Fatalf("Ensure(): %v", err)
+	}
+	if err := coordinator.VerifyReady(context.Background(), binding); !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("VerifyReady() error=%v, want ErrOutcomeUnknown", err)
+	}
+	apply, _, _ := driver.calls()
+	if len(apply) != len(bootstrapStages()) {
+		t.Fatalf("VerifyReady() changed Apply history: %v", apply)
+	}
+}
+
 func TestBootstrapEnsureReconcilesPersistedIntentByObservationOnly(t *testing.T) {
 	db, binding := newBootstrapFixture(t)
 	if _, claimed, err := db.BeginSessionBootstrapStage(context.Background(), binding.ID, binding.Generation, store.SessionBootstrapIsolation); err != nil || !claimed {

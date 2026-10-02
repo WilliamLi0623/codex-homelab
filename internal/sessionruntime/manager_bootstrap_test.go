@@ -10,9 +10,11 @@ import (
 )
 
 type managerBootstrapDriver struct {
-	applyCalls int
-	applyErr   error
-	cancel     context.CancelFunc
+	applyCalls   int
+	observeCalls []store.SessionBootstrapStage
+	applyErr     error
+	observeReady bool
+	cancel       context.CancelFunc
 }
 
 func (d *managerBootstrapDriver) VerifyIdentity(context.Context, store.SessionRuntimeBinding) error {
@@ -25,14 +27,18 @@ func (d *managerBootstrapDriver) Apply(context.Context, store.SessionRuntimeBind
 	}
 	return store.SessionBootstrapEvidence{SHA256: strings.Repeat("a", 64)}, d.applyErr
 }
-func (d *managerBootstrapDriver) Observe(context.Context, store.SessionRuntimeBinding, store.SessionBootstrapStage) (store.SessionBootstrapEvidence, bool, error) {
-	return store.SessionBootstrapEvidence{}, false, nil
+func (d *managerBootstrapDriver) Observe(_ context.Context, _ store.SessionRuntimeBinding, stage store.SessionBootstrapStage) (store.SessionBootstrapEvidence, bool, error) {
+	d.observeCalls = append(d.observeCalls, stage)
+	if !d.observeReady {
+		return store.SessionBootstrapEvidence{}, false, nil
+	}
+	return store.SessionBootstrapEvidence{SHA256: strings.Repeat("a", 64)}, true, nil
 }
 
 func TestManagerBootstrapCreateAndResume(t *testing.T) {
 	runtime := &fakeRuntime{available: true}
 	db, manager := setupManager(t, runtime)
-	driver := &managerBootstrapDriver{}
+	driver := &managerBootstrapDriver{observeReady: true}
 	coordinator, err := NewBootstrapCoordinator(db, driver)
 	if err != nil {
 		t.Fatal(err)
@@ -40,8 +46,8 @@ func TestManagerBootstrapCreateAndResume(t *testing.T) {
 	manager.config.Bootstrap = coordinator
 	ctx := context.Background()
 	binding, err := manager.Create(ctx, CreateRequest{ID: "binding-a", SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-1"})
-	if err != nil || binding.State != "READY" || driver.applyCalls != 8 || runtime.readyCalls != 1 {
-		t.Fatalf("create: state=%s applies=%d ready=%d error=%v", binding.State, driver.applyCalls, runtime.readyCalls, err)
+	if err != nil || binding.State != "READY" || driver.applyCalls != 8 || len(driver.observeCalls) != 8 || runtime.readyCalls != 0 {
+		t.Fatalf("create: state=%s applies=%d observed=%d runtime_ready=%d error=%v", binding.State, driver.applyCalls, len(driver.observeCalls), runtime.readyCalls, err)
 	}
 	if err := manager.Stop(ctx, "session-a", "epoch-a"); err != nil {
 		t.Fatal(err)
@@ -49,8 +55,8 @@ func TestManagerBootstrapCreateAndResume(t *testing.T) {
 	if err := manager.Resume(ctx, "session-a", "epoch-a"); err != nil {
 		t.Fatal(err)
 	}
-	if driver.applyCalls != 8 || runtime.readyCalls != 2 {
-		t.Fatalf("resume replayed bootstrap or skipped readiness: apply=%d ready=%d", driver.applyCalls, runtime.readyCalls)
+	if driver.applyCalls != 8 || len(driver.observeCalls) != 16 || runtime.readyCalls != 0 {
+		t.Fatalf("resume replayed bootstrap or skipped readiness: apply=%d observed=%d runtime_ready=%d", driver.applyCalls, len(driver.observeCalls), runtime.readyCalls)
 	}
 }
 
@@ -88,8 +94,8 @@ func TestManagerBootstrapUnknownCannotReplayOrBecomeReady(t *testing.T) {
 	}
 }
 
-func TestManagerBootstrapCompletionDoesNotReplaceAccountReadiness(t *testing.T) {
-	runtime := &fakeRuntime{available: true, readyErr: errors.New("account acceptance pending")}
+func TestManagerBootstrapRejectsBindingReadyWhenStageReadbackFails(t *testing.T) {
+	runtime := &fakeRuntime{available: true}
 	db, manager := setupManager(t, runtime)
 	driver := &managerBootstrapDriver{}
 	coordinator, err := NewBootstrapCoordinator(db, driver)
@@ -98,8 +104,8 @@ func TestManagerBootstrapCompletionDoesNotReplaceAccountReadiness(t *testing.T) 
 	}
 	manager.config.Bootstrap = coordinator
 	binding, err := manager.Create(context.Background(), CreateRequest{ID: "binding-a", SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-1"})
-	if !errors.Is(err, ErrOutcomeUnknown) || binding.State != "UNKNOWN" || driver.applyCalls != 8 || runtime.readyCalls != 1 {
-		t.Fatalf("bootstrap bypassed readiness: binding=%+v error=%v", binding, err)
+	if !errors.Is(err, ErrOutcomeUnknown) || binding.State != "UNKNOWN" || driver.applyCalls != 8 || len(driver.observeCalls) != 1 || runtime.readyCalls != 0 {
+		t.Fatalf("bootstrap completion bypassed read-only readiness: binding=%+v applies=%d observed=%d runtime_ready=%d error=%v", binding, driver.applyCalls, len(driver.observeCalls), runtime.readyCalls, err)
 	}
 }
 

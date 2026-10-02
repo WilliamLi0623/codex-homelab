@@ -198,6 +198,51 @@ func (c *BootstrapCoordinator) Reconcile(ctx context.Context, expected store.Ses
 	return nil
 }
 
+// VerifyReady proves that every completed bootstrap checkpoint still matches a
+// fresh read-only observation for the exact runtime generation. It never
+// applies a stage or changes checkpoint state. This is technical guest/App
+// Server transport readiness only; account identity and authenticated model
+// turns remain separate acceptance gates.
+func (c *BootstrapCoordinator) VerifyReady(ctx context.Context, expected store.SessionRuntimeBinding) error {
+	if c == nil || c.store == nil || c.driver == nil || ctx == nil || !validBootstrapBinding(expected) {
+		return ErrBootstrapConfiguration
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	checkpoints := make([]store.SessionBootstrapCheckpoint, len(bootstrapStages()))
+	for i, stage := range bootstrapStages() {
+		current, err := c.currentBinding(ctx, expected)
+		if err != nil {
+			return err
+		}
+		checkpoint, err := c.store.GetSessionBootstrapStage(ctx, current.ID, current.Generation, stage)
+		if err != nil || checkpoint.Status != store.SessionBootstrapComplete || !validBootstrapEvidence(checkpoint.Evidence) {
+			return bootstrapStageError(stage, "readiness_checkpoint")
+		}
+		checkpoints[i] = checkpoint
+	}
+
+	current, err := c.currentBinding(ctx, expected)
+	if err != nil {
+		return err
+	}
+	if err := c.driver.VerifyIdentity(ctx, current); err != nil {
+		return ErrBootstrapBinding
+	}
+	for i, stage := range bootstrapStages() {
+		current, err = c.currentBinding(ctx, expected)
+		if err != nil {
+			return err
+		}
+		evidence, verified, observeErr := c.driver.Observe(ctx, current, stage)
+		if observeErr != nil || !verified || !validBootstrapEvidence(evidence) || evidence != checkpoints[i].Evidence {
+			return bootstrapStageError(stage, "readiness_observation")
+		}
+	}
+	return nil
+}
+
 func (c *BootstrapCoordinator) currentBinding(ctx context.Context, expected store.SessionRuntimeBinding) (store.SessionRuntimeBinding, error) {
 	current, err := c.store.GetSessionRuntimeBinding(ctx, expected.SessionID, expected.EpochID)
 	if err != nil || current.State == "DELETED" || current.ID != expected.ID || current.SessionID != expected.SessionID || current.EpochID != expected.EpochID || current.Generation != expected.Generation || current.VMID != expected.VMID {

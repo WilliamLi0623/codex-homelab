@@ -67,7 +67,9 @@ type Config struct {
 	SystemStorage    string
 	WorkspaceStorage string
 	WorkspaceSizeGiB int
-	// Bootstrap is optional for existing runtimes. It never replaces CheckReady.
+	// Bootstrap is optional for existing runtimes. When configured, its complete
+	// ordered stage readback is the readiness proof; without it, Runtime.CheckReady
+	// must provide the fail-closed readiness boundary.
 	Bootstrap *BootstrapCoordinator
 }
 
@@ -162,7 +164,7 @@ func (m *Manager) createAllocated(ctx context.Context, binding store.SessionRunt
 			return m.bootstrapUnknown(ctx, binding, "STARTING", err)
 		}
 	}
-	if err := m.runtime.CheckReady(ctx, binding); err != nil {
+	if err := m.verifyReadiness(ctx, binding); err != nil {
 		return m.currentBindingWithError(ctx, binding, m.markUnknown(ctx, binding, "STARTING", err))
 	}
 	if err := m.store.UpdateSessionRuntimeBindingState(ctx, binding.ID, "STARTING", "READY", "", m.clock()); err != nil {
@@ -307,7 +309,7 @@ func (m *Manager) Resume(ctx context.Context, sessionID, epochID string) error {
 			return persistErr
 		}
 	}
-	if err := m.runtime.CheckReady(ctx, binding); err != nil {
+	if err := m.verifyReadiness(ctx, binding); err != nil {
 		return m.markUnknown(ctx, binding, "RESUMING", err)
 	}
 	return m.store.UpdateSessionRuntimeBindingState(ctx, binding.ID, "RESUMING", "READY", "", m.clock())
@@ -439,7 +441,7 @@ func (m *Manager) Reconcile(ctx context.Context, sessionID, epochID string) (sto
 				return binding, err
 			}
 		}
-		if err := m.runtime.CheckReady(ctx, binding); err != nil {
+		if err := m.verifyReadiness(ctx, binding); err != nil {
 			return binding, fmt.Errorf("verify Session runtime readiness before reconciliation: %w", err)
 		}
 	}
@@ -470,6 +472,13 @@ func (m *Manager) reconcileWorkspaceVolume(ctx context.Context, binding store.Se
 		return fmt.Errorf("runtime workspace volume differs from Session record: %w", ErrReconciliationNeeded)
 	}
 	return nil
+}
+
+func (m *Manager) verifyReadiness(ctx context.Context, binding store.SessionRuntimeBinding) error {
+	if m.config.Bootstrap != nil {
+		return m.config.Bootstrap.VerifyReady(ctx, binding)
+	}
+	return m.runtime.CheckReady(ctx, binding)
 }
 
 func (m *Manager) markUnknown(ctx context.Context, binding store.SessionRuntimeBinding, from string, cause error) error {
