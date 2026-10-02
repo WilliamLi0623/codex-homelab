@@ -100,9 +100,11 @@ func TestBootstrapNetworkStageNeverRetriesAmbiguousPut(t *testing.T) {
 
 func TestBootstrapEnabledNetworkProjectionRejectsUnsafeConfig(t *testing.T) {
 	for name, network := range map[string]string{
-		"still fenced":     "name=eth0,ip=dhcp,link_down=1",
-		"static address":   "name=eth0,ip=192.0.2.10/24,link_down=0",
-		"duplicate option": "name=eth0,ip=dhcp,link_down=0,link_down=0",
+		"still fenced":          "name=eth0,ip=dhcp,link_down=1",
+		"static address":        "name=eth0,ip=192.0.2.10/24,link_down=0",
+		"duplicate option":      "name=eth0,ip=dhcp,link_down=0,link_down=0",
+		"wrong guest interface": "name=eth1,bridge=vmbr0,ip=dhcp,link_down=0",
+		"wrong bridge":          "name=eth0,bridge=vmbr1,ip=dhcp,link_down=0",
 	} {
 		t.Run(name, func(t *testing.T) {
 			data, _ := json.Marshal(network)
@@ -110,6 +112,14 @@ func TestBootstrapEnabledNetworkProjectionRejectsUnsafeConfig(t *testing.T) {
 				t.Fatal("unsafe network accepted")
 			}
 		})
+	}
+
+	data, _ := json.Marshal("name=eth0,bridge=vmbr0,ip=dhcp,link_down=0")
+	if _, err := bootstrapEnabledNetworkProjection(map[string]json.RawMessage{
+		"net0": data,
+		"net1": data,
+	}); err == nil {
+		t.Fatal("multiple enabled interfaces accepted")
 	}
 	form, err := url.ParseQuery("net0=name%3Deth0%2Cip%3Ddhcp%2Clink_down%3D0")
 	if err != nil || form.Get("net0") == "" {

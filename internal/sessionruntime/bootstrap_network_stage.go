@@ -148,7 +148,21 @@ func bootstrapEnabledNetworkProjection(config map[string]json.RawMessage) (map[s
 		}
 		networks[key] = network
 	}
-	if len(networks) == 0 {
+	if len(networks) != 1 || networks["net0"] == "" {
+		return nil, errBootstrapNetworkStage
+	}
+	options := make(map[string]string)
+	for _, part := range strings.Split(networks["net0"], ",") {
+		name, value, ok := strings.Cut(part, "=")
+		if !ok || name == "" || value == "" {
+			return nil, errBootstrapNetworkStage
+		}
+		if _, duplicate := options[name]; duplicate {
+			return nil, errBootstrapNetworkStage
+		}
+		options[name] = value
+	}
+	if options["name"] != "eth0" || options["bridge"] != "vmbr0" {
 		return nil, errBootstrapNetworkStage
 	}
 	return networks, nil
