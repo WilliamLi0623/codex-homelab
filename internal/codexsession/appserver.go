@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 )
@@ -100,6 +101,130 @@ type appServerAccountRead struct {
 		Type     string `json:"type"`
 	} `json:"account"`
 	RequiresOpenAIAuth *bool `json:"requiresOpenaiAuth"`
+}
+
+// DeviceCodeChallenge is a short-lived, one-time login challenge. Callers may
+// display it to the authenticated operator but must not persist or log it.
+type DeviceCodeChallenge struct {
+	LoginID         string
+	VerificationURL string
+	UserCode        string
+}
+
+func (DeviceCodeChallenge) String() string   { return "DeviceCodeChallenge{redacted}" }
+func (DeviceCodeChallenge) GoString() string { return "DeviceCodeChallenge{redacted}" }
+
+type deviceCodeLoginResponse struct {
+	Type            string `json:"type"`
+	LoginID         string `json:"loginId"`
+	VerificationURL string `json:"verificationUrl"`
+	UserCode        string `json:"userCode"`
+}
+
+// StartDeviceCodeLogin starts Codex's ChatGPT device-code flow for this
+// App Server's own CODEX_HOME. The one-time user code is returned only to the
+// caller and is never persisted by this client.
+func (c *AppServerClient) StartDeviceCodeLogin(ctx context.Context) (DeviceCodeChallenge, error) {
+	if err := c.Initialize(ctx); err != nil {
+		return DeviceCodeChallenge{}, err
+	}
+	var response deviceCodeLoginResponse
+	if err := c.protocol.Call(ctx, "account/login/start", map[string]string{"type": "chatgptDeviceCode"}, &response); err != nil {
+		return DeviceCodeChallenge{}, err
+	}
+	if !validLoginID(response.LoginID) {
+		return DeviceCodeChallenge{}, errors.New("App Server returned an invalid device login challenge")
+	}
+	if response.Type != "chatgptDeviceCode" {
+		if _, err := c.cancelDeviceCodeLogin(ctx, response.LoginID); err != nil {
+			return DeviceCodeChallenge{}, errors.New("unexpected device login response; cancellation outcome is unknown")
+		}
+		return DeviceCodeChallenge{}, errors.New("App Server returned an invalid device login challenge")
+	}
+	if !validDeviceCode(response.UserCode) || !trustedDeviceVerificationURL(response.VerificationURL) {
+		if _, err := c.cancelDeviceCodeLogin(ctx, response.LoginID); err != nil {
+			return DeviceCodeChallenge{}, errors.New("invalid device login challenge; cancellation outcome is unknown")
+		}
+		return DeviceCodeChallenge{}, errors.New("App Server returned an invalid device login challenge")
+	}
+	return DeviceCodeChallenge{
+		LoginID:         response.LoginID,
+		VerificationURL: response.VerificationURL,
+		UserCode:        response.UserCode,
+	}, nil
+}
+
+// CancelDeviceCodeLogin cancels one pending App Server device-code login.
+// The bool is false when Codex reports that the login ID is no longer active.
+func (c *AppServerClient) CancelDeviceCodeLogin(ctx context.Context, loginID string) (bool, error) {
+	if !validLoginID(loginID) {
+		return false, errors.New("App Server login ID is invalid")
+	}
+	if err := c.Initialize(ctx); err != nil {
+		return false, err
+	}
+	return c.cancelDeviceCodeLogin(ctx, loginID)
+}
+
+func (c *AppServerClient) cancelDeviceCodeLogin(ctx context.Context, loginID string) (bool, error) {
+	var response struct {
+		Status string `json:"status"`
+	}
+	if err := c.protocol.Call(ctx, "account/login/cancel", map[string]string{"loginId": loginID}, &response); err != nil {
+		return false, err
+	}
+	switch response.Status {
+	case "canceled":
+		return true, nil
+	case "notFound":
+		return false, nil
+	default:
+		return false, errors.New("App Server returned an invalid device login cancellation status")
+	}
+}
+
+func validLoginID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
+		return false
+	}
+	for i := range value {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			continue
+		}
+		if !isHexByte(value[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func validDeviceCode(value string) bool {
+	if value == "" || len(value) > 64 || strings.TrimSpace(value) != value {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isHexByte(value byte) bool {
+	return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f') || (value >= 'A' && value <= 'F')
+}
+
+func trustedDeviceVerificationURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() != "auth.openai.com" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	if port := parsed.Port(); port != "" && port != "443" {
+		return false
+	}
+	return parsed.Path == "/codex/device" || parsed.Path == "/codex/device/"
 }
 
 func (c *AppServerClient) readAccount(ctx context.Context) (AppServerAccount, string, error) {
