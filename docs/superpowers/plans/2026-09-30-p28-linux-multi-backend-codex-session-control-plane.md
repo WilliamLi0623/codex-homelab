@@ -207,8 +207,9 @@ P28 is complete only when the Linux Web UI can create and continue persistent Se
 
 - Controller source now has a default-off `SESSION_BOOTSTRAP_ENABLED` gate. When explicitly enabled, all five bootstrap path/executable settings and Session runtime settings are required; the production driver and durable coordinator are assembled and injected into the Session Manager. Paths without the enable flag and invalid booleans fail closed.
 - No production environment variables were added, no service was restarted, no binary deployed, no database migrated, and no guest was created. Session lifecycle API routes remain unavailable. This closes only source composition, not Task 4's production bootstrap/READY gate.
-- Windows validation passed: focused Controller tests, full `go test ./... -count=1`, `go vet ./...`, and `git diff --check`. Default Go build-cache access was denied, so tests were rerun with an isolated worktree-local cache.
-- Remaining: run the current Controller package/test binary in the trusted Linux environment, prove an actual isolated Session create/bootstrap/identity/host-pin/readiness path without enabling user-facing Session API, then authenticate as Codex A. Do not configure bootstrap in production until the full reviewed lifecycle and destructive-action gate is ready.
+- Windows validation passed: full `go test ./... -count=1`, `go vet ./...`, and `git diff --check`. Default Go build-cache access was denied, so tests were rerun with an isolated worktree-local cache.
+- Linux LXC210 also passed the Controller package suite and a Linux-only handler integration test that constructs the production driver using private temporary directories, confirms `/v1/ready` is healthy, and confirms `/v1/sessions` remains 404. The integration test performs no Proxmox requests or persistent writes.
+- Remaining: prepare/review the Controller's private SSH material and backup roots, then prove an actual isolated Session create/bootstrap/identity/host-pin/readiness path without enabling the user-facing Session API, then authenticate as Codex A. The production roots are currently absent. Do not configure bootstrap in production until the full reviewed lifecycle and destructive-action gate is ready.
 
 ### Task 4 — disposable rootfs/SSH bootstrap spike — 2026-09-30
 

@@ -4,7 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -141,6 +143,50 @@ func TestNewHandlerFromEnvironmentConstructsOptionalSessionRuntime(t *testing.T)
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("unauthenticated Session route status = %d, want 404", recorder.Code)
+	}
+}
+
+func TestNewHandlerFromEnvironmentConstructsSessionBootstrapWithoutExposingAPI(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("production bootstrap driver requires Linux private-material checks")
+	}
+	proxmoxServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(proxmoxServer.Close)
+	setControllerEnvironment(t)
+	t.Setenv("PROXMOX_BASE_URL", proxmoxServer.URL)
+	t.Setenv("KUBERNETES_BASE_URL", proxmoxServer.URL)
+	t.Setenv("SESSION_RUNTIME_TEMPLATE_VMID", "3900")
+	t.Setenv("SESSION_WORKSPACE_SIZE_GIB", "32")
+	t.Setenv("SESSION_PROXMOX_TOKEN", "independent-session-proxmox-token")
+	t.Setenv("SESSION_BOOTSTRAP_ENABLED", "true")
+	root := t.TempDir()
+	materialRoot := filepath.Join(root, "ssh")
+	backupRoot := filepath.Join(root, "backups")
+	for _, dir := range []string{materialRoot, backupRoot} {
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatalf("create private fixture directory: %v", err)
+		}
+	}
+	t.Setenv("SESSION_SSH_MATERIAL_ROOT", materialRoot)
+	t.Setenv("SESSION_SSH_KEYGEN", "/usr/bin/ssh-keygen")
+	t.Setenv("SESSION_BOOTSTRAP_BACKUP_ROOT", backupRoot)
+	t.Setenv("SESSION_BOOTSTRAP_ARTIFACT_ROOT", "/var/lib/codex-bootstrap-artifacts/codex-0.155.0-x86_64-unknown-linux-musl")
+	t.Setenv("SESSION_SSH_EXECUTABLE", "/usr/bin/ssh")
+
+	handler, closeStore, err := newHandlerFromEnvironment(filepath.Join(root, "controller.sqlite"))
+	if err != nil {
+		t.Fatalf("newHandlerFromEnvironment() with explicit bootstrap config: %v", err)
+	}
+	t.Cleanup(closeStore)
+	ready := httptest.NewRecorder()
+	handler.ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/v1/ready", nil))
+	if ready.Code != http.StatusOK {
+		t.Fatalf("readiness status = %d, want %d; body=%s", ready.Code, http.StatusOK, ready.Body.String())
+	}
+	sessions := httptest.NewRecorder()
+	handler.ServeHTTP(sessions, httptest.NewRequest(http.MethodGet, "/v1/sessions", nil))
+	if sessions.Code != http.StatusNotFound {
+		t.Fatalf("Session API status = %d, want route to remain unavailable", sessions.Code)
 	}
 }
 
