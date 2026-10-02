@@ -26,6 +26,7 @@ type environmentConfig struct {
 	CapacityConfig      orchestrator.CapacityAdapterConfig
 	Routes              modelrouter.RouteConfig
 	SessionRuntime      *sessionruntime.Config
+	SessionBootstrap    *sessionruntime.BootstrapDriverConfig
 	SessionProxmoxToken string
 }
 
@@ -53,6 +54,10 @@ func loadEnvironmentConfig() (environmentConfig, error) {
 		return environmentConfig{}, fmt.Errorf("PROXMOX_TEMPLATE_VMID must be an integer in %d-%d", controllerTemplateVMIDMin, controllerTemplateVMIDMax)
 	}
 	sessionRuntimeConfig, err := loadSessionRuntimeConfig()
+	if err != nil {
+		return environmentConfig{}, err
+	}
+	sessionBootstrapConfig, err := loadSessionBootstrapConfig(sessionRuntimeConfig != nil)
 	if err != nil {
 		return environmentConfig{}, err
 	}
@@ -128,6 +133,7 @@ func loadEnvironmentConfig() (environmentConfig, error) {
 		},
 		Routes:              routes,
 		SessionRuntime:      sessionRuntimeConfig,
+		SessionBootstrap:    sessionBootstrapConfig,
 		SessionProxmoxToken: sessionProxmoxToken,
 	}
 	if err := config.Proxmox.ValidateConfig(); err != nil {
@@ -137,6 +143,50 @@ func loadEnvironmentConfig() (environmentConfig, error) {
 		return environmentConfig{}, fmt.Errorf("invalid Kubernetes configuration: %w", err)
 	}
 	return config, nil
+}
+
+func loadSessionBootstrapConfig(sessionRuntimeConfigured bool) (*sessionruntime.BootstrapDriverConfig, error) {
+	enabledValue := strings.TrimSpace(os.Getenv("SESSION_BOOTSTRAP_ENABLED"))
+	enabled := false
+	switch strings.ToLower(enabledValue) {
+	case "", "false":
+	case "true":
+		enabled = true
+	default:
+		return nil, fmt.Errorf("SESSION_BOOTSTRAP_ENABLED must be true or false")
+	}
+	paths := map[string]string{
+		"SESSION_SSH_MATERIAL_ROOT":       strings.TrimSpace(os.Getenv("SESSION_SSH_MATERIAL_ROOT")),
+		"SESSION_SSH_KEYGEN":              strings.TrimSpace(os.Getenv("SESSION_SSH_KEYGEN")),
+		"SESSION_BOOTSTRAP_BACKUP_ROOT":   strings.TrimSpace(os.Getenv("SESSION_BOOTSTRAP_BACKUP_ROOT")),
+		"SESSION_BOOTSTRAP_ARTIFACT_ROOT": strings.TrimSpace(os.Getenv("SESSION_BOOTSTRAP_ARTIFACT_ROOT")),
+		"SESSION_SSH_EXECUTABLE":          strings.TrimSpace(os.Getenv("SESSION_SSH_EXECUTABLE")),
+	}
+	configuredPaths := false
+	for _, value := range paths {
+		configuredPaths = configuredPaths || value != ""
+	}
+	if !enabled {
+		if configuredPaths {
+			return nil, fmt.Errorf("Session bootstrap paths require SESSION_BOOTSTRAP_ENABLED=true")
+		}
+		return nil, nil
+	}
+	if !sessionRuntimeConfigured {
+		return nil, fmt.Errorf("Session bootstrap requires Session runtime configuration")
+	}
+	for name, value := range paths {
+		if value == "" {
+			return nil, fmt.Errorf("%s is required when Session bootstrap is enabled", name)
+		}
+	}
+	return &sessionruntime.BootstrapDriverConfig{
+		SSHMaterialRoot: paths["SESSION_SSH_MATERIAL_ROOT"],
+		SSHKeygen:       paths["SESSION_SSH_KEYGEN"],
+		BackupRoot:      paths["SESSION_BOOTSTRAP_BACKUP_ROOT"],
+		ArtifactRoot:    paths["SESSION_BOOTSTRAP_ARTIFACT_ROOT"],
+		SSHExecutable:   paths["SESSION_SSH_EXECUTABLE"],
+	}, nil
 }
 
 func loadRouteConfig() (modelrouter.RouteConfig, error) {

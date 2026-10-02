@@ -203,6 +203,13 @@ P28 is complete only when the Linux Web UI can create and continue persistent Se
 - Candidate that avoids mutating templates: create from a standard rootfs archive through the LXC create API, inject a newly generated per-Session SSH public key at creation, discover its DHCP IP from the interfaces endpoint, then install Codex through SSH. This differs from the current clone adapter and still requires proof of archive availability, API permissions, network reachability, and cryptographically trustworthy guest SSH host-key validation before any subscription credential is provisioned; TOFU is not approved for that boundary.
 - Alternative remains a narrowly scoped PVE-side bootstrap service that uses host-local pct exec/push. It avoids SSH host-key bootstrap but adds a privileged host service and requires its own least-privilege protocol and security review.
 
+### Controller bootstrap composition — 2026-10-02
+
+- Controller source now has a default-off `SESSION_BOOTSTRAP_ENABLED` gate. When explicitly enabled, all five bootstrap path/executable settings and Session runtime settings are required; the production driver and durable coordinator are assembled and injected into the Session Manager. Paths without the enable flag and invalid booleans fail closed.
+- No production environment variables were added, no service was restarted, no binary deployed, no database migrated, and no guest was created. Session lifecycle API routes remain unavailable. This closes only source composition, not Task 4's production bootstrap/READY gate.
+- Windows validation passed: focused Controller tests, full `go test ./... -count=1`, `go vet ./...`, and `git diff --check`. Default Go build-cache access was denied, so tests were rerun with an isolated worktree-local cache.
+- Remaining: run the current Controller package/test binary in the trusted Linux environment, prove an actual isolated Session create/bootstrap/identity/host-pin/readiness path without enabling user-facing Session API, then authenticate as Codex A. Do not configure bootstrap in production until the full reviewed lifecycle and destructive-action gate is ready.
+
 ### Task 4 — disposable rootfs/SSH bootstrap spike — 2026-09-30
 
 - With explicit approval, created only disposable privileged LXC 4000 from a temporary Ubuntu 24.04 rootfs archive; no frozen template or Controller source was changed. The archive contained a unique pre-generated SSH host key and a temporary client public key. `ostype=unmanaged` was necessary because Proxmox's normal post-create hook rewrites host keys and applies guest network setup; the unmanaged plugin skips both.

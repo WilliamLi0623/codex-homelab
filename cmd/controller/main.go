@@ -79,7 +79,21 @@ func newHandlerFromEnvironment(databasePath string) (http.Handler, func(), error
 			closeStore()
 			return nil, nil, fmt.Errorf("configure Session Proxmox runtime: %w", runtimeErr)
 		}
-		sessionManager, runtimeErr = sessionruntime.NewManager(database, sessionProxmoxRuntime, *config.SessionRuntime)
+		sessionConfig := *config.SessionRuntime
+		if config.SessionBootstrap != nil {
+			bootstrapDriver, driverErr := sessionruntime.NewBootstrapDriver(sessionProxmoxRuntime, *config.SessionBootstrap)
+			if driverErr != nil {
+				closeStore()
+				return nil, nil, fmt.Errorf("configure Session bootstrap driver: %w", driverErr)
+			}
+			bootstrapCoordinator, coordinatorErr := sessionruntime.NewBootstrapCoordinator(database, bootstrapDriver)
+			if coordinatorErr != nil {
+				closeStore()
+				return nil, nil, fmt.Errorf("configure Session bootstrap coordinator: %w", coordinatorErr)
+			}
+			sessionConfig.Bootstrap = bootstrapCoordinator
+		}
+		sessionManager, runtimeErr = sessionruntime.NewManager(database, sessionProxmoxRuntime, sessionConfig)
 		if runtimeErr != nil {
 			closeStore()
 			return nil, nil, fmt.Errorf("configure Session runtime manager: %w", runtimeErr)

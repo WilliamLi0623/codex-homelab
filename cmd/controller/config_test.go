@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/modelrouter"
+	"github.com/WilliamLi0623/codex-homelab/internal/sessionruntime"
 )
 
 func TestRoutingStateTokenFromEnvironmentFailsClosed(t *testing.T) {
@@ -93,12 +94,86 @@ func setControllerEnvironment(t *testing.T) {
 	t.Setenv("PROXMOX_NODE", "pve-node")
 	t.Setenv("PROXMOX_TOKEN", "proxmox-token")
 	t.Setenv("SESSION_PROXMOX_TOKEN", "")
+	t.Setenv("SESSION_BOOTSTRAP_ENABLED", "")
+	t.Setenv("SESSION_SSH_MATERIAL_ROOT", "")
+	t.Setenv("SESSION_SSH_KEYGEN", "")
+	t.Setenv("SESSION_BOOTSTRAP_BACKUP_ROOT", "")
+	t.Setenv("SESSION_BOOTSTRAP_ARTIFACT_ROOT", "")
+	t.Setenv("SESSION_SSH_EXECUTABLE", "")
 	t.Setenv("PROXMOX_TEMPLATE_VMID", "3900")
 	t.Setenv("KUBERNETES_BASE_URL", "https://kubernetes.example")
 	t.Setenv("KUBERNETES_NAMESPACE", "codex")
 	t.Setenv("KUBERNETES_TOKEN", "kubernetes-token")
 	t.Setenv("KUBERNETES_WORKER_IMAGE", "registry.example/worker:latest")
 	t.Setenv("KUBERNETES_SERVICE_ACCOUNT", "codex-worker")
+}
+
+func TestLoadSessionBootstrapConfigIsDisabledByDefault(t *testing.T) {
+	setControllerEnvironment(t)
+	config, err := loadSessionBootstrapConfig(false)
+	if err != nil {
+		t.Fatalf("loadSessionBootstrapConfig() error: %v", err)
+	}
+	if config != nil {
+		t.Fatalf("bootstrap config = %+v, want disabled", config)
+	}
+}
+
+func TestLoadSessionBootstrapConfigRejectsPathsWhenDisabled(t *testing.T) {
+	setControllerEnvironment(t)
+	t.Setenv("SESSION_SSH_MATERIAL_ROOT", "/var/lib/codex-session/ssh")
+	if _, err := loadSessionBootstrapConfig(true); err == nil {
+		t.Fatal("bootstrap paths were silently accepted while bootstrap was disabled")
+	}
+}
+
+func TestLoadSessionBootstrapConfigRequiresSessionRuntimeAndEveryPath(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		runtimeSet bool
+		missing    string
+	}{
+		{name: "runtime", runtimeSet: false},
+		{name: "backup", runtimeSet: true, missing: "SESSION_BOOTSTRAP_BACKUP_ROOT"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setControllerEnvironment(t)
+			t.Setenv("SESSION_BOOTSTRAP_ENABLED", "true")
+			t.Setenv("SESSION_SSH_MATERIAL_ROOT", "/var/lib/codex-session/ssh")
+			t.Setenv("SESSION_SSH_KEYGEN", "/usr/bin/ssh-keygen")
+			t.Setenv("SESSION_BOOTSTRAP_BACKUP_ROOT", "/var/lib/codex-session/backups")
+			t.Setenv("SESSION_BOOTSTRAP_ARTIFACT_ROOT", "/var/lib/codex-bootstrap-artifacts/codex-0.155.0-x86_64-unknown-linux-musl")
+			t.Setenv("SESSION_SSH_EXECUTABLE", "/usr/bin/ssh")
+			if !tc.runtimeSet {
+				if _, err := loadSessionBootstrapConfig(false); err == nil {
+					t.Fatal("bootstrap enabled without Session runtime was accepted")
+				}
+				return
+			}
+			t.Setenv(tc.missing, "")
+			if _, err := loadSessionBootstrapConfig(true); err == nil {
+				t.Fatalf("bootstrap enabled without %s was accepted", tc.missing)
+			}
+		})
+	}
+}
+
+func TestLoadSessionBootstrapConfigLoadsExactPaths(t *testing.T) {
+	setControllerEnvironment(t)
+	t.Setenv("SESSION_BOOTSTRAP_ENABLED", "true")
+	t.Setenv("SESSION_SSH_MATERIAL_ROOT", "/var/lib/codex-session/ssh")
+	t.Setenv("SESSION_SSH_KEYGEN", "/usr/bin/ssh-keygen")
+	t.Setenv("SESSION_BOOTSTRAP_BACKUP_ROOT", "/var/lib/codex-session/backups")
+	t.Setenv("SESSION_BOOTSTRAP_ARTIFACT_ROOT", "/var/lib/codex-bootstrap-artifacts/codex-0.155.0-x86_64-unknown-linux-musl")
+	t.Setenv("SESSION_SSH_EXECUTABLE", "/usr/bin/ssh")
+	config, err := loadSessionBootstrapConfig(true)
+	if err != nil {
+		t.Fatalf("loadSessionBootstrapConfig() error: %v", err)
+	}
+	want := &sessionruntime.BootstrapDriverConfig{SSHMaterialRoot: "/var/lib/codex-session/ssh", SSHKeygen: "/usr/bin/ssh-keygen", BackupRoot: "/var/lib/codex-session/backups", ArtifactRoot: "/var/lib/codex-bootstrap-artifacts/codex-0.155.0-x86_64-unknown-linux-musl", SSHExecutable: "/usr/bin/ssh"}
+	if config == nil || *config != *want {
+		t.Fatalf("bootstrap config = %+v, want %+v", config, want)
+	}
 }
 
 func TestLoadEnvironmentConfigRejectsCodingAgentMetadata(t *testing.T) {
