@@ -70,6 +70,55 @@ func TestBuildSSHAppServerCommandUsesPinnedHostAndFixedRemoteCommand(t *testing.
 	}
 }
 
+func TestBuildSSHArtifactInstallCommandUsesPinnedSSHAndDigestOnlyArgument(t *testing.T) {
+	config := newSSHTestConfig(t)
+	digest := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	executable, args, environment, err := BuildSSHArtifactInstallCommand(config, digest, []string{"PATH=/usr/bin:/bin", "OPENAI_API_KEY=do-not-leak", "HTTPS_PROXY=http://proxy.invalid"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executable != config.SSHExecutable || indexOfSSHArg(args, "-oStrictHostKeyChecking=yes") < 0 {
+		t.Fatalf("artifact SSH target/options = %q %q", executable, args)
+	}
+	remote := args[len(args)-2:]
+	if strings.Join(remote, "\n") != "/usr/local/libexec/codex-artifact-install\n"+digest {
+		t.Fatalf("remote installer argv = %q", remote)
+	}
+	joined := strings.Join(args, "\n")
+	for _, required := range []string{"BatchMode=yes", "IdentitiesOnly=yes", "IdentityAgent=none", "UserKnownHostsFile=" + config.KnownHostsFile, "HostKeyAlias=" + config.HostKeyAlias, "root@192.0.2.44"} {
+		if !strings.Contains(joined, required) {
+			t.Errorf("pinned SSH options omit %q", required)
+		}
+	}
+	if strings.Contains(joined, "do-not-leak") || strings.Contains(joined, "proxy.invalid") || len(environment) != 1 || environment[0] != "PATH=/usr/bin:/bin" {
+		t.Fatalf("artifact command leaked inherited state: args=%q env=%q", args, environment)
+	}
+}
+
+func TestBuildSSHArtifactInstallCommandRejectsUnsafeDigest(t *testing.T) {
+	config := newSSHTestConfig(t)
+	for _, digest := range []string{"", "../target", "ABCDEF0123456789", strings.Repeat("a", 63), strings.Repeat("a", 65), strings.Repeat("a", 63) + "g"} {
+		if _, _, _, err := BuildSSHArtifactInstallCommand(config, digest, nil); err == nil {
+			t.Errorf("unsafe digest %q was accepted", digest)
+		}
+	}
+}
+
+func TestBuildSSHArtifactObserveCommandUsesReadOnlyFixedMode(t *testing.T) {
+	config := newSSHTestConfig(t)
+	digest := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	_, args, _, err := BuildSSHArtifactObserveCommand(config, digest, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(args[len(args)-3:], " "); got != "/usr/local/libexec/codex-artifact-install --observe "+digest {
+		t.Fatalf("read-only command tail = %q", got)
+	}
+	if _, _, _, err := buildSSHArtifactCommand(config, []string{"--delete", digest}, nil); err == nil {
+		t.Fatal("unsupported remote operation was accepted")
+	}
+}
+
 func TestBuildSSHAppServerCommandRejectsUnsafeTargetAndHomeValues(t *testing.T) {
 	base := newSSHTestConfig(t)
 	for _, tc := range []struct {

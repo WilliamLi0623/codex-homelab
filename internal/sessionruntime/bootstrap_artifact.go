@@ -1,6 +1,7 @@
 package sessionruntime
 
 import (
+	"archive/tar"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,15 +13,17 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/WilliamLi0623/codex-homelab/internal/store"
 )
 
 const (
-	bootstrapCodex0155Version = "0.155.0"
-	bootstrapCodex0155Target  = "x86_64-unknown-linux-musl"
-	bootstrapArtifactMaxBytes = int64(512 << 20)
-	bootstrapArtifactMaxFile  = int64(300 << 20)
+	bootstrapCodex0155Version     = "0.155.0"
+	bootstrapCodex0155Target      = "x86_64-unknown-linux-musl"
+	bootstrapArtifactMaxBytes     = int64(512 << 20)
+	bootstrapArtifactMaxFile      = int64(300 << 20)
+	bootstrapArtifactManifestPath = ".codex-bootstrap-manifest.json"
 )
 
 var errBootstrapArtifact = errors.New("pinned Codex artifact bundle could not be verified")
@@ -180,8 +183,8 @@ func verifyBootstrapArtifactBundle(ctx context.Context, root string, bundle code
 		if copyErr != nil || closeErr != nil || n != before.Size() || hex.EncodeToString(hash.Sum(nil)) != file.sha256 {
 			return store.SessionBootstrapEvidence{}, errBootstrapArtifact
 		}
-		after, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)))
-		if err != nil || !os.SameFile(before, after) || after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+		after, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil || after.Mode()&os.ModeSymlink != 0 || !os.SameFile(before, after) || after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
 			return store.SessionBootstrapEvidence{}, errBootstrapArtifact
 		}
 		total += n
@@ -213,4 +216,110 @@ func (r bootstrapArtifactContextReader) Read(data []byte) (int, error) {
 		return 0, errBootstrapArtifact
 	}
 	return r.reader.Read(data)
+}
+
+// writeBootstrapArtifactTarFiles emits a deterministic archive from a bundle
+// whose manifest was verified immediately before this call. It rechecks every
+// file while copying so a changed path, mode, size, or content aborts the
+// stream. The caller must not treat an error as permission to retry an upload.
+func writeBootstrapArtifactTarFiles(ctx context.Context, root string, bundle codexArtifactBundle, verified []verifiedCodexArtifact, output io.Writer) error {
+	if ctx == nil || ctx.Err() != nil || output == nil || !filepath.IsAbs(root) || filepath.Clean(root) != root || bundle.version == "" || bundle.target != bootstrapCodex0155Target || len(bundle.files) == 0 || len(bundle.files) != len(verified) {
+		return errBootstrapArtifact
+	}
+	entries := make(map[string]verifiedCodexArtifact, len(verified))
+	for _, entry := range verified {
+		if entry.Path == "" || entry.Path != filepath.ToSlash(filepath.Clean(filepath.FromSlash(entry.Path))) || entry.Size <= 0 || entry.Size > bootstrapArtifactMaxFile || !bootstrapDigestPattern.MatchString(entry.SHA256) || (entry.Mode != uint32(os.FileMode(0644).Perm()) && entry.Mode != uint32(os.FileMode(0755).Perm())) {
+			return errBootstrapArtifact
+		}
+		if _, duplicate := entries[entry.Path]; duplicate {
+			return errBootstrapArtifact
+		}
+		entries[entry.Path] = entry
+	}
+	files := append([]codexArtifactFile(nil), bundle.files...)
+	sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
+	var total int64
+	seen := make(map[string]struct{}, len(files))
+	for _, file := range files {
+		cleanPath := filepath.ToSlash(filepath.Clean(filepath.FromSlash(file.path)))
+		if file.path == "" || file.path == "." || file.path == ".." || strings.HasPrefix(file.path, "../") || strings.ContainsAny(file.path, "\\\x00\r\n") || strings.HasPrefix(file.path, "/") || cleanPath != file.path || !bootstrapDigestPattern.MatchString(file.sha256) || (file.mode != 0644 && file.mode != 0755) {
+			return errBootstrapArtifact
+		}
+		if _, duplicate := seen[file.path]; duplicate {
+			return errBootstrapArtifact
+		}
+		seen[file.path] = struct{}{}
+		entry, ok := entries[file.path]
+		if !ok || entry.SHA256 != file.sha256 || entry.Mode != uint32(file.mode.Perm()) {
+			return errBootstrapArtifact
+		}
+		total += entry.Size
+		if total > bootstrapArtifactMaxBytes {
+			return errBootstrapArtifact
+		}
+	}
+	if len(seen) != len(entries) {
+		return errBootstrapArtifact
+	}
+	manifestFiles := make([]verifiedCodexArtifact, 0, len(files))
+	for _, file := range files {
+		manifestFiles = append(manifestFiles, entries[file.path])
+	}
+	manifestData, err := json.Marshal(makeBootstrapCodexManifest(bundle, manifestFiles))
+	if err != nil || int64(len(manifestData)) > 1<<20 {
+		return errBootstrapArtifact
+	}
+
+	writer := tar.NewWriter(output)
+	if err := writer.WriteHeader(&tar.Header{Name: bootstrapArtifactManifestPath, Mode: 0600, Size: int64(len(manifestData)), Uid: 0, Gid: 0, ModTime: time.Unix(0, 0).UTC(), Typeflag: tar.TypeReg, Format: tar.FormatPAX}); err != nil {
+		return errBootstrapArtifact
+	}
+	if n, err := writer.Write(manifestData); err != nil || n != len(manifestData) {
+		return errBootstrapArtifact
+	}
+	for _, file := range files {
+		if err := ctx.Err(); err != nil {
+			return errBootstrapArtifact
+		}
+		entry := entries[file.path]
+		fullPath := filepath.Join(root, filepath.FromSlash(file.path))
+		before, err := os.Lstat(fullPath)
+		if err != nil || before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() || (runtime.GOOS != "windows" && before.Mode().Perm() != file.mode) || before.Size() != entry.Size {
+			return errBootstrapArtifact
+		}
+		handle, err := os.Open(fullPath)
+		if err != nil {
+			return errBootstrapArtifact
+		}
+		opened, statErr := handle.Stat()
+		if statErr != nil || !os.SameFile(before, opened) || opened.Size() != entry.Size || (runtime.GOOS != "windows" && opened.Mode().Perm() != file.mode) {
+			_ = handle.Close()
+			return errBootstrapArtifact
+		}
+		header := &tar.Header{
+			Name: file.path, Mode: int64(file.mode.Perm()), Size: entry.Size,
+			Uid: 0, Gid: 0, ModTime: time.Unix(0, 0).UTC(), Typeflag: tar.TypeReg,
+			Format: tar.FormatPAX,
+		}
+		if err := writer.WriteHeader(header); err != nil {
+			_ = handle.Close()
+			return errBootstrapArtifact
+		}
+		hash := sha256.New()
+		copied, copyErr := io.CopyN(io.MultiWriter(writer, hash), bootstrapArtifactContextReader{ctx: ctx, reader: handle}, entry.Size)
+		var extra [1]byte
+		extraN, extraErr := handle.Read(extra[:])
+		after, afterErr := os.Lstat(fullPath)
+		closeErr := handle.Close()
+		if copyErr != nil || copied != entry.Size || extraN != 0 || (extraErr != nil && extraErr != io.EOF) || afterErr != nil || !os.SameFile(before, after) || after.Size() != entry.Size || (runtime.GOOS != "windows" && after.Mode().Perm() != file.mode) || !after.ModTime().Equal(before.ModTime()) || closeErr != nil || hex.EncodeToString(hash.Sum(nil)) != file.sha256 {
+			return errBootstrapArtifact
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return errBootstrapArtifact
+	}
+	if err := writer.Close(); err != nil {
+		return errBootstrapArtifact
+	}
+	return nil
 }

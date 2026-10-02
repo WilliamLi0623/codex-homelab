@@ -1,10 +1,13 @@
 package codexsession
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -13,6 +16,7 @@ import (
 )
 
 var p28HostKeyAliasPattern = regexp.MustCompile(`^p28-session-[0-9a-f]{64}$`)
+var p28ArtifactDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var safeRemotePathPattern = regexp.MustCompile(`^/[A-Za-z0-9._/-]+$`)
 
 // SSHAppServerConfig contains the generation-bound connection material for one
@@ -91,6 +95,132 @@ func StartSSHAppServerProcess(ctx context.Context, config SSHAppServerConfig) (*
 		return nil, err
 	}
 	return startAppServerCommand(ctx, executable, args, environment)
+}
+
+// BuildSSHArtifactInstallCommand returns the fixed, pinned SSH invocation for
+// the one-shot Codex bundle receiver. The only remote argument is a lowercase
+// generation-bound digest; archive bytes travel on stdin, never in argv/env.
+func BuildSSHArtifactInstallCommand(config SSHAppServerConfig, generationDigest string, localEnvironment []string) (string, []string, []string, error) {
+	return buildSSHArtifactCommand(config, []string{generationDigest}, localEnvironment)
+}
+
+// BuildSSHArtifactObserveCommand constructs the fixed read-only reconciliation
+// command. It cannot accept a shell fragment or an arbitrary remote path.
+func BuildSSHArtifactObserveCommand(config SSHAppServerConfig, generationDigest string, localEnvironment []string) (string, []string, []string, error) {
+	return buildSSHArtifactCommand(config, []string{"--observe", generationDigest}, localEnvironment)
+}
+
+func buildSSHArtifactCommand(config SSHAppServerConfig, remoteArguments, localEnvironment []string) (string, []string, []string, error) {
+	if len(remoteArguments) == 0 || !p28ArtifactDigestPattern.MatchString(remoteArguments[len(remoteArguments)-1]) || (len(remoteArguments) == 2 && remoteArguments[0] != "--observe") || len(remoteArguments) > 2 {
+		return "", nil, nil, errors.New("Codex artifact command arguments are invalid")
+	}
+	if err := validateSSHAppServerConfig(config); err != nil {
+		return "", nil, nil, err
+	}
+	args := []string{
+		"-F", "/dev/null",
+		"-T", "-a", "-x",
+		"-oBatchMode=yes",
+		"-oStrictHostKeyChecking=yes",
+		"-oIdentitiesOnly=yes",
+		"-oIdentityAgent=none",
+		"-oGlobalKnownHostsFile=/dev/null",
+		"-oUserKnownHostsFile=" + config.KnownHostsFile,
+		"-oHostKeyAlias=" + config.HostKeyAlias,
+		"-oForwardAgent=no",
+		"-oClearAllForwardings=yes",
+		"-oPasswordAuthentication=no",
+		"-oKbdInteractiveAuthentication=no",
+		"-oNumberOfPasswordPrompts=0",
+		"-oConnectTimeout=10",
+		"-oServerAliveInterval=15",
+		"-oServerAliveCountMax=3",
+		"-i", config.IdentityFile,
+		"--", "root@" + config.Address,
+		"/usr/local/libexec/codex-artifact-install",
+	}
+	args = append(args, remoteArguments...)
+	return config.SSHExecutable, args, buildSSHLocalEnvironment(localEnvironment), nil
+}
+
+// RunSSHArtifactInstall sends one framed artifact stream and never retries.
+// All remote diagnostics are discarded so they cannot disclose paths or
+// guest output; callers receive only a stable error class.
+func RunSSHArtifactInstall(ctx context.Context, config SSHAppServerConfig, generationDigest string, archive io.Reader) error {
+	_, err := RunSSHArtifactInstallWithEvidence(ctx, config, generationDigest, archive)
+	return err
+}
+
+// RunSSHArtifactInstallWithEvidence performs exactly one pinned SSH request
+// and accepts only the installer's fixed, bounded digest acknowledgment.
+func RunSSHArtifactInstallWithEvidence(ctx context.Context, config SSHAppServerConfig, generationDigest string, archive io.Reader) (string, error) {
+	if runtime.GOOS != "linux" || ctx == nil || archive == nil {
+		return "", errors.New("pinned Codex artifact transfer requires a Linux Controller and stream")
+	}
+	executable, args, environment, err := BuildSSHArtifactInstallCommand(config, generationDigest, os.Environ())
+	if err != nil {
+		return "", errors.New("pinned Codex artifact transfer configuration is invalid")
+	}
+	command := exec.CommandContext(ctx, executable, args...)
+	command.Env = environment
+	command.Stdin = archive
+	var stdout boundedSSHArtifactOutput
+	command.Stdout = &stdout
+	command.Stderr = io.Discard
+	if err := command.Run(); err != nil {
+		return "", errors.New("pinned Codex artifact transfer did not complete")
+	}
+	if stdout.overflow || !strings.HasPrefix(stdout.data.String(), "P28_CODEX_INSTALL_COMPLETE:") || !strings.HasSuffix(stdout.data.String(), "\n") {
+		return "", errors.New("pinned Codex artifact transfer acknowledgment is invalid")
+	}
+	digest := strings.TrimSuffix(strings.TrimPrefix(stdout.data.String(), "P28_CODEX_INSTALL_COMPLETE:"), "\n")
+	if !p28ArtifactDigestPattern.MatchString(digest) || strings.Count(stdout.data.String(), "\n") != 1 {
+		return "", errors.New("pinned Codex artifact transfer acknowledgment is invalid")
+	}
+	return digest, nil
+}
+
+// RunSSHArtifactObserve reconciles a prior upload with a bounded fixed-token
+// response. It performs only one read-only command and never retries.
+func RunSSHArtifactObserve(ctx context.Context, config SSHAppServerConfig, generationDigest string) (string, error) {
+	if runtime.GOOS != "linux" || ctx == nil {
+		return "", errors.New("pinned Codex artifact observation requires a Linux Controller")
+	}
+	executable, args, environment, err := BuildSSHArtifactObserveCommand(config, generationDigest, os.Environ())
+	if err != nil {
+		return "", errors.New("pinned Codex artifact observation configuration is invalid")
+	}
+	command := exec.CommandContext(ctx, executable, args...)
+	command.Env = environment
+	command.Stdin = strings.NewReader("")
+	var stdout boundedSSHArtifactOutput
+	command.Stdout = &stdout
+	command.Stderr = io.Discard
+	if err := command.Run(); err != nil || stdout.overflow {
+		return "", errors.New("pinned Codex artifact observation failed")
+	}
+	line := stdout.data.String()
+	if !strings.HasPrefix(line, "P28_CODEX_INSTALL_COMPLETE:") || !strings.HasSuffix(line, "\n") || strings.Count(line, "\n") != 1 {
+		return "", errors.New("pinned Codex artifact observation acknowledgment is invalid")
+	}
+	digest := strings.TrimSuffix(strings.TrimPrefix(line, "P28_CODEX_INSTALL_COMPLETE:"), "\n")
+	if !p28ArtifactDigestPattern.MatchString(digest) {
+		return "", errors.New("pinned Codex artifact observation acknowledgment is invalid")
+	}
+	return digest, nil
+}
+
+type boundedSSHArtifactOutput struct {
+	data     bytes.Buffer
+	overflow bool
+}
+
+func (w *boundedSSHArtifactOutput) Write(data []byte) (int, error) {
+	if w.overflow || len(data) > 128-w.data.Len() {
+		w.overflow = true
+		return 0, errors.New("installer acknowledgment exceeds limit")
+	}
+	return w.data.Write(data)
 }
 
 func validateSSHAppServerConfig(config SSHAppServerConfig) error {
