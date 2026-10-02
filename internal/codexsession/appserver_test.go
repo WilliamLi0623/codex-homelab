@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -131,6 +133,122 @@ func TestAppServerClientInitializesAndStartsRoutePinnedThread(t *testing.T) {
 	}
 	if thread.ID != "thread-1" || thread.ModelProvider != "cch_bridge" || thread.Model != "glm-5.3-flash" || thread.ReasoningEffort == nil || *thread.ReasoningEffort != "max" || thread.ApprovalPolicy != "on-request" {
 		t.Fatalf("thread route metadata=%+v", thread)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAppServerClientReadsSanitizedAccountAndMatchesEmailWithoutReturningIt(t *testing.T) {
+	client, serverConn := newFakeAppServerClient(t)
+	serverDone := make(chan error, 1)
+	go func() {
+		initializeFakeAppServer(t, serverConn)
+		request := readAppServerRequest(t, serverConn)
+		if request.Method != "account/read" || request.Params["refreshToken"] != false {
+			serverDone <- errorsForTest("account/read did not request a non-refreshing account snapshot")
+			return
+		}
+		writeAppServerResponse(t, serverConn, request.ID, map[string]any{
+			"account": map[string]any{
+				"email": "codex-a@example.invalid", "planType": "plus", "type": "chatgpt",
+			},
+			"requiresOpenaiAuth": false,
+		})
+		serverDone <- nil
+	}()
+
+	account, err := client.ReadAccount(testAppServerContext(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.Type != "chatgpt" || account.PlanType != "plus" || account.RequiresOpenAIAuth {
+		t.Fatalf("account summary=%+v", account)
+	}
+	if strings.Contains(fmt.Sprintf("%+v %#v", account, account), "codex-a@example.invalid") {
+		t.Fatal("sanitized account summary exposed the raw email")
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAppServerClientMatchesAccountEmailWithoutReturningIt(t *testing.T) {
+	client, serverConn := newFakeAppServerClient(t)
+	serverDone := make(chan error, 1)
+	go func() {
+		initializeFakeAppServer(t, serverConn)
+		request := readAppServerRequest(t, serverConn)
+		if request.Method != "account/read" || request.Params["refreshToken"] != false {
+			serverDone <- errorsForTest("account email comparison did not use a non-refreshing account/read")
+			return
+		}
+		writeAppServerResponse(t, serverConn, request.ID, map[string]any{
+			"account": map[string]any{
+				"email": "codex-a@example.invalid", "planType": "plus", "type": "chatgpt",
+			},
+			"requiresOpenaiAuth": false,
+		})
+		serverDone <- nil
+	}()
+
+	matched, err := client.AccountEmailMatches(testAppServerContext(t), "codex-a@example.invalid")
+	if err != nil || !matched {
+		t.Fatalf("AccountEmailMatches()=(%v, %v), want (true, nil)", matched, err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAppServerClientDoesNotMatchDifferentAccountEmail(t *testing.T) {
+	client, serverConn := newFakeAppServerClient(t)
+	serverDone := make(chan error, 1)
+	go func() {
+		initializeFakeAppServer(t, serverConn)
+		request := readAppServerRequest(t, serverConn)
+		writeAppServerResponse(t, serverConn, request.ID, map[string]any{
+			"account": map[string]any{
+				"email": "codex-a@example.invalid", "planType": "plus", "type": "chatgpt",
+			},
+			"requiresOpenaiAuth": false,
+		})
+		serverDone <- nil
+	}()
+
+	matched, err := client.AccountEmailMatches(testAppServerContext(t), "codex-b@example.invalid")
+	if err != nil || matched {
+		t.Fatalf("AccountEmailMatches()=(%v, %v), want (false, nil)", matched, err)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAppServerClientRejectsEmptyExpectedAccountEmailBeforeRPC(t *testing.T) {
+	client, _ := newFakeAppServerClient(t)
+	matched, err := client.AccountEmailMatches(testAppServerContext(t), " \t ")
+	if err == nil || matched {
+		t.Fatalf("AccountEmailMatches()=(%v, %v), want (false, error)", matched, err)
+	}
+}
+
+func TestAppServerClientRejectsIncompleteAccountReadWithoutLeakingResponse(t *testing.T) {
+	client, serverConn := newFakeAppServerClient(t)
+	serverDone := make(chan error, 1)
+	go func() {
+		initializeFakeAppServer(t, serverConn)
+		request := readAppServerRequest(t, serverConn)
+		writeAppServerResponse(t, serverConn, request.ID, map[string]any{
+			"account":            map[string]any{"email": "sensitive@example.invalid", "planType": "plus"},
+			"requiresOpenaiAuth": false,
+		})
+		serverDone <- nil
+	}()
+
+	_, err := client.ReadAccount(testAppServerContext(t))
+	if err == nil || strings.Contains(err.Error(), "sensitive@example.invalid") {
+		t.Fatalf("ReadAccount() error=%v; want sanitized incomplete-account error", err)
 	}
 	if err := <-serverDone; err != nil {
 		t.Fatal(err)

@@ -28,6 +28,7 @@ This document is the execution overlay for the newly supplied base plan. The det
 - Later Session Task1/3 complete; Task2 partial; Task4 in progress; authenticated Task5 and later handoff/UI gates remain open. Session API/READY and automatic routing remain closed.
 - Fresh4001 diagnostic restart: one scoped Session-token reboot submission, external private intent checkpoint `/var/tmp/p28-reboot-4001-095vjf_y`, new startup observed; keys, Controller pin, workspace identity and3900/4000/4001 PVE config hashes unchanged. LXC210 strict pinned SSH and missing-pin rejection passed afterwards; credential-free App Server initialize/account-null/empty-history passed. This is not production Controller bootstrap integration or account acceptance.
 - User selected LXC3006's current account as Codex A baseline. Fresh Linux `account/read` reports `type=chatgpt`, `planType=plus`, fields `email/planType/type`; no raw email/token or credential transfer. This only establishes the source's reported local auth identity, not live inference entitlement or4001 authentication. B remains unused.
+- The App Server client now has a non-refreshing `account/read` method that returns only `type`, `planType`, and `requiresOpenaiAuth`; email comparison stays in-process and returns only a boolean. Unit coverage passes, including incomplete-response rejection. This is a source helper—not stable identity proof, credential import, authenticated-turn acceptance, or permission to enable production bootstrap.
 
 ## Remaining execution sequence
 
@@ -53,6 +54,7 @@ For each software slice: TDD regression, scoped tests, combined `go test ./...`/
 | --- | --- |
 | Diagnostic restart and SSH pin persistence | Passed on4001; keys, workspace and configuration preserved. |
 | Codex A source baseline |3006 reports ChatGPT Plus; no credential transfer or authenticated4001 turn. |
+| Sanitized `account/read` client helper | Implemented and unit-tested; exposes no email. It does not close identity/account acceptance. |
 | Durable software orchestration | Reviewed Store/coordinator/optional Manager slice; fresh full Go tests/vet and Linux Store/runtime3x pass. Production driver remains absent. |
 | Production bootstrap and READY | Not passed; no deployment or live DB migration. |
 | Authenticated Session history and restart | Not passed; diagnostic App Server history was empty and account null. |

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -82,6 +83,62 @@ func (c *AppServerClient) Initialize(ctx context.Context) error {
 	}
 	c.initialized = true
 	return nil
+}
+
+// AppServerAccount is the non-identifying account metadata safe to return to
+// callers. The account email is intentionally kept inside the read operation.
+type AppServerAccount struct {
+	Type               string
+	PlanType           string
+	RequiresOpenAIAuth bool
+}
+
+type appServerAccountRead struct {
+	Account struct {
+		Email    string `json:"email"`
+		PlanType string `json:"planType"`
+		Type     string `json:"type"`
+	} `json:"account"`
+	RequiresOpenAIAuth *bool `json:"requiresOpenaiAuth"`
+}
+
+func (c *AppServerClient) readAccount(ctx context.Context) (AppServerAccount, string, error) {
+	if err := c.Initialize(ctx); err != nil {
+		return AppServerAccount{}, "", err
+	}
+	var response appServerAccountRead
+	if err := c.protocol.Call(ctx, "account/read", map[string]bool{"refreshToken": false}, &response); err != nil {
+		return AppServerAccount{}, "", err
+	}
+	if response.Account.Email == "" || response.Account.PlanType == "" || response.Account.Type == "" || response.RequiresOpenAIAuth == nil {
+		return AppServerAccount{}, "", errors.New("App Server returned incomplete account metadata")
+	}
+	return AppServerAccount{
+		Type:               response.Account.Type,
+		PlanType:           response.Account.PlanType,
+		RequiresOpenAIAuth: *response.RequiresOpenAIAuth,
+	}, response.Account.Email, nil
+}
+
+// ReadAccount returns only non-identifying account metadata. It never returns
+// or logs the email reported by the App Server.
+func (c *AppServerClient) ReadAccount(ctx context.Context) (AppServerAccount, error) {
+	account, _, err := c.readAccount(ctx)
+	return account, err
+}
+
+// AccountEmailMatches compares the App Server's email in-process without
+// returning the email to the caller. This is only a cached account-label
+// comparison, not a stable identity or entitlement verification.
+func (c *AppServerClient) AccountEmailMatches(ctx context.Context, expected string) (bool, error) {
+	if strings.TrimSpace(expected) == "" {
+		return false, errors.New("expected account email is required")
+	}
+	_, actual, err := c.readAccount(ctx)
+	if err != nil {
+		return false, err
+	}
+	return strings.EqualFold(strings.TrimSpace(actual), strings.TrimSpace(expected)), nil
 }
 
 func (c *AppServerClient) StartThread(ctx context.Context, options ThreadStartOptions) (AppServerThread, error) {
