@@ -432,6 +432,64 @@ func TestBootstrapEnsureConcurrentCallsDoNotDuplicateActions(t *testing.T) {
 	}
 }
 
+func TestBootstrapEnsureSeparateCoordinatorsShareSQLiteClaimWithoutDuplicateApply(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bootstrap-separate-coordinators.sqlite")
+	db1, binding := newBootstrapFixtureAt(t, path)
+	db2, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("open second Store: %v", err)
+	}
+	t.Cleanup(func() { _ = db2.Close() })
+
+	applyEntered := make(chan struct{}, 1)
+	releaseApply := make(chan struct{})
+	driver1 := &bootstrapDriverFuncs{apply: func(context.Context, store.SessionRuntimeBinding, store.SessionBootstrapStage) (store.SessionBootstrapEvidence, error) {
+		applyEntered <- struct{}{}
+		<-releaseApply
+		return store.SessionBootstrapEvidence{SHA256: bootstrapTestSHA256}, nil
+	}}
+	driver2 := &bootstrapDriverFuncs{observe: func(context.Context, store.SessionRuntimeBinding, store.SessionBootstrapStage) (store.SessionBootstrapEvidence, bool, error) {
+		return store.SessionBootstrapEvidence{}, false, nil
+	}}
+	coordinator1, err := NewBootstrapCoordinator(db1, driver1)
+	if err != nil {
+		t.Fatalf("NewBootstrapCoordinator(db1): %v", err)
+	}
+	coordinator2, err := NewBootstrapCoordinator(db2, driver2)
+	if err != nil {
+		t.Fatalf("NewBootstrapCoordinator(db2): %v", err)
+	}
+	firstResult := make(chan error, 1)
+	go func() { firstResult <- coordinator1.Ensure(context.Background(), binding) }()
+	select {
+	case <-applyEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first coordinator did not enter the claimed Apply")
+	}
+	secondResult := make(chan error, 1)
+	go func() { secondResult <- coordinator2.Ensure(context.Background(), binding) }()
+	select {
+	case err := <-secondResult:
+		if !errors.Is(err, ErrOutcomeUnknown) {
+			t.Fatalf("second coordinator Ensure() error = %v, want UNKNOWN while first Apply is in flight", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second coordinator did not reconcile the shared INTENT")
+	}
+	close(releaseApply)
+	if err := <-firstResult; !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("first coordinator Ensure() error = %v, want UNKNOWN after competing observation", err)
+	}
+	apply, _, _ := driver1.calls()
+	if len(apply) != 1 {
+		t.Fatalf("separate coordinators performed %d Apply calls, want exactly one", len(apply))
+	}
+	checkpoint, err := db1.GetSessionBootstrapStage(context.Background(), binding.ID, binding.Generation, store.SessionBootstrapIsolation)
+	if err != nil || checkpoint.Status != store.SessionBootstrapUnknown {
+		t.Fatalf("shared SQLite checkpoint = (%+v, %v), want durable UNKNOWN", checkpoint, err)
+	}
+}
+
 func TestBootstrapReconcileMissingCheckpointFailsBeforeProvisioning(t *testing.T) {
 	db, binding := newBootstrapFixture(t)
 	if _, claimed, err := db.BeginSessionBootstrapStage(context.Background(), binding.ID, binding.Generation, store.SessionBootstrapIsolation); err != nil || !claimed {
