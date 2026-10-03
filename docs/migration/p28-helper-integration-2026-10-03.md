@@ -94,6 +94,12 @@ Linux regression for this Store correction remain pending.
   staged in the private validation directory. Running it against a separate
   copy of the production backup migrated that copy to schema 13; integrity
   returned `ok`. It listened on loopback and was stopped after the rehearsal.
-- Live production remains schema 5 with the original binary and active service.
-  Production binary replacement and service restart are pending explicit
-  confirmation under the workspace overwrite rule.
+- After explicit approval, atomically replaced `/usr/local/bin/codex-controller-v3`
+  with the candidate and restarted `codex-controller-v3.service`. The live binary
+  hash matches the candidate. The unit is `active/running`, MainPID 21629,
+  `NRestarts=0`, and `/v1/ready` returns `{"status":"ready"}`.
+- Production database migration persisted at schema 13 and
+  `PRAGMA integrity_check` returned `ok`. Compared backup to migrated live DB:
+  task rows 29/29, attempt rows 29/29, capacity node rows 5/5, lease rows 0/0,
+  repository rows 2/2. Production bootstrap remains disabled; the only Session
+  environment key is `SESSION_PROXMOX_TOKEN`, so no guest lifecycle was started.
