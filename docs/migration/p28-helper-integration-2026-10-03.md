@@ -77,3 +77,23 @@ helper evidence. Completion now atomically requires its predecessor COMPLETE in
 the SQL UPDATE; transitions to UNKNOWN do not gain that restriction. Full Store,
 runtime and Controller tests passed after correction. Scoped re-review and fresh
 Linux regression for this Store correction remain pending.
+
+## Production database clone migration rehearsal
+
+- Production `codex-controller-v3.service` was active with schema version 5 and
+  no `SESSION_BOOTSTRAP_*` keys in its three environment files. Before rehearsal,
+  live database SHA256 was
+  `1814e0dc37f1706e93f9e148d56fabd00655a893244bbe6ffaf9e6d04e9b7f62`.
+- Created `/var/lib/codex-controller/controller.sqlite.pre-c494108-20261003`
+  using SQLite online backup; `PRAGMA integrity_check` returned `ok`. Saved the
+  old service binary to
+  `/var/lib/codex-controller/codex-controller-v3.pre-c494108-20261003`, SHA256
+  `05c746a8d3f6ca71f479970dfae57629e13e2bd6160ddda32ac30e62f2b91a27`.
+- Candidate Controller SHA256
+  `9448162ee7ff52008f89dc9b83629b3f4f89768ba3f9454f709c924fff732731` was
+  staged in the private validation directory. Running it against a separate
+  copy of the production backup migrated that copy to schema 13; integrity
+  returned `ok`. It listened on loopback and was stopped after the rehearsal.
+- Live production remains schema 5 with the original binary and active service.
+  Production binary replacement and service restart are pending explicit
+  confirmation under the workspace overwrite rule.
