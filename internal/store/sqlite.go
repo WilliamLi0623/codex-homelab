@@ -193,4 +193,15 @@ var schemaMigrations = []schemaMigration{{Version: 1, Statements: []string{
 	"CREATE TRIGGER session_bootstrap_complete_immutable_update BEFORE UPDATE ON session_bootstrap_checkpoints WHEN OLD.status = 'COMPLETE' BEGIN SELECT RAISE(ABORT, 'completed Session bootstrap evidence is immutable'); END",
 	"CREATE TRIGGER session_bootstrap_complete_immutable_delete BEFORE DELETE ON session_bootstrap_checkpoints WHEN OLD.status = 'COMPLETE' BEGIN SELECT RAISE(ABORT, 'completed Session bootstrap evidence is immutable'); END",
 	"CREATE TRIGGER session_bootstrap_complete_insert_guard BEFORE INSERT ON session_bootstrap_checkpoints WHEN EXISTS (SELECT 1 FROM session_bootstrap_checkpoints WHERE runtime_binding_id = NEW.runtime_binding_id AND generation = NEW.generation AND stage = NEW.stage AND status = 'COMPLETE') BEGIN SELECT RAISE(ABORT, 'completed Session bootstrap evidence cannot be replaced'); END",
+}}, {Version: 13, Statements: []string{
+	"DROP TRIGGER session_bootstrap_complete_immutable_update",
+	"DROP TRIGGER session_bootstrap_complete_immutable_delete",
+	"DROP TRIGGER session_bootstrap_complete_insert_guard",
+	"ALTER TABLE session_bootstrap_checkpoints RENAME TO session_bootstrap_checkpoints_v12",
+	"CREATE TABLE session_bootstrap_checkpoints (runtime_binding_id TEXT NOT NULL REFERENCES session_runtime_bindings(id), generation TEXT NOT NULL, stage TEXT NOT NULL CHECK (stage IN ('isolation', 'guest_identity', 'host_pin', 'image_backup_created', 'image_sanitized', 'network_enabled', 'helper_verified', 'artifact_verified', 'transport_verified')), status TEXT NOT NULL CHECK (status IN ('INTENT', 'UNKNOWN', 'COMPLETE')), evidence_sha256 TEXT NOT NULL DEFAULT '', CHECK ((status IN ('INTENT', 'UNKNOWN') AND evidence_sha256 = '') OR (status = 'COMPLETE' AND length(evidence_sha256) = 64 AND evidence_sha256 NOT GLOB '*[^0-9a-f]*')), PRIMARY KEY(runtime_binding_id, generation, stage))",
+	"INSERT INTO session_bootstrap_checkpoints (runtime_binding_id, generation, stage, status, evidence_sha256) SELECT runtime_binding_id, generation, stage, status, evidence_sha256 FROM session_bootstrap_checkpoints_v12",
+	"DROP TABLE session_bootstrap_checkpoints_v12",
+	"CREATE TRIGGER session_bootstrap_complete_immutable_update BEFORE UPDATE ON session_bootstrap_checkpoints WHEN OLD.status = 'COMPLETE' BEGIN SELECT RAISE(ABORT, 'completed Session bootstrap evidence is immutable'); END",
+	"CREATE TRIGGER session_bootstrap_complete_immutable_delete BEFORE DELETE ON session_bootstrap_checkpoints WHEN OLD.status = 'COMPLETE' BEGIN SELECT RAISE(ABORT, 'completed Session bootstrap evidence is immutable'); END",
+	"CREATE TRIGGER session_bootstrap_complete_insert_guard BEFORE INSERT ON session_bootstrap_checkpoints WHEN EXISTS (SELECT 1 FROM session_bootstrap_checkpoints WHERE runtime_binding_id = NEW.runtime_binding_id AND generation = NEW.generation AND stage = NEW.stage AND status = 'COMPLETE') BEGIN SELECT RAISE(ABORT, 'completed Session bootstrap evidence cannot be replaced'); END",
 }}}

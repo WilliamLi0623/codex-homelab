@@ -12,19 +12,21 @@ import (
 // executables. NewBootstrapDriver only validates/references them; it creates
 // no directories and does not enable a Manager or API route.
 type BootstrapDriverConfig struct {
-	SSHMaterialRoot string
-	SSHKeygen       string
-	BackupRoot      string
-	ArtifactRoot    string
-	CodexVersion    string
-	SSHExecutable   string
+	SSHMaterialRoot    string
+	SSHKeygen          string
+	BackupRoot         string
+	ArtifactRoot       string
+	HelperArtifactPath string
+	HelperSHA256       string
+	CodexVersion       string
+	SSHExecutable      string
 }
 
 // NewBootstrapDriver assembles all ordered source adapters around one
 // ProxmoxRuntime. Production callers must still explicitly attach the result
 // to a BootstrapCoordinator and keep the API/READY release gates closed.
 func NewBootstrapDriver(runtime *ProxmoxRuntime, config BootstrapDriverConfig) (BootstrapDriver, error) {
-	if runtime == nil || !validBootstrapPOSIXPath(config.SSHMaterialRoot) || !validBootstrapPOSIXPath(config.SSHKeygen) || !validBootstrapPOSIXPath(config.BackupRoot) || !validBootstrapPOSIXPath(config.ArtifactRoot) || !validBootstrapPOSIXPath(config.SSHExecutable) {
+	if runtime == nil || !validBootstrapPOSIXPath(config.HelperArtifactPath) || !bootstrapDigestPattern.MatchString(config.HelperSHA256) || !validBootstrapPOSIXPath(config.SSHMaterialRoot) || !validBootstrapPOSIXPath(config.SSHKeygen) || !validBootstrapPOSIXPath(config.BackupRoot) || !validBootstrapPOSIXPath(config.ArtifactRoot) || !validBootstrapPOSIXPath(config.SSHExecutable) {
 		return nil, ErrBootstrapConfiguration
 	}
 	if _, err := bootstrapCodexBundleForVersion(config.CodexVersion); err != nil {
@@ -66,6 +68,10 @@ func NewBootstrapDriver(runtime *ProxmoxRuntime, config BootstrapDriverConfig) (
 	if err != nil {
 		return nil, ErrBootstrapConfiguration
 	}
+	helper, err := newBootstrapHelperStage(config.HelperArtifactPath, config.HelperSHA256, material, resolver)
+	if err != nil {
+		return nil, ErrBootstrapConfiguration
+	}
 	transport, err := newBootstrapTransportStage(material, resolver)
 	if err != nil {
 		return nil, ErrBootstrapConfiguration
@@ -77,6 +83,7 @@ func NewBootstrapDriver(runtime *ProxmoxRuntime, config BootstrapDriverConfig) (
 		store.SessionBootstrapImageBackup:       imageBackup,
 		store.SessionBootstrapImageSanitized:    imageSanitized,
 		store.SessionBootstrapNetworkEnabled:    network,
+		store.SessionBootstrapHelperVerified:    helper,
 		store.SessionBootstrapArtifactVerified:  artifact,
 		store.SessionBootstrapTransportVerified: transport,
 	}

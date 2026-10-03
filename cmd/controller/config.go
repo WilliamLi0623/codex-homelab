@@ -160,9 +160,11 @@ func loadSessionBootstrapConfig(sessionRuntimeConfigured bool) (*sessionruntime.
 		"SESSION_SSH_KEYGEN":              strings.TrimSpace(os.Getenv("SESSION_SSH_KEYGEN")),
 		"SESSION_BOOTSTRAP_BACKUP_ROOT":   strings.TrimSpace(os.Getenv("SESSION_BOOTSTRAP_BACKUP_ROOT")),
 		"SESSION_BOOTSTRAP_ARTIFACT_ROOT": strings.TrimSpace(os.Getenv("SESSION_BOOTSTRAP_ARTIFACT_ROOT")),
+		"SESSION_BOOTSTRAP_HELPER_PATH":   strings.TrimSpace(os.Getenv("SESSION_BOOTSTRAP_HELPER_PATH")),
 		"SESSION_SSH_EXECUTABLE":          strings.TrimSpace(os.Getenv("SESSION_SSH_EXECUTABLE")),
 	}
-	configuredPaths := false
+	helperPin := strings.TrimSpace(os.Getenv("SESSION_BOOTSTRAP_HELPER_SHA256"))
+	configuredPaths := helperPin != ""
 	for _, value := range paths {
 		configuredPaths = configuredPaths || value != ""
 	}
@@ -187,13 +189,18 @@ func loadSessionBootstrapConfig(sessionRuntimeConfigured bool) (*sessionruntime.
 			return nil, fmt.Errorf("%s is required when Session bootstrap is enabled", name)
 		}
 	}
+	if len(helperPin) != 64 || strings.Trim(helperPin, "0123456789abcdef") != "" {
+		return nil, fmt.Errorf("SESSION_BOOTSTRAP_HELPER_SHA256 must be an explicit lowercase SHA256 pin")
+	}
 	return &sessionruntime.BootstrapDriverConfig{
-		SSHMaterialRoot: paths["SESSION_SSH_MATERIAL_ROOT"],
-		SSHKeygen:       paths["SESSION_SSH_KEYGEN"],
-		BackupRoot:      paths["SESSION_BOOTSTRAP_BACKUP_ROOT"],
-		ArtifactRoot:    paths["SESSION_BOOTSTRAP_ARTIFACT_ROOT"],
-		CodexVersion:    codexVersion,
-		SSHExecutable:   paths["SESSION_SSH_EXECUTABLE"],
+		SSHMaterialRoot:    paths["SESSION_SSH_MATERIAL_ROOT"],
+		SSHKeygen:          paths["SESSION_SSH_KEYGEN"],
+		BackupRoot:         paths["SESSION_BOOTSTRAP_BACKUP_ROOT"],
+		ArtifactRoot:       paths["SESSION_BOOTSTRAP_ARTIFACT_ROOT"],
+		HelperArtifactPath: paths["SESSION_BOOTSTRAP_HELPER_PATH"],
+		HelperSHA256:       helperPin,
+		CodexVersion:       codexVersion,
+		SSHExecutable:      paths["SESSION_SSH_EXECUTABLE"],
 	}, nil
 }
 

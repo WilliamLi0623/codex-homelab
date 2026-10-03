@@ -276,6 +276,7 @@ func bootstrapStages() []store.SessionBootstrapStage {
 		store.SessionBootstrapImageBackup,
 		store.SessionBootstrapImageSanitized,
 		store.SessionBootstrapNetworkEnabled,
+		store.SessionBootstrapHelperVerified,
 		store.SessionBootstrapArtifactVerified,
 		store.SessionBootstrapTransportVerified,
 	}

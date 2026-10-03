@@ -46,7 +46,7 @@ func TestManagerBootstrapCreateAndResume(t *testing.T) {
 	manager.config.Bootstrap = coordinator
 	ctx := context.Background()
 	binding, err := manager.Create(ctx, CreateRequest{ID: "binding-a", SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-1"})
-	if err != nil || binding.State != "READY" || driver.applyCalls != 8 || len(driver.observeCalls) != 8 || runtime.readyCalls != 0 {
+	if err != nil || binding.State != "READY" || driver.applyCalls != 9 || len(driver.observeCalls) != 9 || runtime.readyCalls != 0 {
 		t.Fatalf("create: state=%s applies=%d observed=%d runtime_ready=%d error=%v", binding.State, driver.applyCalls, len(driver.observeCalls), runtime.readyCalls, err)
 	}
 	if err := manager.Stop(ctx, "session-a", "epoch-a"); err != nil {
@@ -55,7 +55,7 @@ func TestManagerBootstrapCreateAndResume(t *testing.T) {
 	if err := manager.Resume(ctx, "session-a", "epoch-a"); err != nil {
 		t.Fatal(err)
 	}
-	if driver.applyCalls != 8 || len(driver.observeCalls) != 16 || runtime.readyCalls != 0 {
+	if driver.applyCalls != 9 || len(driver.observeCalls) != 18 || runtime.readyCalls != 0 {
 		t.Fatalf("resume replayed bootstrap or skipped readiness: apply=%d observed=%d runtime_ready=%d", driver.applyCalls, len(driver.observeCalls), runtime.readyCalls)
 	}
 }
@@ -104,7 +104,7 @@ func TestManagerBootstrapRejectsBindingReadyWhenStageReadbackFails(t *testing.T)
 	}
 	manager.config.Bootstrap = coordinator
 	binding, err := manager.Create(context.Background(), CreateRequest{ID: "binding-a", SessionID: "session-a", EpochID: "epoch-a", Generation: "gen-1"})
-	if !errors.Is(err, ErrOutcomeUnknown) || binding.State != "UNKNOWN" || driver.applyCalls != 8 || len(driver.observeCalls) != 1 || runtime.readyCalls != 0 {
+	if !errors.Is(err, ErrOutcomeUnknown) || binding.State != "UNKNOWN" || driver.applyCalls != 9 || len(driver.observeCalls) != 1 || runtime.readyCalls != 0 {
 		t.Fatalf("bootstrap completion bypassed read-only readiness: binding=%+v applies=%d observed=%d runtime_ready=%d error=%v", binding, driver.applyCalls, len(driver.observeCalls), runtime.readyCalls, err)
 	}
 }

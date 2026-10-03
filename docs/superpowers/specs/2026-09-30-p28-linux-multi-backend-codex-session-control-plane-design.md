@@ -161,6 +161,16 @@ If the source cannot generate a handoff, build a deterministic emergency handoff
 
 ## Verified Codex artifact upload and installation
 
+### Trusted installer-helper prerequisite
+
+The artifact receiver is Controller software and must not be assumed present in a cloned image. Add a separate generation-bound `helper_verified` checkpoint after `network_enabled` and before `artifact_verified`. Append a new migration; preserve existing checkpoints exactly without manufacturing helper evidence. A historical downstream INTENT/UNKNOWN cannot acquire permission to replay its side effect before the missing prerequisite is positively verified. Production migration remains separately gated.
+
+Before helper transfer, read a bounded (32 MiB maximum) snapshot from an explicitly SHA256-pinned, root/Controller-owned executable cache. Reject unsafe ancestors, symlinks, writable files, changed identity/mode/size/content, empty input and cancellation. Bind the evidence to runtime binding ID, Session, epoch, VMID, generation and helper bytes; do not bind mutable runtime status. The pin is public build provenance, not a credential or model-selected executable.
+
+Use the same strict pinned SSH identity for a fixed bootstrap receiver. Only validated digests and bounded sizes may parameterize it; Session text, arbitrary paths and shell fragments remain forbidden. Install under an absent `/opt/codex-bootstrap-helper/<generation-digest>/` directory, keep incomplete state after any interruption, and verify exact size/hash and flush before making the helper executable and publishing an exclusive `/usr/local/libexec/codex-artifact-install` symlink. Never overwrite an existing directory/file/launcher, clean partial state, or automatically retry. The observer only verifies the exact expected ownership, modes, symlink, size and bytes and never repairs them.
+
+Keep helper installation separate from Codex archive installation so an ambiguous helper outcome is reconciled read-only through its own persisted INTENT/UNKNOWN. Verify every completed checkpoint again before technical readiness. This prerequisite does not establish account identity, authenticated model readiness or API release; it does not modify templates or adopt historical diagnostic guests.
+
 Install the already verified Codex CLI bundle only after the owned generation has passed guest identity, strict host-key pinning, and network-release prerequisites. The Controller claims the generation-bound `artifact_verified` INTENT before starting any upload. It must run `verifyBootstrapArtifactBundle` against the root-private artifact cache immediately before transfer; a failed or stale verification prevents the side effect.
 
 Use the existing Linux-only `internal/codexsession` pinned-SSH configuration and its dedicated identity, known-hosts file, and generation-specific host-key alias. Preserve `BatchMode`, strict host-key checking, identities-only, disabled agent/forwarding/password authentication, bounded connection timeouts, and literal-IP target validation. Do not add SCP fallback, trust-on-first-use, host-key discovery during upload, or relaxed SSH options. Add a separate artifact-transfer adapter; the existing App Server stdio transport remains unchanged.

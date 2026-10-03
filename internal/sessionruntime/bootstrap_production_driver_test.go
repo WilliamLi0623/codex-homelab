@@ -10,12 +10,14 @@ import (
 
 func TestNewBootstrapDriverRejectsIncompleteConfiguration(t *testing.T) {
 	validPaths := BootstrapDriverConfig{
-		SSHMaterialRoot: "/var/lib/codex-session/ssh",
-		SSHKeygen:       "/usr/bin/ssh-keygen",
-		BackupRoot:      "/var/lib/codex-session/backups",
-		ArtifactRoot:    "/var/lib/codex-bootstrap-artifacts",
-		CodexVersion:    "0.160.0",
-		SSHExecutable:   "/usr/bin/ssh",
+		SSHMaterialRoot:    "/var/lib/codex-session/ssh",
+		SSHKeygen:          "/usr/bin/ssh-keygen",
+		BackupRoot:         "/var/lib/codex-session/backups",
+		ArtifactRoot:       "/var/lib/codex-bootstrap-artifacts",
+		HelperArtifactPath: "/var/lib/codex-bootstrap-helpers/installer",
+		HelperSHA256:       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		CodexVersion:       "0.160.0",
+		SSHExecutable:      "/usr/bin/ssh",
 	}
 	for _, tc := range []struct {
 		name   string
@@ -27,6 +29,10 @@ func TestNewBootstrapDriverRejectsIncompleteConfiguration(t *testing.T) {
 		{name: "missing artifact path", config: BootstrapDriverConfig{SSHMaterialRoot: validPaths.SSHMaterialRoot, SSHKeygen: validPaths.SSHKeygen, BackupRoot: validPaths.BackupRoot, SSHExecutable: validPaths.SSHExecutable}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Keep the new prerequisite valid so existing cases exercise their
+			// named failure, rather than all failing for an absent helper pin.
+			tc.config.HelperArtifactPath = validPaths.HelperArtifactPath
+			tc.config.HelperSHA256 = validPaths.HelperSHA256
 			var runtime *ProxmoxRuntime
 			if tc.name != "nil runtime" {
 				runtime = &ProxmoxRuntime{}

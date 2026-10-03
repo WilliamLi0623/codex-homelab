@@ -144,6 +144,7 @@ func TestBootstrapEnsurePersistsIntentBeforeApplyingEveryOrderedStage(t *testing
 		store.SessionBootstrapImageBackup,
 		store.SessionBootstrapImageSanitized,
 		store.SessionBootstrapNetworkEnabled,
+		store.SessionBootstrapHelperVerified,
 		store.SessionBootstrapArtifactVerified,
 		store.SessionBootstrapTransportVerified,
 	}
@@ -227,6 +228,7 @@ func TestBootstrapEnsureReconcilesPersistedIntentByObservationOnly(t *testing.T)
 		store.SessionBootstrapImageBackup,
 		store.SessionBootstrapImageSanitized,
 		store.SessionBootstrapNetworkEnabled,
+		store.SessionBootstrapHelperVerified,
 		store.SessionBootstrapArtifactVerified,
 		store.SessionBootstrapTransportVerified,
 	}
@@ -425,6 +427,7 @@ func TestBootstrapEnsureConcurrentCallsDoNotDuplicateActions(t *testing.T) {
 		store.SessionBootstrapImageBackup,
 		store.SessionBootstrapImageSanitized,
 		store.SessionBootstrapNetworkEnabled,
+		store.SessionBootstrapHelperVerified,
 		store.SessionBootstrapArtifactVerified,
 		store.SessionBootstrapTransportVerified,
 	}) || len(observe) != 0 {
@@ -524,6 +527,7 @@ func TestBootstrapReconcileObservesExistingIntentWithoutApplying(t *testing.T) {
 		store.SessionBootstrapImageBackup,
 		store.SessionBootstrapImageSanitized,
 		store.SessionBootstrapNetworkEnabled,
+		store.SessionBootstrapHelperVerified,
 		store.SessionBootstrapArtifactVerified,
 	} {
 		if _, claimed, err := db.BeginSessionBootstrapStage(context.Background(), binding.ID, binding.Generation, stage); err != nil || !claimed {

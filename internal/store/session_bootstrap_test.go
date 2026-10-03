@@ -5,10 +5,192 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestSessionBootstrapHelperVerificationPrecedesArtifact(t *testing.T) {
+	ctx := context.Background()
+	s := newBootstrapTestStore(t, filepath.Join(t.TempDir(), "bootstrap.sqlite"), "bootstrap-generation-1")
+	helper := SessionBootstrapStage("helper_verified")
+	wantStages := []SessionBootstrapStage{
+		SessionBootstrapIsolation,
+		SessionBootstrapGuestIdentity,
+		SessionBootstrapHostPin,
+		SessionBootstrapImageBackup,
+		SessionBootstrapImageSanitized,
+		SessionBootstrapNetworkEnabled,
+		helper,
+		SessionBootstrapArtifactVerified,
+		SessionBootstrapTransportVerified,
+	}
+	if !reflect.DeepEqual(sessionBootstrapStages, wantStages) {
+		t.Fatalf("session bootstrap stage order = %v, want %v", sessionBootstrapStages, wantStages)
+	}
+	if predecessor, ok := sessionBootstrapPredecessor(helper); !ok || predecessor != SessionBootstrapNetworkEnabled {
+		t.Fatalf("helper predecessor = (%q, %t), want network_enabled", predecessor, ok)
+	}
+	if predecessor, ok := sessionBootstrapPredecessor(SessionBootstrapArtifactVerified); !ok || predecessor != helper {
+		t.Fatalf("artifact predecessor = (%q, %t), want helper_verified", predecessor, ok)
+	}
+	if _, _, err := s.BeginSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", helper); !errors.Is(err, ErrSessionBootstrapConflict) {
+		t.Fatalf("claim helper before network completion = %v, want conflict", err)
+	}
+
+	for _, stage := range wantStages[:6] {
+		if _, claimed, err := s.BeginSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", stage); err != nil || !claimed {
+			t.Fatalf("claim %s = (%t, %v), want claim", stage, claimed, err)
+		}
+		if err := s.CompleteSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", stage, SessionBootstrapIntent, SessionBootstrapEvidence{SHA256: bootstrapTestDigest}); err != nil {
+			t.Fatalf("complete %s: %v", stage, err)
+		}
+	}
+	if _, claimed, err := s.BeginSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", helper); err != nil || !claimed {
+		t.Fatalf("claim helper after network completion = (%t, %v), want claim", claimed, err)
+	}
+	if _, _, err := s.BeginSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", SessionBootstrapArtifactVerified); !errors.Is(err, ErrSessionBootstrapConflict) {
+		t.Fatalf("claim artifact before helper completion = %v, want conflict", err)
+	}
+	if err := s.CompleteSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", helper, SessionBootstrapIntent, SessionBootstrapEvidence{SHA256: bootstrapTestDigest}); err != nil {
+		t.Fatalf("complete helper: %v", err)
+	}
+	if _, claimed, err := s.BeginSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", SessionBootstrapArtifactVerified); err != nil || !claimed {
+		t.Fatalf("claim artifact after helper completion = (%t, %v), want claim", claimed, err)
+	}
+}
+
+func TestSessionBootstrapHelperUnknownClaimSurvivesReopenWithoutReclaim(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "bootstrap.sqlite")
+	s := newBootstrapTestStore(t, path, "bootstrap-generation-1")
+	helper := SessionBootstrapStage("helper_verified")
+	for _, stage := range sessionBootstrapStages[:6] {
+		if _, claimed, err := s.BeginSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", stage); err != nil || !claimed {
+			t.Fatalf("claim %s = (%t, %v), want claim", stage, claimed, err)
+		}
+		if err := s.CompleteSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", stage, SessionBootstrapIntent, SessionBootstrapEvidence{SHA256: bootstrapTestDigest}); err != nil {
+			t.Fatalf("complete %s: %v", stage, err)
+		}
+	}
+	if _, claimed, err := s.BeginSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", helper); err != nil || !claimed {
+		t.Fatalf("claim helper = (%t, %v), want claim", claimed, err)
+	}
+	if err := s.MarkSessionBootstrapStageUnknown(ctx, "binding-1", "bootstrap-generation-1", helper, SessionBootstrapIntent); err != nil {
+		t.Fatalf("mark helper UNKNOWN: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close before reopen: %v", err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen Store: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	got, claimed, err := s.BeginSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", helper)
+	if err != nil || claimed || got.Status != SessionBootstrapUnknown {
+		t.Fatalf("replayed UNKNOWN helper = (%+v, %t, %v), want persisted UNKNOWN without claim", got, claimed, err)
+	}
+	if _, _, err := s.BeginSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", SessionBootstrapStage("artifact_verified")); !errors.Is(err, ErrSessionBootstrapConflict) {
+		t.Fatalf("claim artifact while helper is UNKNOWN = %v, want conflict", err)
+	}
+}
+
+func TestSessionBootstrapMigration13PreservesHistoricalArtifactWithoutHelperEvidence(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "bootstrap-v12.sqlite")
+	legacy, err := openPreBootstrapStore(t, path)
+	if err != nil {
+		t.Fatalf("open migration 9 Store: %v", err)
+	}
+	for _, migration := range schemaMigrations {
+		if migration.Version < 10 || migration.Version > 12 {
+			continue
+		}
+		for _, statement := range migration.Statements {
+			if _, err := legacy.db.ExecContext(ctx, statement); err != nil {
+				t.Fatalf("apply migration %d: %v", migration.Version, err)
+			}
+		}
+		if _, err := legacy.db.ExecContext(ctx, "INSERT INTO schema_migrations(version) VALUES (?)", migration.Version); err != nil {
+			t.Fatalf("record migration %d: %v", migration.Version, err)
+		}
+	}
+	now := time.Now().UTC()
+	if err := legacy.CreateSession(ctx, Session{ID: "session-1", Title: "Bootstrap", State: "READY", PreferredBackend: "codex-a", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateSession(): %v", err)
+	}
+	if err := legacy.CreateSessionEpoch(ctx, SessionEpoch{ID: "epoch-1", SessionID: "session-1", Sequence: 1, Backend: "codex-a", IdentityID: "identity-a", State: "ACTIVE", StartedAt: now}); err != nil {
+		t.Fatalf("CreateSessionEpoch(): %v", err)
+	}
+	if err := legacy.CreateSessionRuntimeBinding(ctx, SessionRuntimeBinding{ID: "binding-1", SessionID: "session-1", EpochID: "epoch-1", VMID: 4010, Generation: "bootstrap-generation-1", State: "ALLOCATING", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateSessionRuntimeBinding(): %v", err)
+	}
+	for _, row := range []struct {
+		generation string
+		stage      SessionBootstrapStage
+		status     SessionBootstrapStatus
+		evidence   string
+	}{
+		{generation: "bootstrap-generation-1", stage: SessionBootstrapNetworkEnabled, status: SessionBootstrapComplete, evidence: bootstrapTestDigest},
+		{generation: "bootstrap-generation-1", stage: SessionBootstrapStage("artifact_verified"), status: SessionBootstrapIntent},
+		{generation: "historical-complete", stage: SessionBootstrapStage("artifact_verified"), status: SessionBootstrapComplete, evidence: bootstrapTestDigest},
+		{generation: "historical-unknown", stage: SessionBootstrapStage("artifact_verified"), status: SessionBootstrapUnknown},
+	} {
+		if _, err := legacy.db.ExecContext(ctx, "INSERT INTO session_bootstrap_checkpoints (runtime_binding_id, generation, stage, status, evidence_sha256) VALUES (?, ?, ?, ?, ?)", "binding-1", row.generation, row.stage, row.status, row.evidence); err != nil {
+			t.Fatalf("insert historical %s %s evidence: %v", row.generation, row.status, err)
+		}
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close migration 12 Store: %v", err)
+	}
+
+	migrated, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() migration 13: %v", err)
+	}
+	t.Cleanup(func() { _ = migrated.Close() })
+	var version int
+	if err := migrated.db.QueryRowContext(ctx, "SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil || version != 13 {
+		t.Fatalf("latest schema migration = (%d, %v), want 13", version, err)
+	}
+	for _, row := range []struct {
+		generation string
+		stage      SessionBootstrapStage
+		status     SessionBootstrapStatus
+		evidence   string
+	}{
+		{generation: "bootstrap-generation-1", stage: SessionBootstrapNetworkEnabled, status: SessionBootstrapComplete, evidence: bootstrapTestDigest},
+		{generation: "bootstrap-generation-1", stage: SessionBootstrapStage("artifact_verified"), status: SessionBootstrapIntent},
+		{generation: "historical-complete", stage: SessionBootstrapStage("artifact_verified"), status: SessionBootstrapComplete, evidence: bootstrapTestDigest},
+		{generation: "historical-unknown", stage: SessionBootstrapStage("artifact_verified"), status: SessionBootstrapUnknown},
+	} {
+		got, err := migrated.GetSessionBootstrapStage(ctx, "binding-1", row.generation, row.stage)
+		if err != nil || got.Status != row.status || got.Evidence.SHA256 != row.evidence {
+			t.Errorf("preserved historical %s %s evidence = (%+v, %v)", row.generation, row.status, got, err)
+		}
+	}
+	for _, generation := range []string{"bootstrap-generation-1", "historical-complete", "historical-unknown"} {
+		if _, err := migrated.GetSessionBootstrapStage(ctx, "binding-1", generation, SessionBootstrapStage("helper_verified")); !errors.Is(err, ErrSessionBootstrapNotFound) {
+			t.Errorf("historical helper checkpoint lookup for %s = %v, want no synthesized evidence", generation, err)
+		}
+	}
+	for _, status := range []SessionBootstrapStatus{SessionBootstrapIntent, SessionBootstrapUnknown} {
+		if status == SessionBootstrapUnknown {
+			if err := migrated.MarkSessionBootstrapStageUnknown(ctx, "binding-1", "bootstrap-generation-1", SessionBootstrapStage("artifact_verified"), SessionBootstrapIntent); err != nil {
+				t.Fatalf("mark migrated artifact UNKNOWN: %v", err)
+			}
+		}
+		got, err := migrated.GetSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", SessionBootstrapStage("artifact_verified"))
+		if err != nil || got.Status != status {
+			t.Fatalf("read migrated artifact %s = (%+v, %v)", status, got, err)
+		}
+		if _, claimed, err := migrated.BeginSessionBootstrapStage(ctx, "binding-1", "bootstrap-generation-1", SessionBootstrapStage("artifact_verified")); !errors.Is(err, ErrSessionBootstrapConflict) || claimed {
+			t.Fatalf("Begin migrated artifact %s = (claimed %t, %v), want fail-closed conflict", status, claimed, err)
+		}
+	}
+}
 
 func TestSessionBootstrapPersistsOrderedStagesAcrossReopen(t *testing.T) {
 	ctx := context.Background()

@@ -18,6 +18,7 @@ const (
 	SessionBootstrapImageBackup      SessionBootstrapStage = "image_backup_created"
 	SessionBootstrapImageSanitized   SessionBootstrapStage = "image_sanitized"
 	SessionBootstrapNetworkEnabled   SessionBootstrapStage = "network_enabled"
+	SessionBootstrapHelperVerified   SessionBootstrapStage = "helper_verified"
 	SessionBootstrapArtifactVerified SessionBootstrapStage = "artifact_verified"
 	// Transport verification does not establish account provisioning or identity.
 	SessionBootstrapTransportVerified SessionBootstrapStage = "transport_verified"
@@ -30,6 +31,7 @@ var sessionBootstrapStages = []SessionBootstrapStage{
 	SessionBootstrapImageBackup,
 	SessionBootstrapImageSanitized,
 	SessionBootstrapNetworkEnabled,
+	SessionBootstrapHelperVerified,
 	SessionBootstrapArtifactVerified,
 	SessionBootstrapTransportVerified,
 }
@@ -77,6 +79,11 @@ func (s *Store) BeginSessionBootstrapStage(ctx context.Context, bindingID, gener
 		if err := s.validateCurrentBootstrapBinding(ctx, bindingID, generation); err != nil {
 			return SessionBootstrapCheckpoint{}, false, err
 		}
+		if existing.Status != SessionBootstrapComplete {
+			if err := s.validateSessionBootstrapPredecessor(ctx, bindingID, generation, stage); err != nil {
+				return SessionBootstrapCheckpoint{}, false, err
+			}
+		}
 		return existing, false, nil
 	}
 	if !errors.Is(err, ErrSessionBootstrapNotFound) {
@@ -99,6 +106,11 @@ func (s *Store) BeginSessionBootstrapStage(ctx context.Context, bindingID, gener
 			return SessionBootstrapCheckpoint{}, false, bindingErr
 		}
 		if checkpoint, readErr := s.GetSessionBootstrapStage(ctx, bindingID, generation, stage); readErr == nil {
+			if checkpoint.Status != SessionBootstrapComplete {
+				if err := s.validateSessionBootstrapPredecessor(ctx, bindingID, generation, stage); err != nil {
+					return SessionBootstrapCheckpoint{}, false, err
+				}
+			}
 			return checkpoint, false, nil
 		}
 		return SessionBootstrapCheckpoint{}, false, fmt.Errorf("claim Session bootstrap stage: %w", err)
@@ -116,6 +128,11 @@ func (s *Store) BeginSessionBootstrapStage(ctx context.Context, bindingID, gener
 	}
 	checkpoint, err := s.GetSessionBootstrapStage(ctx, bindingID, generation, stage)
 	if err == nil {
+		if checkpoint.Status != SessionBootstrapComplete {
+			if err := s.validateSessionBootstrapPredecessor(ctx, bindingID, generation, stage); err != nil {
+				return SessionBootstrapCheckpoint{}, false, err
+			}
+		}
 		return checkpoint, false, nil
 	}
 	if !errors.Is(err, ErrSessionBootstrapNotFound) {
@@ -182,9 +199,12 @@ func (s *Store) updateSessionBootstrapStage(ctx context.Context, bindingID, gene
 	if err := s.validateCurrentBootstrapBinding(ctx, bindingID, generation); err != nil {
 		return err
 	}
+	predecessor, hasPredecessor := sessionBootstrapPredecessor(stage)
+	requirePredecessor := next == SessionBootstrapComplete && hasPredecessor
 	result, err := s.db.ExecContext(ctx, `UPDATE session_bootstrap_checkpoints SET status = ?, evidence_sha256 = ?
 		WHERE runtime_binding_id = ? AND generation = ? AND stage = ? AND status = ?
-		AND EXISTS (SELECT 1 FROM session_runtime_bindings WHERE id = ? AND generation = ? AND state != 'DELETED')`, next, digest, bindingID, generation, stage, expected, bindingID, generation)
+		AND EXISTS (SELECT 1 FROM session_runtime_bindings WHERE id = ? AND generation = ? AND state != 'DELETED')
+		AND (? = 0 OR EXISTS (SELECT 1 FROM session_bootstrap_checkpoints AS predecessor WHERE predecessor.runtime_binding_id = ? AND predecessor.generation = ? AND predecessor.stage = ? AND predecessor.status = 'COMPLETE'))`, next, digest, bindingID, generation, stage, expected, bindingID, generation, requirePredecessor, bindingID, generation, predecessor)
 	if err != nil {
 		return fmt.Errorf("update Session bootstrap checkpoint: %w", err)
 	}
@@ -220,6 +240,20 @@ func (s *Store) validateCurrentBootstrapBinding(ctx context.Context, bindingID, 
 	}
 	if state == "DELETED" || currentGeneration != generation {
 		return ErrSessionBootstrapConflict
+	}
+	return nil
+}
+
+func (s *Store) validateSessionBootstrapPredecessor(ctx context.Context, bindingID, generation string, stage SessionBootstrapStage) error {
+	predecessor, hasPredecessor := sessionBootstrapPredecessor(stage)
+	if !hasPredecessor {
+		return nil
+	}
+	var completed int
+	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM session_bootstrap_checkpoints WHERE runtime_binding_id = ? AND generation = ? AND stage = ? AND status = 'COMPLETE'`, bindingID, generation, predecessor).Scan(&completed); errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: predecessor stage %q is not complete", ErrSessionBootstrapConflict, predecessor)
+	} else if err != nil {
+		return fmt.Errorf("read Session bootstrap predecessor: %w", err)
 	}
 	return nil
 }

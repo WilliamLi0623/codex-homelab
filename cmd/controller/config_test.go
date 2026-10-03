@@ -99,6 +99,8 @@ func setControllerEnvironment(t *testing.T) {
 	t.Setenv("SESSION_SSH_KEYGEN", "")
 	t.Setenv("SESSION_BOOTSTRAP_BACKUP_ROOT", "")
 	t.Setenv("SESSION_BOOTSTRAP_ARTIFACT_ROOT", "")
+	t.Setenv("SESSION_BOOTSTRAP_HELPER_PATH", "")
+	t.Setenv("SESSION_BOOTSTRAP_HELPER_SHA256", "")
 	t.Setenv("SESSION_SSH_EXECUTABLE", "")
 	t.Setenv("PROXMOX_TEMPLATE_VMID", "3900")
 	t.Setenv("KUBERNETES_BASE_URL", "https://kubernetes.example")
@@ -135,6 +137,7 @@ func TestLoadSessionBootstrapConfigRequiresSessionRuntimeAndEveryPath(t *testing
 	}{
 		{name: "runtime", runtimeSet: false},
 		{name: "backup", runtimeSet: true, missing: "SESSION_BOOTSTRAP_BACKUP_ROOT"},
+		{name: "helper", runtimeSet: true, missing: "SESSION_BOOTSTRAP_HELPER_PATH"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			setControllerEnvironment(t)
@@ -144,6 +147,8 @@ func TestLoadSessionBootstrapConfigRequiresSessionRuntimeAndEveryPath(t *testing
 			t.Setenv("SESSION_BOOTSTRAP_BACKUP_ROOT", "/var/lib/codex-session/backups")
 			t.Setenv("SESSION_BOOTSTRAP_ARTIFACT_ROOT", "/var/lib/codex-bootstrap-artifacts")
 			t.Setenv("SESSION_SSH_EXECUTABLE", "/usr/bin/ssh")
+			t.Setenv("SESSION_BOOTSTRAP_HELPER_PATH", "/var/lib/codex-bootstrap-helpers/installer")
+			t.Setenv("SESSION_BOOTSTRAP_HELPER_SHA256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 			if !tc.runtimeSet {
 				if _, err := loadSessionBootstrapConfig(false); err == nil {
 					t.Fatal("bootstrap enabled without Session runtime was accepted")
@@ -166,11 +171,13 @@ func TestLoadSessionBootstrapConfigLoadsExactPaths(t *testing.T) {
 	t.Setenv("SESSION_BOOTSTRAP_BACKUP_ROOT", "/var/lib/codex-session/backups")
 	t.Setenv("SESSION_BOOTSTRAP_ARTIFACT_ROOT", "/var/lib/codex-bootstrap-artifacts")
 	t.Setenv("SESSION_SSH_EXECUTABLE", "/usr/bin/ssh")
+	t.Setenv("SESSION_BOOTSTRAP_HELPER_PATH", "/var/lib/codex-bootstrap-helpers/installer")
+	t.Setenv("SESSION_BOOTSTRAP_HELPER_SHA256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	config, err := loadSessionBootstrapConfig(true)
 	if err != nil {
 		t.Fatalf("loadSessionBootstrapConfig() error: %v", err)
 	}
-	want := &sessionruntime.BootstrapDriverConfig{SSHMaterialRoot: "/var/lib/codex-session/ssh", SSHKeygen: "/usr/bin/ssh-keygen", BackupRoot: "/var/lib/codex-session/backups", ArtifactRoot: "/var/lib/codex-bootstrap-artifacts", CodexVersion: "0.160.0", SSHExecutable: "/usr/bin/ssh"}
+	want := &sessionruntime.BootstrapDriverConfig{SSHMaterialRoot: "/var/lib/codex-session/ssh", SSHKeygen: "/usr/bin/ssh-keygen", BackupRoot: "/var/lib/codex-session/backups", ArtifactRoot: "/var/lib/codex-bootstrap-artifacts", CodexVersion: "0.160.0", SSHExecutable: "/usr/bin/ssh", HelperArtifactPath: "/var/lib/codex-bootstrap-helpers/installer", HelperSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 	if config == nil || *config != *want {
 		t.Fatalf("bootstrap config = %+v, want %+v", config, want)
 	}
@@ -185,6 +192,8 @@ func TestLoadSessionBootstrapConfigPinsRollbackVersionOnlyWhenExplicit(t *testin
 	t.Setenv("SESSION_BOOTSTRAP_ARTIFACT_ROOT", "/var/lib/codex-bootstrap-artifacts")
 	t.Setenv("SESSION_SSH_EXECUTABLE", "/usr/bin/ssh")
 	t.Setenv("SESSION_BOOTSTRAP_CODEX_VERSION", "0.155.0")
+	t.Setenv("SESSION_BOOTSTRAP_HELPER_PATH", "/var/lib/codex-bootstrap-helpers/installer")
+	t.Setenv("SESSION_BOOTSTRAP_HELPER_SHA256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	cfg, err := loadSessionBootstrapConfig(true)
 	if err != nil || cfg.CodexVersion != "0.155.0" {
 		t.Fatalf("rollback bootstrap config=%+v error=%v", cfg, err)
