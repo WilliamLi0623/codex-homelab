@@ -1,6 +1,8 @@
 # P28 helper checkpoint integration — 2026-10-03
 
-Status: implementation in progress; not deployed or committed.
+Status: helper checkpoint committed; Controller migration 13 deployed and
+verified. Session guest bootstrap, authenticated identity, and multi-turn gates
+remain incomplete.
 
 The guest installer prerequisite is an explicit `helper_verified` checkpoint
 between `network_enabled` and `artifact_verified`. Migration 13 preserves old
@@ -9,8 +11,9 @@ evidence without fabricating helper completion. Bootstrap has nine stages.
 Enabled bootstrap now requires `SESSION_BOOTSTRAP_HELPER_PATH` and an explicit
 lowercase 64-character `SESSION_BOOTSTRAP_HELPER_SHA256`. These identify the
 trusted controller-side helper snapshot, not an account credential. Disabled
-bootstrap rejects partial helper configuration. Production configuration and
-databases have not been changed.
+bootstrap rejects partial helper configuration. At the time this note was first
+created, production configuration and database were unchanged; the production
+database was migrated later as documented below.
 
 Evidence obtained:
 
@@ -23,14 +26,14 @@ Evidence obtained:
 - Disabled bootstrap explicitly rejects either helper path or helper pin supplied
   alone; targeted rejection tests passed.
 
-Pending review finding: SSH installation must safely create absent exact helper
-and launcher-parent directories under verified trusted ancestors; observation
-must not create directories. Publication must flush relevant directories before
-acknowledgment. The transport implementer owns that correction.
+The initial review finding about missing guest directories and durable directory
+publication was fixed and passed final-source Linux tests. A later review finding
+about direct completion bypassing a missing predecessor was fixed in the atomic
+Store update; scoped re-review and full Linux Store regression passed.
 
-Remaining gates: current-source Linux transport and stage tests, combined
-regression and review, coherent commit/push, then controlled production bootstrap
-persistence, restart recovery, and account identity/multi-turn acceptance.
+Remaining gates: authenticated Session API, production bootstrap configuration
+and first owned guest lifecycle, persistent restart recovery, and Codex A identity
+plus multi-turn acceptance.
 
 Legacy WebCodex OAuth origin restoration remains deferred and is not a P28 gate.
 
@@ -48,8 +51,7 @@ Initial execution failed while creating fixtures: PVE `/tmp` is a full 32 GiB
 tmpfs. `/var/tmp` has approximately 308 GiB available. The identical binary passed
 with `TMPDIR=/var/tmp/p28-linux-validation.sgY9lZcB`, an existing root-owned 0700
 test directory. No files were manually removed to address this capacity issue.
-Final source changed after this snapshot; fresh final-source Linux validation
-is still required before commit.
+This first snapshot was superseded by the final-source tests recorded below.
 
 ## Final-source targeted validation
 
@@ -61,11 +63,13 @@ sessionruntime SHA256
 All `TestSSHBootstrapHelper` and `TestBootstrapHelper` tests passed using the
 existing private `/var/tmp` test directory. Live-cache opt-in was not supplied
 in this run and was explicitly skipped. Full Windows tests and vet passed again.
-Independent review and complete Linux runtime regression remain required.
+Independent review and complete Linux runtime regression were pending at this
+point; both were completed as recorded below.
 
 Complete Linux sessionruntime regression subsequently returned `PASS` and exit
 zero for the same `f7c5e...` frozen binary. The TLS negative-path test emitted
-its expected certificate handshake rejection. Independent review remains open.
+its expected certificate handshake rejection. The independent review found the
+Store ordering issue recorded below.
 
 Controller Linux suite also passed, including actual Linux-only bootstrap factory
 assembly without exposing the Session API. Frozen test hash:
@@ -75,8 +79,8 @@ Independent review found an order bypass through direct completion of historical
 artifact INTENT/UNKNOWN rows. A new regression first reproduced success without
 helper evidence. Completion now atomically requires its predecessor COMPLETE in
 the SQL UPDATE; transitions to UNKNOWN do not gain that restriction. Full Store,
-runtime and Controller tests passed after correction. Scoped re-review and fresh
-Linux regression for this Store correction remain pending.
+runtime and Controller tests passed after correction. Scoped re-review accepted
+the SQL update fix; the complete Linux Store regression passed afterward.
 
 ## Production database clone migration rehearsal
 
