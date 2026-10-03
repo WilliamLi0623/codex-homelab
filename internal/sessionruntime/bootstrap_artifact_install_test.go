@@ -54,6 +54,50 @@ func TestReadBootstrapCodexManifestSelectsPinnedVersionAndRejectsUnknownOrMismat
 	}
 }
 
+func TestReadBootstrapCodexManifestSelectsBothCompiledReleasesAndBindsEvidenceToVersion(t *testing.T) {
+	digest := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	versions := []struct {
+		bundle codexArtifactBundle
+	}{
+		{bundle: bootstrapCodex0155Bundle},
+		{bundle: bootstrapCodex0160Bundle},
+	}
+	evidence := make([]string, 0, len(versions))
+	for _, test := range versions {
+		manifest := bootstrapCodexManifest{Version: test.bundle.version, Target: test.bundle.target}
+		for _, file := range test.bundle.files {
+			manifest.Files = append(manifest.Files, verifiedCodexArtifact{Path: file.path, SHA256: file.sha256, Size: 1, Mode: uint32(file.mode.Perm())})
+		}
+		data, err := json.Marshal(manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var archive bytes.Buffer
+		writer := tar.NewWriter(&archive)
+		if err := writer.WriteHeader(&tar.Header{Name: bootstrapArtifactManifestPath, Mode: 0600, Size: int64(len(data)), Typeflag: tar.TypeReg, Uid: 0, Gid: 0}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(data); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		selectedManifest, selectedBundle, err := readBootstrapCodexManifestSelectingVersion(tar.NewReader(bytes.NewReader(archive.Bytes())))
+		if err != nil || selectedBundle.version != test.bundle.version || selectedManifest.Version != test.bundle.version {
+			t.Fatalf("manifest version %q selected bundle=%q manifest=%q err=%v", test.bundle.version, selectedBundle.version, selectedManifest.Version, err)
+		}
+		installEvidence := bootstrapCodexInstallEvidence(digest, selectedBundle, selectedManifest)
+		if !validBootstrapEvidence(installEvidence) {
+			t.Fatalf("version %q produced invalid install evidence: %+v", test.bundle.version, installEvidence)
+		}
+		evidence = append(evidence, installEvidence.SHA256)
+	}
+	if evidence[0] == evidence[1] {
+		t.Fatal("install evidence did not distinguish the two compiled bundle versions")
+	}
+}
+
 func TestBootstrapCodexInstallPromotesOnlyVerifiedBundle(t *testing.T) {
 	requireLinuxRoot(t)
 	root := t.TempDir()
@@ -211,6 +255,34 @@ func TestBootstrapCodexInstallRejectsArchiveContentTampering(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(installRoot, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")); !os.IsNotExist(err) {
 		t.Fatalf("tampered archive was promoted: %v", err)
+	}
+}
+
+func TestBootstrapCodexInstallRejectsFrameDigestMismatchWithoutPromotion(t *testing.T) {
+	requireLinuxRoot(t)
+	root := t.TempDir()
+	installRoot := filepath.Join(root, "opt", "codex")
+	launcherDir := filepath.Join(root, "usr", "local", "bin")
+	if err := os.MkdirAll(installRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(launcherDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	manifest, entries := writeTransferFixture(t, filepath.Join(root, "source"))
+	archive := makeArtifactTar(t, filepath.Join(root, "source"), manifest, entries)
+	frame := frameArtifactTar(archive, true)
+	frame[len(bootstrapArtifactTransferMagic)+8] ^= 0x01
+	digest := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	launcher := filepath.Join(launcherDir, "codex")
+	if _, err := installBootstrapCodexBundleAt(context.Background(), bytes.NewReader(frame), digest, manifest, installRoot, launcher); err == nil {
+		t.Fatal("frame with a mismatched archive digest was accepted")
+	}
+	if _, err := os.Lstat(filepath.Join(installRoot, digest)); !os.IsNotExist(err) {
+		t.Fatalf("frame with a mismatched archive digest was promoted: %v", err)
+	}
+	if _, err := os.Lstat(launcher); !os.IsNotExist(err) {
+		t.Fatalf("frame with a mismatched archive digest created launcher: %v", err)
 	}
 }
 
